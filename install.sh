@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# tmux-opsx installer — macOS and Linux.
+#
+# Installs:
+#   1. the OpenSpec CLI            (npm -g @fission-ai/openspec)
+#   2. the /opsx:* slash commands  -> ~/.claude/commands/opsx/
+#   3. the ops-applier subagent    -> ~/.claude/agents/opsx-applier.md
+#   4. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
+#
+# Usage: ./install.sh [options]
+#   --prefix <dir>     Claude config dir (default: ~/.claude, or $CLAUDE_CONFIG_DIR)
+#   --skip-openspec    Don't install/upgrade the OpenSpec CLI
+#   --skip-commands    Don't install the global /opsx:* commands
+#   --no-backup        Overwrite existing files without keeping a .bak copy
+#   --uninstall        Remove everything this script installs (except the CLI)
+#   -h, --help         Show this help
+
+set -uo pipefail
+
+PREFIX=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+SKIP_OPENSPEC=0
+SKIP_COMMANDS=0
+BACKUP=1
+UNINSTALL=0
+NPM_PKG="@fission-ai/openspec"
+
+# ---------- output helpers ----------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; D=$'\033[2m'; N=$'\033[0m'
+else
+  B=""; G=""; Y=""; R=""; D=""; N=""
+fi
+info() { printf '%s\n' "$*"; }
+step() { printf '%s==>%s %s%s%s\n' "$B" "$N" "$B" "$*" "$N"; }
+ok()   { printf '  %s✓%s %s\n' "$G" "$N" "$*"; }
+warn() { printf '  %s!%s %s\n' "$Y" "$N" "$*"; }
+note() { printf '    %s%s%s\n' "$D" "$*" "$N"; }
+die()  { printf '%serror:%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+
+usage() { awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"; exit 0; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix)        PREFIX=${2:?--prefix needs a directory}; shift 2 ;;
+    --skip-openspec) SKIP_OPENSPEC=1; shift ;;
+    --skip-commands) SKIP_COMMANDS=1; shift ;;
+    --no-backup)     BACKUP=0; shift ;;
+    --uninstall)     UNINSTALL=1; shift ;;
+    -h|--help)       usage ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+# Resolve this script's directory without readlink -f (absent on stock macOS).
+SRC=$(cd -- "$(dirname -- "$0")" && pwd)
+
+OS=$(uname -s)
+case "$OS" in
+  Darwin) PLATFORM="macOS" ;;
+  Linux)  PLATFORM="Linux" ;;
+  *) die "unsupported platform: $OS (this installer supports macOS and Linux)" ;;
+esac
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Copy a file, keeping a timestamped backup of anything it replaces.
+install_file() {
+  local src=$1 dest=$2
+  mkdir -p "$(dirname "$dest")" || die "cannot create $(dirname "$dest")"
+  if [ -e "$dest" ] && [ "$BACKUP" -eq 1 ]; then
+    if ! cmp -s "$src" "$dest"; then
+      local bak="$dest.bak.$(date +%Y%m%d%H%M%S)"
+      cp "$dest" "$bak" || die "cannot back up $dest"
+      note "backed up existing $(basename "$dest") -> $(basename "$bak")"
+    fi
+  fi
+  cp "$src" "$dest" || die "cannot write $dest"
+}
+
+# ---------- uninstall ----------
+if [ "$UNINSTALL" -eq 1 ]; then
+  step "Uninstalling tmux-opsx from $PREFIX"
+  rm -rf "$PREFIX/skills/opsx-run" && ok "removed skills/opsx-run"
+  rm -f  "$PREFIX/agents/opsx-applier.md" && ok "removed agents/opsx-applier.md"
+  rm -rf "$PREFIX/commands/opsx" && ok "removed commands/opsx"
+  info ""
+  info "The OpenSpec CLI was left installed. Remove it with:"
+  info "  npm uninstall -g $NPM_PKG"
+  exit 0
+fi
+
+info "${B}tmux-opsx${N} installer  ${D}($PLATFORM)${N}"
+info ""
+
+# ---------- 1. prerequisites ----------
+step "Checking prerequisites"
+MISSING=0
+
+if have tmux; then
+  ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}')"
+else
+  warn "tmux not found — required, /opsx-run runs each change in a tmux window"
+  case "$PLATFORM" in
+    macOS) note "install: brew install tmux" ;;
+    Linux) note "install: sudo apt install tmux   (or dnf/pacman/zypper)" ;;
+  esac
+  MISSING=1
+fi
+
+if have git; then
+  ok "git $(git --version 2>/dev/null | awk '{print $3}')"
+else
+  warn "git not found — required, the ops-applier agent works in git worktrees"
+  MISSING=1
+fi
+
+if have node && have npm; then
+  ok "node $(node --version 2>/dev/null) / npm $(npm --version 2>/dev/null)"
+else
+  warn "node/npm not found — required to install the OpenSpec CLI"
+  case "$PLATFORM" in
+    macOS) note "install: brew install node" ;;
+    Linux) note "install: https://nodejs.org  (or your package manager)" ;;
+  esac
+  MISSING=1
+fi
+
+if have claude; then
+  ok "claude $(claude --version 2>/dev/null | head -1)"
+else
+  warn "claude CLI not found — required, each tmux window runs a claude session"
+  note "install: https://claude.com/claude-code"
+  MISSING=1
+fi
+
+[ "$MISSING" -eq 0 ] || die "install the missing prerequisites above, then re-run this script."
+info ""
+
+# ---------- 2. OpenSpec CLI ----------
+if [ "$SKIP_OPENSPEC" -eq 1 ]; then
+  step "Skipping OpenSpec CLI (--skip-openspec)"
+  have openspec || warn "openspec is not on PATH — the /opsx-run skill needs it at runtime"
+else
+  step "Installing the OpenSpec CLI"
+  if have openspec; then
+    note "found openspec $(openspec --version 2>/dev/null) — upgrading to latest"
+  fi
+  if npm install -g "$NPM_PKG" >/dev/null 2>&1; then
+    ok "openspec $(openspec --version 2>/dev/null) ($(command -v openspec))"
+  else
+    warn "global npm install failed — likely a permissions issue on the npm prefix"
+    note "retry with:  sudo npm install -g $NPM_PKG"
+    note "or point npm at a writable prefix:  npm config set prefix ~/.local"
+    die "could not install $NPM_PKG"
+  fi
+fi
+info ""
+
+# ---------- 3. global /opsx:* commands ----------
+if [ "$SKIP_COMMANDS" -eq 1 ]; then
+  step "Skipping global /opsx:* commands (--skip-commands)"
+else
+  step "Installing the global /opsx:* commands"
+  if ! have openspec; then
+    warn "openspec not on PATH — skipping (re-run without --skip-openspec)"
+  else
+    # Generate the commands with the installed CLI rather than vendoring copies,
+    # so they always match the OpenSpec version actually in use.
+    TMPD=$(mktemp -d 2>/dev/null || mktemp -d -t tmuxopsx)
+    [ -n "$TMPD" ] && [ -d "$TMPD" ] || die "could not create a temp directory"
+    if (cd "$TMPD" && openspec init --tools claude . >/dev/null 2>&1) \
+       && [ -d "$TMPD/.claude/commands/opsx" ]; then
+      count=0
+      for f in "$TMPD"/.claude/commands/opsx/*.md; do
+        [ -e "$f" ] || continue
+        install_file "$f" "$PREFIX/commands/opsx/$(basename "$f")"
+        count=$((count + 1))
+      done
+      ok "$count commands -> $PREFIX/commands/opsx/"
+      note "available everywhere: /opsx:propose /opsx:apply /opsx:archive /opsx:explore"
+      note "a project's own .claude/commands/opsx/ still takes precedence"
+    else
+      warn "'openspec init' did not produce commands — skipping"
+      note "you can copy them from any OpenSpec project's .claude/commands/opsx/"
+    fi
+    rm -rf "$TMPD"
+  fi
+fi
+info ""
+
+# ---------- 4. ops-applier subagent ----------
+step "Installing the ops-applier subagent"
+[ -f "$SRC/agents/opsx-applier.md" ] || die "missing $SRC/agents/opsx-applier.md — run this script from the repo checkout"
+install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
+ok "ops-applier -> $PREFIX/agents/opsx-applier.md"
+note "spawns a team of workers in isolated git worktrees to apply changes"
+info ""
+
+# ---------- 5. /opsx-run skill ----------
+step "Installing the /opsx-run skill"
+[ -f "$SRC/skills/opsx-run/SKILL.md" ] || die "missing $SRC/skills/opsx-run/SKILL.md — run this script from the repo checkout"
+install_file "$SRC/skills/opsx-run/SKILL.md"      "$PREFIX/skills/opsx-run/SKILL.md"
+install_file "$SRC/skills/opsx-run/opsx-window.sh" "$PREFIX/skills/opsx-run/opsx-window.sh"
+chmod +x "$PREFIX/skills/opsx-run/opsx-window.sh" || die "cannot chmod +x opsx-window.sh"
+ok "/opsx-run -> $PREFIX/skills/opsx-run/"
+info ""
+
+# ---------- verify ----------
+step "Verifying"
+FAIL=0
+for f in "$PREFIX/skills/opsx-run/SKILL.md" \
+         "$PREFIX/skills/opsx-run/opsx-window.sh" \
+         "$PREFIX/agents/opsx-applier.md"; do
+  if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
+done
+[ -x "$PREFIX/skills/opsx-run/opsx-window.sh" ] || { warn "opsx-window.sh is not executable"; FAIL=1; }
+if bash -n "$PREFIX/skills/opsx-run/opsx-window.sh" 2>/dev/null; then
+  ok "opsx-window.sh parses"
+else
+  warn "opsx-window.sh failed to parse"; FAIL=1
+fi
+[ "$FAIL" -eq 0 ] || die "installation finished with problems — see above."
+info ""
+
+info "${G}${B}Done.${N}"
+info ""
+info "${B}Next steps${N}"
+info "  1. In a project:   ${B}openspec init --tools claude${N}"
+info "  2. Restart Claude Code so it picks up the new skill, agent and commands"
+info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
+info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
+info ""
+[ -n "${TMUX:-}" ] || info "  ${Y}Note:${N} /opsx-run must be run from inside a tmux session."
