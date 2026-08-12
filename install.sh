@@ -6,6 +6,7 @@
 #   2. the /opsx:* slash commands  -> ~/.claude/commands/opsx/
 #   3. the ops-applier subagent    -> ~/.claude/agents/opsx-applier.md
 #   4. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
+#      (opsx-window.sh + opsx-land.sh)
 #
 # Usage: ./install.sh [options]
 #   --prefix <dir>     Claude config dir (default: ~/.claude, or $CLAUDE_CONFIG_DIR)
@@ -199,9 +200,11 @@ info ""
 # ---------- 5. /opsx-run skill ----------
 step "Installing the /opsx-run skill"
 [ -f "$SRC/skills/opsx-run/SKILL.md" ] || die "missing $SRC/skills/opsx-run/SKILL.md — run this script from the repo checkout"
-install_file "$SRC/skills/opsx-run/SKILL.md"      "$PREFIX/skills/opsx-run/SKILL.md"
+install_file "$SRC/skills/opsx-run/SKILL.md"       "$PREFIX/skills/opsx-run/SKILL.md"
 install_file "$SRC/skills/opsx-run/opsx-window.sh" "$PREFIX/skills/opsx-run/opsx-window.sh"
+install_file "$SRC/skills/opsx-run/opsx-land.sh"   "$PREFIX/skills/opsx-run/opsx-land.sh"
 chmod +x "$PREFIX/skills/opsx-run/opsx-window.sh" || die "cannot chmod +x opsx-window.sh"
+chmod +x "$PREFIX/skills/opsx-run/opsx-land.sh"   || die "cannot chmod +x opsx-land.sh"
 ok "/opsx-run -> $PREFIX/skills/opsx-run/"
 info ""
 
@@ -210,15 +213,18 @@ step "Verifying"
 FAIL=0
 for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$PREFIX/skills/opsx-run/opsx-window.sh" \
+         "$PREFIX/skills/opsx-run/opsx-land.sh" \
          "$PREFIX/agents/opsx-applier.md"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
-[ -x "$PREFIX/skills/opsx-run/opsx-window.sh" ] || { warn "opsx-window.sh is not executable"; FAIL=1; }
-if bash -n "$PREFIX/skills/opsx-run/opsx-window.sh" 2>/dev/null; then
-  ok "opsx-window.sh parses"
-else
-  warn "opsx-window.sh failed to parse"; FAIL=1
-fi
+for sh in opsx-window.sh opsx-land.sh; do
+  [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable"; FAIL=1; }
+  if bash -n "$PREFIX/skills/opsx-run/$sh" 2>/dev/null; then
+    ok "$sh parses"
+  else
+    warn "$sh failed to parse"; FAIL=1
+  fi
+done
 [ "$FAIL" -eq 0 ] || die "installation finished with problems — see above."
 info ""
 

@@ -17,6 +17,8 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> archive
 /opsx-run <change> status               # snapshot of what the window is doing right now
 /opsx-run <change> "<free-form text>"   # send any instruction to that change's window
+/opsx-run <change> land                 # merge into main, archive, clean up, close the window
+/opsx-run <change> land --into develop  # ... into another branch
 /opsx-run <change> close                # close that change's window
 /opsx-run close-all                     # close every opsx window in the session
 /opsx-run list                          # show the windows in this session
@@ -59,6 +61,7 @@ Both `openspec` and the window's `claude` run from the current working directory
 | free text | — | `send` the user's text verbatim (window must already exist) |
 | `close` | — | Nothing; `opsx-window.sh close <c>` kills that window |
 | `close-all` | Confirm with **AskUserQuestion** first — this kills several live sessions at once | Nothing; `opsx-window.sh close --all` |
+| `land` | Runs `opsx-land.sh <change> [--into <branch>]` **inline**; relays the gate that failed, or the merge commit and cleanup summary | Nothing — the window is closed as the last step |
 
 `verify` and `archive` deliberately run their read-only `openspec` checks in **this** session: they are fast, and a failed gate should be reported to the user immediately rather than discovered inside a window they are not watching.
 
@@ -97,6 +100,22 @@ After every invocation, tell the user:
 - how to jump to it: `tmux select-window -t <session>:<change>`.
 
 Do not wait on or poll the window — it runs its own conversation. Use `/opsx-run <change> status` to check on it later.
+
+## Landing a change
+
+`~/.claude/skills/opsx-run/opsx-land.sh <change> [options]` finishes a change: **gate → merge `--no-ff` → `openspec archive` → commit → remove worktree → delete branch → close window.**
+
+```
+opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
+             [--no-close] [--keep-branch] [--keep-worktree] [--dry-run]
+```
+
+- Runs **inline in this session**, never dispatched to the window — a window cannot close itself while still running the merge.
+- **It never pushes.** Relay the `git push origin <branch>` line it prints; do not run it unless the user asks.
+- **Confirm with AskUserQuestion before the first real run** — it writes a merge commit, deletes a branch and kills a live session. Offer `--dry-run` if the user seems unsure. Skip the confirmation when the user's message already spells out the intent ("land add-auth into develop").
+- Gates, in order: change dir exists → `validate --strict` → all artifacts present → **every task in tasks.md checked** → clean working tree → branch found → branch is ahead of target. Report *which* gate failed and stop; do not dispatch work to fix it unless asked.
+- Branch discovery: `--branch`, else `opsx/<change>`, `feat/<change>`, `feature/<change>`, `<change>`, else a single fuzzy `*<change>*` match. Several fuzzy matches → it lists them and asks for `--branch`.
+- On merge conflict it aborts the merge, returns to the starting branch and leaves the tree clean. The fix is a normal window instruction: `/opsx-run <change> "resolve the conflicts merging <branch> into <target>"`.
 
 ## Closing windows
 
