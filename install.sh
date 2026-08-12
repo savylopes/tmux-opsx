@@ -15,10 +15,14 @@
 #   --no-backup        Overwrite existing files without keeping a .bak copy
 #   --uninstall        Remove everything this script installs (except the CLI)
 #   -h, --help         Show this help
+#
+# Run as your normal user — sudo is not needed. If openspec is already installed
+# under /usr/local but that prefix is not writable, the upgrade is skipped and
+# the skill files are still installed.
 
 set -uo pipefail
 
-PREFIX=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+EXPLICIT_PREFIX=0
 SKIP_OPENSPEC=0
 SKIP_COMMANDS=0
 BACKUP=1
@@ -42,7 +46,7 @@ usage() { awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0";
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --prefix)        PREFIX=${2:?--prefix needs a directory}; shift 2 ;;
+    --prefix)        PREFIX=${2:?--prefix needs a directory}; EXPLICIT_PREFIX=1; shift 2 ;;
     --skip-openspec) SKIP_OPENSPEC=1; shift ;;
     --skip-commands) SKIP_COMMANDS=1; shift ;;
     --no-backup)     BACKUP=0; shift ;;
@@ -51,6 +55,38 @@ while [ $# -gt 0 ]; do
     *) die "unknown option: $1 (try --help)" ;;
   esac
 done
+
+# Skill files belong in the invoking user's home. sudo drops ~/.local/bin from
+# PATH and sets HOME=/root, which makes both the prefix and CLI checks wrong.
+if [ "$(id -u)" -eq 0 ]; then
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    REAL_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6-)
+    REAL_HOME=${REAL_HOME:-/home/$SUDO_USER}
+    export HOME="$REAL_HOME"
+    for d in "$HOME/.local/bin" "$HOME/bin"; do
+      [ -d "$d" ] && PATH="$d:$PATH"
+    done
+    export PATH
+  else
+    die "do not run this installer as root — run ./install.sh as your normal user (sudo is not needed)."
+  fi
+fi
+
+if [ "$EXPLICIT_PREFIX" -eq 1 ]; then
+  :
+elif [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  PREFIX=$CLAUDE_CONFIG_DIR
+else
+  PREFIX=$HOME/.claude
+fi
+
+run_as_owner() {
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    sudo -u "$SUDO_USER" -H "$@"
+  else
+    "$@"
+  fi
+}
 
 # Resolve this script's directory without readlink -f (absent on stock macOS).
 SRC=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -63,6 +99,51 @@ case "$OS" in
 esac
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+npm_global_prefix() {
+  run_as_owner npm config get prefix 2>/dev/null | tr -d '\r\n'
+}
+
+npm_prefix_writable() {
+  local p
+  p=$(npm_global_prefix)
+  [ -n "$p" ] && [ -w "$p" ]
+}
+
+# Install or upgrade openspec. Never requires sudo for the skill files themselves;
+# only the npm global prefix may need elevated permissions to upgrade.
+install_openspec() {
+  local user_local=$HOME/.local
+
+  if run_as_owner npm install -g "$NPM_PKG" >/dev/null 2>&1; then
+    ok "openspec $(openspec --version 2>/dev/null) ($(command -v openspec))"
+    return 0
+  fi
+
+  # Global prefix not writable — very common when npm uses /usr/local.
+  if have openspec; then
+    ok "openspec $(openspec --version 2>/dev/null) ($(command -v openspec))"
+    warn "skipped upgrade — npm prefix $(npm_global_prefix) is not writable by $(id -un)"
+    note "to upgrade later: sudo npm install -g $NPM_PKG"
+    note "or move npm to your home: npm config set prefix ~/.local && npm install -g $NPM_PKG"
+    return 0
+  fi
+
+  # Not on PATH yet — install under ~/.local without touching /usr/local.
+  mkdir -p "$user_local/bin" "$user_local/lib/node_modules"
+  if run_as_owner npm install --prefix "$user_local" -g "$NPM_PKG" >/dev/null 2>&1; then
+    export PATH="$user_local/bin:$PATH"
+    ok "openspec $(openspec --version 2>/dev/null) ($user_local/bin/openspec)"
+    note "installed under ~/.local — add to your shell profile if needed:"
+    note "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    return 0
+  fi
+
+  warn "could not install $NPM_PKG"
+  note "try: sudo npm install -g $NPM_PKG"
+  note "or:  npm config set prefix ~/.local && npm install -g $NPM_PKG"
+  return 1
+}
 
 # Copy a file, keeping a timestamped backup of anything it replaces.
 install_file() {
@@ -91,6 +172,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 info "${B}tmux-opsx${N} installer  ${D}($PLATFORM)${N}"
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  warn "running via sudo — installing for ${SUDO_USER} (${HOME}), not /root"
+  note "sudo is usually unnecessary; plain ./install.sh is enough for the skill files"
+fi
 info ""
 
 # ---------- 1. prerequisites ----------
@@ -155,16 +240,11 @@ if [ "$SKIP_OPENSPEC" -eq 1 ]; then
 else
   step "Installing the OpenSpec CLI"
   if have openspec; then
-    note "found openspec $(openspec --version 2>/dev/null) — upgrading to latest"
+    note "found openspec $(openspec --version 2>/dev/null) on PATH"
+  elif ! npm_prefix_writable; then
+    note "npm prefix $(npm_global_prefix) is not writable — will try ~/.local if needed"
   fi
-  if npm install -g "$NPM_PKG" >/dev/null 2>&1; then
-    ok "openspec $(openspec --version 2>/dev/null) ($(command -v openspec))"
-  else
-    warn "global npm install failed — likely a permissions issue on the npm prefix"
-    note "retry with:  sudo npm install -g $NPM_PKG"
-    note "or point npm at a writable prefix:  npm config set prefix ~/.local"
-    die "could not install $NPM_PKG"
-  fi
+  install_openspec || die "could not install $NPM_PKG"
 fi
 info ""
 
