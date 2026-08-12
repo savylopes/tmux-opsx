@@ -4,6 +4,8 @@ Run [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in Claude Code wi
 
 **One change = one tmux window, named after the change.** `/opsx-run add-auth` opens a window called `add-auth` running a Claude session that hands the implementation to the **ops-applier** subagent, which does the work in isolated git worktrees. You keep your prompt. Every later instruction about that change goes back into the same window, so each change keeps one long-lived conversation you can jump into at any time.
 
+Not in tmux? It starts a session named after the project folder for you.
+
 ```
 ┌ tmux session ─────────────────────────────────────────────┐
 │ 0:claude*  1:add-auth  2:rate-limiting  3:fix-webhooks    │
@@ -27,7 +29,7 @@ Run [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in Claude Code wi
 
 ## Requirements
 
-- **tmux** — every change runs in a tmux window
+- **tmux** — every change runs in a tmux window (you don't have to be inside a session; one is created per project if needed)
 - **git** — the ops-applier agent works in worktrees
 - **Node.js + npm** — to install the OpenSpec CLI
 - **[Claude Code](https://claude.com/claude-code)** — each window runs a `claude` session
@@ -119,15 +121,15 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 
 | Command | What happens |
 |---|---|
-| `/opsx-run <change>` | Same as `apply`. Creates the window on first use |
+| `/opsx-run <change>` | Same as `apply`. Creates the window — and the session, if you're outside tmux — on first use |
 | `/opsx-run <change> apply` | Checks the change is applyable, then dispatches the apply to ops-applier |
 | `/opsx-run <change> verify` | Runs `openspec validate --strict` + `status` **inline** and reports; only bothers the window if it fails |
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
 | `/opsx-run <change> status` | Snapshot of what that window is doing right now |
 | `/opsx-run <change> "<text>"` | Sends any instruction to that change's window |
-| `/opsx-run list` | Shows the windows in the current tmux session |
+| `/opsx-run list` | Shows the windows in the current session (or the project's, from outside tmux) |
 
-Jump to a change's window with `tmux select-window -t <session>:<change>`, or your usual prefix + window number.
+Jump to a change's window with `tmux select-window -t <session>:<change>`, or your usual prefix + window number. If the session was created for you, `tmux attach -t <project-folder>` gets you in.
 
 `verify` and `archive` run their read-only `openspec` checks in your **calling** session on purpose: they are fast, and a failed gate should reach you immediately rather than sit unread in a window you are not watching.
 
@@ -142,17 +144,20 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-window.sh list
 ```
 
-It prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, or `sent @7 2:add-auth`.
+It prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, or `sent @7 2:add-auth`. Called from outside tmux, `ensure` appends `session=created` when it had to start the session, plus an `# attach with: …` hint.
+
+Session names come from the project folder with `.`, `:` and whitespace folded to `-`, since tmux treats `.` and `:` as target separators — `~/code/my.app` becomes the session `my-app`.
 
 ---
 
 ## How it works
 
-1. **Preconditions.** The skill refuses to run outside tmux, and refuses to guess a change name — if it is missing or ambiguous it lists the active changes and asks.
-2. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running `claude --permission-mode bypassPermissions` with a dispatcher prompt. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
-3. **Dispatch.** The prompt tells that session to delegate everything to the `ops-applier` subagent via the Agent tool, and *not* to implement anything itself. That line is what keeps the work on the agent instead of the dispatcher.
-4. **Apply.** `ops-applier` splits the change's tasks across a team of workers, each in its own git worktree, then integrates their branches, runs the build, and reports.
-5. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
+1. **Preconditions.** The skill refuses to guess a change name — if it is missing or ambiguous it lists the active changes and asks.
+2. **Session.** Inside tmux, the window goes in your current session. Outside tmux, it creates (or reuses) a **session named after the project folder** and tells you how to attach.
+3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running `claude --permission-mode bypassPermissions` with a dispatcher prompt. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
+4. **Dispatch.** The prompt tells that session to delegate everything to the `ops-applier` subagent via the Agent tool, and *not* to implement anything itself. That line is what keeps the work on the agent instead of the dispatcher.
+5. **Apply.** `ops-applier` splits the change's tasks across a team of workers, each in its own git worktree, then integrates their branches, runs the build, and reports.
+6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
 
 Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send.
 
@@ -160,7 +165,7 @@ Windows are targeted by tmux **window id** (`@7`), never by index or name, so re
 
 ## Troubleshooting
 
-**"not running inside tmux"** — `/opsx-run` only works from a tmux session. It deliberately won't fall back to running the work inline, because the whole point is not blocking your session.
+**Running outside tmux** — that's fine: `/opsx-run <change>` starts a detached session named after the project folder and puts the change window in it. It tells you the name; attach with `tmux attach -t <project>`. Only `apply`/`archive` can create a session — `status`, `list` and free-form sends look it up and fail with a clear message if it isn't there yet. `/opsx-run` never falls back to running the work inline, because the whole point is not blocking your session.
 
 **The window is named `claude` instead of the change** — something re-enabled tmux's automatic rename. The script disables it per window at creation; check `tmux show-window-options -t <win> automatic-rename`.
 

@@ -11,7 +11,13 @@
 #   opsx-window.sh status <change> [--lines N]
 #   opsx-window.sh list
 #
+# Inside tmux the window goes in the caller's session. Outside tmux, `ensure`
+# creates (or reuses) a session named after the project folder and prints an
+# "attach with:" hint; `send`/`status`/`list` look that session up and never
+# create one.
+#
 # Output on success (ensure/send): "<created|reused|sent> <window-id> <session>:<change>"
+# plus a trailing " session=created" on the field when a new session was made.
 
 set -uo pipefail
 
@@ -19,7 +25,25 @@ die() { printf 'opsx-window: %s\n' "$1" >&2; exit 1; }
 
 require_tmux() {
   command -v tmux >/dev/null 2>&1 || die "tmux is not installed."
-  [ -n "${TMUX:-}" ] || die "not running inside tmux — start this from a tmux session."
+}
+
+inside_tmux() { [ -n "${TMUX:-}" ]; }
+
+# Session name for a project directory: its folder name, with tmux's target
+# metacharacters ('.' and ':') and whitespace folded to '-'.
+project_session_name() {
+  local base
+  base=$(basename -- "${1%/}")
+  base=$(printf '%s' "$base" | tr ':. \t' '----')
+  [ -n "$base" ] || base="opsx"
+  printf '%s' "$base"
+}
+
+# tmux target matching is prefix-based, so `has-session -t foo` is true when
+# only "foobar" exists. Compare names exactly instead.
+session_exists() {
+  tmux list-sessions -F '#{session_name}' 2>/dev/null \
+    | awk -v n="$1" '$0==n { found=1; exit } END { exit !found }'
 }
 
 # Resolve the session that owns *this* pane. Bare `display-message -p '#S'`
@@ -33,6 +57,20 @@ current_session() {
   [ -n "${s:-}" ] || s=$(tmux display-message -p '#S' 2>/dev/null)
   [ -n "${s:-}" ] || die "could not determine the current tmux session."
   printf '%s' "$s"
+}
+
+# Which session to look in when we are NOT creating anything: the caller's
+# session inside tmux, otherwise the project's session (which must exist).
+lookup_session() {
+  local sess
+  if inside_tmux; then
+    current_session
+    return 0
+  fi
+  sess=$(project_session_name "$PWD")
+  session_exists "$sess" \
+    || die "not inside tmux and no session named '$sess' — run '/opsx-run <change> apply' first."
+  printf '%s' "$sess"
 }
 
 # Window id (@N) for a window named exactly $2 in session $1, empty if absent.
@@ -75,21 +113,42 @@ cmd_ensure() {
   [ -d "$cwd" ] || die "cwd not found: $cwd"
 
   require_tmux
-  local sess win
-  sess=$(current_session)
+  local sess win launch
+  launch="claude --permission-mode bypassPermissions \"\$(cat $(printf '%q' "$prompt_file"))\""
+
+  if inside_tmux; then
+    sess=$(current_session) || exit 1
+  else
+    # Called from outside tmux: work in a session named after the project
+    # folder, creating it if this is the first change for that project.
+    sess=$(project_session_name "$cwd")
+    if ! session_exists "$sess"; then
+      # Create the session and the change window in one shot, so the session
+      # has no stray shell window sitting next to the work.
+      win=$(tmux new-session -d -s "$sess" -n "$change" -c "$cwd" -P -F '#{window_id}' \
+            "$launch" 2>&1) || die "failed to create session '$sess': $win"
+      tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1
+      tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1
+      printf 'created %s %s:%s session=created\n' "$win" "$sess" "$change"
+      printf '# attach with: tmux attach -t %s\n' "$sess"
+      return 0
+    fi
+  fi
+
   win=$(find_window "$sess" "$change")
 
   if [ -n "$win" ]; then
     [ "$create_only" -eq 1 ] && die "window '$change' already exists ($win)"
     send_prompt "$win" "$prompt_file"
     printf 'reused %s %s:%s\n' "$win" "$sess" "$change"
+    inside_tmux || printf '# attach with: tmux attach -t %s\n' "$sess"
     return 0
   fi
 
   # The prompt is read from the file inside the window's shell, so no prompt
   # text is ever spliced into this command line, and there is no TUI boot race.
   win=$(tmux new-window -d -t "$sess:" -n "$change" -c "$cwd" -P -F '#{window_id}' \
-        "claude --permission-mode bypassPermissions \"\$(cat $(printf '%q' "$prompt_file"))\"" 2>&1) \
+        "$launch" 2>&1) \
     || die "failed to create window: $win"
 
   # Without these tmux renames the window to the running command ("claude"),
@@ -115,7 +174,7 @@ cmd_send() {
 
   require_tmux
   local sess win
-  sess=$(current_session)
+  sess=$(lookup_session) || exit 1
   win=$(find_window "$sess" "$change")
   [ -n "$win" ] || die "no window named '$change' in session '$sess' — run '/opsx-run $change apply' first."
 
@@ -136,7 +195,7 @@ cmd_status() {
 
   require_tmux
   local sess win
-  sess=$(current_session)
+  sess=$(lookup_session) || exit 1
   win=$(find_window "$sess" "$change")
   [ -n "$win" ] || die "no window named '$change' in session '$sess'."
 
@@ -147,7 +206,7 @@ cmd_status() {
 cmd_list() {
   require_tmux
   local sess
-  sess=$(current_session)
+  sess=$(lookup_session) || exit 1
   printf '# session %s\n' "$sess"
   tmux list-windows -t "$sess" \
     -F '#{window_id}	#{window_name}	#{pane_current_command}	#{pane_current_path}'

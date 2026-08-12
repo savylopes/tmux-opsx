@@ -33,11 +33,13 @@ opsx-window.sh list                                              # windows in th
 
 It prints one line on success: `created @7 2:add-auth`, `reused @7 2:add-auth`, or `sent @7 2:add-auth`. Relay which of the three happened — the user wants to know whether a new window appeared.
 
+When called from **outside** tmux it also prints `session=created` on that line (if it had to start the session) and a `# attach with: tmux attach -t <session>` hint. Pass both on. `send`, `status` and `list` only ever *look up* the project session; they never create one, and they fail with a clear message if the user is outside tmux and no session exists yet.
+
 Write prompts to a file in the session scratchpad (e.g. `<scratchpad>/opsx-<change>-<action>.txt`) and pass `--prompt-file`. Prompt text is never spliced into a command line.
 
 ## Preconditions — check in this order, fail fast
 
-1. **Inside tmux.** If `$TMUX` is unset, stop and tell the user to run this from a tmux session. Do not fall back to running the work inline.
+1. **tmux.** `tmux` must be installed. Being *inside* a session is not required: when `$TMUX` is unset, `ensure` creates (or reuses) a session named after the **project folder** and puts the change window there. Tell the user the session name and `tmux attach -t <session>`. Never fall back to running the work inline.
 2. **Change exists.** `openspec/changes/<change>/` must exist under the current directory. If the name is missing, vague, or ambiguous, run `openspec list --json` and use **AskUserQuestion** to let the user pick from the active changes. **Never guess or auto-select** the change name.
 
 Both `openspec` and the window's `claude` run from the current working directory, so run `/opsx-run` from the project root.
@@ -84,6 +86,7 @@ The **"Do NOT do the work yourself"** line is load-bearing — it is what makes 
 After every invocation, tell the user:
 
 - the window name and whether it was **created** or **reused**,
+- **if a session was created** (running from outside tmux): its name and `tmux attach -t <session>`,
 - what was dispatched (or, for `verify`, the inline gate result),
 - how to jump to it: `tmux select-window -t <session>:<change>`.
 
