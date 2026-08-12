@@ -26,7 +26,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `/opsx-run` skill | `~/.claude/skills/opsx-run/` (Claude Code) · `~/.cursor/skills/opsx-run/` (Cursor CLI) | The lifecycle: apply, verify, archive, land, close — one window per change |
 | `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
 | `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — gates, merge, archive, branch/worktree cleanup |
-| `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` (Claude Code) · `~/.cursor/agents/opsx-applier.md` (Cursor CLI) | Does the implementation: spawns a team of workers in isolated worktrees, integrates, commits |
+| `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` (Claude Code) · `~/.cursor/agents/opsx-applier.md` (Cursor CLI) | Does the implementation in an isolated worktree on `opsx/<change>`, commits, and reports |
 | `/opsx:*` commands | `~/.claude/commands/opsx/` | OpenSpec's own workflow commands, made global |
 | OpenSpec CLI | npm global | `openspec` — the spec/change engine everything is built on |
 
@@ -190,7 +190,7 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 2. **Session.** Inside tmux, the window goes in your current session. Outside tmux, it creates (or reuses) a **session named after the project folder** and tells you how to attach.
 3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running the detected agent CLI (`claude --permission-mode bypassPermissions` or `agent --force` for Cursor) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor` to override, or set `$OPSX_AGENT_CLI`. From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
 4. **Dispatch.** The prompt tells that session to delegate everything to the `ops-applier` subagent via the Agent tool, and *not* to implement anything itself. That line is what keeps the work on the agent instead of the dispatcher.
-5. **Apply.** `ops-applier` splits the change's tasks across a team of workers, each in its own git worktree, then integrates their branches, runs the build, and reports. It works on a branch named **`opsx/<change>`** — a fixed convention, because `land` looks the branch up by it later.
+5. **Apply.** `ops-applier` implements the change in a single git worktree on branch **`opsx/<change>`**, runs the build, commits, and reports. Parallel workers are opt-in only when you ask for them explicitly.
 6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
 
 Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send. Each one is also stamped with an `@opsx_change` tmux option, which is how `close --all` finds exactly the windows tmux-opsx created.

@@ -320,7 +320,7 @@ install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
 ok "ops-applier -> $PREFIX/agents/opsx-applier.md (Claude Code)"
 install_cursor_agent "$SRC/agents/opsx-applier.md" "$CURSOR_AGENTS_DIR/opsx-applier.md"
 ok "ops-applier -> $CURSOR_AGENTS_DIR/opsx-applier.md (Cursor CLI)"
-note "spawns a team of workers in isolated git worktrees to apply changes"
+note "implements changes in an isolated git worktree on opsx/<change>"
 info ""
 
 # ---------- 5. /opsx-run skill ----------
