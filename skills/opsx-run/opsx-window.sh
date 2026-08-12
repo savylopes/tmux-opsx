@@ -12,6 +12,7 @@
 #   opsx-window.sh close  <change> [--force] [--keep-session]
 #   opsx-window.sh close  --all    [--force] [--keep-session]
 #   opsx-window.sh status <change> [--lines N]
+#   opsx-window.sh detect-cli [--agent-cli <cmd>]
 #   opsx-window.sh list
 #
 # Agent CLI selection (ensure only):
@@ -129,8 +130,65 @@ normalize_agent_cli() {
   esac
 }
 
+# True when this shell is running under Cursor CLI/IDE (not just when both CLIs
+# happen to be installed). Env markers are checked first; if those were stripped
+# (e.g. by a sandbox), walk the parent chain — Cursor CLI on Linux shows up as
+# comm=MainThread with .../agent in args, not comm=agent.
+running_under_cursor() {
+  [ -n "${CURSOR_AGENT:-}" ] && return 0
+  [ "${CURSOR_INVOKED_AS:-}" = agent ] && return 0
+  [ -n "${CURSOR_RIPGREP_PATH:-}" ] && return 0
+  [ -n "${CURSOR_CONVERSATION_ID:-}" ] && return 0
+
+  local pid=$$ i=0 args comm
+  while [ "$pid" -gt 1 ] && [ "$i" -lt 25 ]; do
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || break
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$args" in
+      *cursor-agent*|*cursor_agent*|*/.cursor/*agent*)
+        return 0 ;;
+    esac
+    case "$args" in
+      */agent\ *|*/agent|--use-system-ca*)
+        return 0 ;;
+    esac
+    case "$comm" in
+      agent|cursor-agent|Cursor|cursor)
+        return 0 ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -z "$pid" ] && break
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# True when running under Claude Code.
+running_under_claude() {
+  [ -n "${CLAUDE_CODE_SSE_PORT:-}" ] && return 0
+  [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ] && return 0
+
+  local pid=$$ i=0 args comm
+  while [ "$pid" -gt 1 ] && [ "$i" -lt 25 ]; do
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || break
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$args" in
+      *claude-code*|*/claude\ *|*/claude)
+        return 0 ;;
+    esac
+    case "$comm" in
+      claude|Claude)
+        return 0 ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -z "$pid" ] && break
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Pick which agent CLI launches new windows. Precedence: flag > $OPSX_AGENT_CLI >
-# Cursor session env > claude on PATH > agent on PATH > error.
+# host detection (Cursor vs Claude) > claude on PATH > agent on PATH > error.
 resolve_agent_cli() {
   local explicit=${1:-}
   local cli=""
@@ -138,8 +196,10 @@ resolve_agent_cli() {
     cli=$(normalize_agent_cli "$explicit")
   elif [ -n "${OPSX_AGENT_CLI:-}" ]; then
     cli=$(normalize_agent_cli "$OPSX_AGENT_CLI")
-  elif [ -n "${CURSOR_AGENT:-}" ] || [ "${CURSOR_INVOKED_AS:-}" = agent ]; then
+  elif running_under_cursor && command -v agent >/dev/null 2>&1; then
     cli=agent
+  elif running_under_claude && command -v claude >/dev/null 2>&1; then
+    cli=claude
   elif command -v claude >/dev/null 2>&1; then
     cli=claude
   elif command -v agent >/dev/null 2>&1; then
@@ -352,6 +412,17 @@ cmd_status() {
   tmux capture-pane -p -t "$win" -S "-$lines" 2>/dev/null || die "failed to capture pane for $win"
 }
 
+cmd_detect_cli() {
+  local agent_cli=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --agent-cli) agent_cli=${2:-}; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  resolve_agent_cli "$agent_cli"
+}
+
 cmd_list() {
   require_tmux
   local sess
@@ -363,13 +434,14 @@ cmd_list() {
 }
 
 case "${1:-}" in
-  ensure) shift; cmd_ensure "$@" ;;
-  send)   shift; cmd_send "$@" ;;
-  close)  shift; cmd_close "$@" ;;
-  status) shift; cmd_status "$@" ;;
-  list)   shift; cmd_list "$@" ;;
+  ensure)     shift; cmd_ensure "$@" ;;
+  send)       shift; cmd_send "$@" ;;
+  close)      shift; cmd_close "$@" ;;
+  status)     shift; cmd_status "$@" ;;
+  detect-cli) shift; cmd_detect_cli "$@" ;;
+  list)       shift; cmd_list "$@" ;;
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|close|status|list)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|detect-cli|list)" ;;
 esac

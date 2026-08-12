@@ -33,6 +33,7 @@ All tmux calls go through `~/.claude/skills/opsx-run/opsx-window.sh`. **Never ha
 
 ```
 opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>]
+opsx-window.sh detect-cli [--agent-cli <cmd>]                          # print agent|claude for the host session
 opsx-window.sh send   <change> --prompt-file <f>                 # send only; errors if the window doesn't exist
 opsx-window.sh close  <change> [--force] [--keep-session]        # close one window
 opsx-window.sh close  --all    [--force] [--keep-session]        # close every tagged opsx window
@@ -46,9 +47,11 @@ It prints one line on success: `created @7 2:add-auth agent=agent`, `reused @7 2
 
 1. `--agent-cli <cmd>` on the `/opsx-run` invocation, forwarded to `ensure` (`claude`, `agent`, `cursor` as alias for `agent`, or a path)
 2. `$OPSX_AGENT_CLI` environment variable (same values)
-3. Auto-detect: `$CURSOR_AGENT` set (Cursor CLI session) → `agent`; else `claude` if on PATH; else `agent`
+3. Auto-detect inside `opsx-window.sh`: Cursor env markers (`$CURSOR_AGENT`, `$CURSOR_RIPGREP_PATH`, …) or parent-process walk (Cursor CLI on Linux runs as `MainThread` with `…/agent` in argv) → `agent`; Claude Code markers → `claude`; else first of `claude`/`agent` on PATH
 
-When calling `ensure` from a Cursor CLI session you are already in, auto-detection normally picks `agent` with no flag needed.
+**When calling `ensure`, always pass an explicit CLI if the user named one.** Otherwise run `opsx-window.sh detect-cli` first and forward `--agent-cli "$(opsx-window.sh detect-cli)"` to `ensure` — do not rely on the skill session alone, because an outdated installed script or a stripped environment can otherwise pick `claude` when both CLIs are installed.
+
+After upgrading the repo, re-run `./install.sh` so `~/.claude/skills/opsx-run/opsx-window.sh` picks up detection — an old install hardcodes `claude` and ignores Cursor entirely.
 
 When called from **outside** tmux it also prints `session=created` on that line (if it had to start the session) and a `# attach with: tmux attach -t <session>` hint. Pass both on. `send`, `status` and `list` only ever *look up* the project session; they never create one, and they fail with a clear message if the user is outside tmux and no session exists yet.
 
@@ -65,7 +68,7 @@ Both `openspec` and the window's agent CLI run from the current working director
 
 | Action | This session does | The window gets |
 |---|---|---|
-| `apply` (default) | `openspec status --change <c> --json` to confirm the change is applyable (report `isComplete` / missing artifacts if not), then `ensure [--agent-cli …]` | Apply dispatcher prompt |
+| `apply` (default) | `openspec status --change <c> --json` to confirm the change is applyable (report `isComplete` / missing artifacts if not), then `detect-cli` + `ensure --agent-cli …` | Apply dispatcher prompt |
 | `verify` | `openspec validate <c> --strict --json` **and** `openspec status --change <c> --json` inline; report pass/fail with the actual errors | Nothing on pass. On failure, `send` a fix prompt containing the validation errors verbatim |
 | `archive` | Gate inline: `validate --strict` passes **and** `status.isComplete` is true. If not, refuse and say exactly which check failed | Archive dispatcher prompt |
 | `status` | — | Nothing; run `opsx-window.sh status <c>` and relay the meaningful tail |
