@@ -129,8 +129,19 @@ fi
 if have claude; then
   ok "claude $(claude --version 2>/dev/null | head -1)"
 else
-  warn "claude CLI not found — required, each tmux window runs a claude session"
+  warn "claude CLI not found — optional if you use Cursor CLI instead"
   note "install: https://claude.com/claude-code"
+fi
+
+if have agent; then
+  ok "agent $(agent --version 2>/dev/null | head -1)"
+else
+  warn "agent CLI not found — optional if you use Claude Code instead"
+  note "install: https://cursor.com/docs/cli"
+fi
+
+if ! have claude && ! have agent; then
+  warn "neither claude nor agent is on PATH — required, each tmux window runs one of them"
   MISSING=1
 fi
 

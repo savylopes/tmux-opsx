@@ -8,6 +8,7 @@
 #   --into <branch>    Merge into this branch (default: main, else master)
 #   --branch <name>    The change's branch, if discovery picks wrong
 #   --skip-specs       Pass --skip-specs to `openspec archive` (tooling/doc changes)
+#   --force-tasks      Land even when tasks.md still has unchecked boxes
 #   --no-close         Leave the tmux window open
 #   --keep-branch      Don't delete the change branch
 #   --keep-worktree    Don't remove the change's worktree
@@ -25,6 +26,7 @@ CHANGE=""
 TARGET=""
 BRANCH=""
 SKIP_SPECS=0
+FORCE_TASKS=0
 NO_CLOSE=0
 KEEP_BRANCH=0
 KEEP_WORKTREE=0
@@ -50,6 +52,7 @@ while [ $# -gt 0 ]; do
     --into)          TARGET=${2:?--into needs a branch}; shift 2 ;;
     --branch)        BRANCH=${2:?--branch needs a name}; shift 2 ;;
     --skip-specs)    SKIP_SPECS=1; shift ;;
+    --force-tasks)   FORCE_TASKS=1; shift ;;
     --no-close)      NO_CLOSE=1; shift ;;
     --keep-branch)   KEEP_BRANCH=1; shift ;;
     --keep-worktree) KEEP_WORKTREE=1; shift ;;
@@ -135,9 +138,14 @@ if [ -f "$tasks_file" ]; then
   remaining=${remaining:-0}
   if [ "$remaining" -gt 0 ]; then
     grep -nE '^[[:space:]]*-[[:space:]]*\[[[:space:]]*\]' "$tasks_file" | head -10 | sed 's/^/  /'
-    die "$remaining task(s) still unchecked in $tasks_file — finish them before landing."
+    if [ "$FORCE_TASKS" -eq 1 ]; then
+      warn "$remaining task(s) still unchecked in $tasks_file — continuing (--force-tasks)"
+    else
+      die "$remaining task(s) still unchecked in $tasks_file — finish them before landing (or pass --force-tasks)."
+    fi
+  else
+    ok "all tasks checked"
   fi
-  ok "all tasks checked"
 else
   warn "no $tasks_file — skipping the task check"
 fi

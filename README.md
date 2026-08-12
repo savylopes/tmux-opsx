@@ -1,15 +1,15 @@
 # tmux-opsx
 
-Run [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in Claude Code without blocking your session.
+Run [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in Claude Code or Cursor CLI without blocking your session.
 
-**One change = one tmux window, named after the change.** `/opsx-run add-auth` opens a window called `add-auth` running a Claude session that hands the implementation to the **ops-applier** subagent, which does the work in isolated git worktrees. You keep your prompt. Every later instruction about that change goes back into the same window, so each change keeps one long-lived conversation you can jump into at any time.
+**One change = one tmux window, named after the change.** `/opsx-run add-auth` opens a window called `add-auth` running an agent session (Claude Code or Cursor CLI — the `agent` command on Linux) that hands the implementation to the **ops-applier** subagent, which does the work in isolated git worktrees. You keep your prompt. Every later instruction about that change goes back into the same window, so each change keeps one long-lived conversation you can jump into at any time.
 
 Not in tmux? It starts a session named after the project folder for you.
 
 ```
 ┌ tmux session ─────────────────────────────────────────────┐
-│ 0:claude*  1:add-auth  2:rate-limiting  3:fix-webhooks    │
-│            └─ claude ──> Agent(ops-applier) ──> worktree  │
+│ 0:agent*   1:add-auth  2:rate-limiting  3:fix-webhooks    │
+│            └─ agent/claude ──> Agent(ops-applier) ──> worktree  │
 └───────────────────────────────────────────────────────────┘
 
   /opsx-run add-auth ......... window opens, work starts
@@ -37,7 +37,7 @@ Not in tmux? It starts a session named after the project folder for you.
 - **tmux** — every change runs in a tmux window (you don't have to be inside a session; one is created per project if needed)
 - **git** — the ops-applier agent works in worktrees
 - **Node.js + npm** — to install the OpenSpec CLI
-- **[Claude Code](https://claude.com/claude-code)** — each window runs a `claude` session
+- **Claude Code** (`claude`) **or Cursor CLI** (`agent` on Linux) — each window runs one of these
 - macOS or Linux
 
 ---
@@ -128,12 +128,15 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 |---|---|
 | `/opsx-run <change>` | Same as `apply`. Creates the window — and the session, if you're outside tmux — on first use |
 | `/opsx-run <change> apply` | Checks the change is applyable, then dispatches the apply to ops-applier |
+| `/opsx-run <change> apply --agent-cli agent` | Same, but launches the window with Cursor CLI (`agent` on Linux) |
+| `/opsx-run <change> apply --agent-cli claude` | Same, but launches with Claude Code |
 | `/opsx-run <change> verify` | Runs `openspec validate --strict` + `status` **inline** and reports; only bothers the window if it fails |
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
 | `/opsx-run <change> status` | Snapshot of what that window is doing right now |
 | `/opsx-run <change> "<text>"` | Sends any instruction to that change's window |
 | `/opsx-run <change> land` | Merges the change branch into `main`, archives it, deletes the branch, closes the window |
 | `/opsx-run <change> land --into develop` | Same, into another branch |
+| `/opsx-run <change> land --force-tasks` | Same, but skips the unchecked-tasks gate |
 | `/opsx-run <change> close` | Closes that change's window |
 | `/opsx-run close-all` | Closes every tmux-opsx window in the session (asks first) |
 | `/opsx-run list` | Shows the windows in the current session (or the project's, from outside tmux) |
@@ -159,14 +162,14 @@ Jump to a change's window with `tmux select-window -t <session>:<change>`, or yo
 Everything tmux-related goes through one script, which you can also drive by hand:
 
 ```bash
-~/.claude/skills/opsx-run/opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>]
+~/.claude/skills/opsx-run/opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>]
 ~/.claude/skills/opsx-run/opsx-window.sh send   <change> --prompt-file <f>
 ~/.claude/skills/opsx-run/opsx-window.sh close  <change> [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh close  --all    [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh status <change> [--lines N]
 ~/.claude/skills/opsx-run/opsx-window.sh list
 
-~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--dry-run]
+~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--force-tasks] [--dry-run]
 ```
 
 `opsx-window.sh` prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, or `sent @7 2:add-auth`. Called from outside tmux, `ensure` appends `session=created` when it had to start the session, plus an `# attach with: …` hint.
@@ -179,7 +182,7 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 
 1. **Preconditions.** The skill refuses to guess a change name — if it is missing or ambiguous it lists the active changes and asks.
 2. **Session.** Inside tmux, the window goes in your current session. Outside tmux, it creates (or reuses) a **session named after the project folder** and tells you how to attach.
-3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running `claude --permission-mode bypassPermissions` with a dispatcher prompt. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
+3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running the detected agent CLI (`claude --permission-mode bypassPermissions` or `agent --force` for Cursor) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor` to override, or set `$OPSX_AGENT_CLI`. From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
 4. **Dispatch.** The prompt tells that session to delegate everything to the `ops-applier` subagent via the Agent tool, and *not* to implement anything itself. That line is what keeps the work on the agent instead of the dispatcher.
 5. **Apply.** `ops-applier` splits the change's tasks across a team of workers, each in its own git worktree, then integrates their branches, runs the build, and reports. It works on a branch named **`opsx/<change>`** — a fixed convention, because `land` looks the branch up by it later.
 6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
@@ -207,7 +210,7 @@ Nothing happens unless every gate passes:
 | Clean working tree | Never merge on top of uncommitted work |
 | Branch found, and ahead of the target | Nothing to land otherwise |
 
-Run it with `--dry-run` first to see exactly what it would do. Other flags: `--branch <name>` when discovery guesses wrong, `--skip-specs` for tooling/doc changes, `--no-close`, `--keep-branch`, `--keep-worktree`.
+Run it with `--dry-run` first to see exactly what it would do. Other flags: `--branch <name>` when discovery guesses wrong, `--skip-specs` for tooling/doc changes, `--force-tasks` to land with unchecked boxes still in `tasks.md`, `--no-close`, `--keep-branch`, `--keep-worktree`.
 
 **It never pushes.** The merge, archive and commit stay local, and it prints the `git push origin <branch>` to run when you're ready.
 
@@ -228,7 +231,7 @@ If you were sitting *on* the change branch when you landed it, it stays on the t
 /opsx-run close-all           # close all of them (confirms first)
 ```
 
-Closing kills the `claude` session in that window along with anything it still had in flight; worktrees, commits and files already written stay on disk.
+Closing kills the agent session in that window along with anything it still had in flight; worktrees, commits and files already written stay on disk.
 
 - `--all` only matches windows tmux-opsx created — your own windows in the same session are never touched.
 - It refuses to close the window you are currently *in* unless you pass `--force`, so `close-all` from inside a change window can't pull the rug out from under itself.
@@ -248,7 +251,7 @@ Closing kills the `claude` session in that window along with anything it still h
 
 **`land` says "no branch found"** — the change was never applied, or its branch is named something discovery doesn't reach. `git branch --list "*<change>*"` will show it; pass it with `--branch <name>`. Branches created before the `opsx/<change>` convention are the usual cause.
 
-**`land` says tasks are still unchecked** — that gate reads `- [ ]` boxes in `openspec/changes/<change>/tasks.md` directly, because `openspec status`'s `isComplete` only tells you the artifacts exist and stays `true` with tasks outstanding. Finish them (or tick them) and land again.
+**`land` says tasks are still unchecked** — that gate reads `- [ ]` boxes in `openspec/changes/<change>/tasks.md` directly, because `openspec status`'s `isComplete` only tells you the artifacts exist and stays `true` with tasks outstanding. Finish them (or tick them) and land again, or pass `--force-tasks` if you are deliberately landing with outstanding boxes.
 
 **`land` hit conflicts** — nothing was written: the merge is aborted and you are back on your starting branch with a clean tree. Resolve in the change's window, then land again.
 
@@ -258,7 +261,7 @@ Closing kills the `claude` session in that window along with anything it still h
 
 ## Notes and limits
 
-- Windows run with `--permission-mode bypassPermissions` so they never stall on a prompt while unattended. Everything they do happens in git worktrees, and the agent reports its branch back.
+- Windows launch with permission bypass (`claude --permission-mode bypassPermissions` or `agent --force`) so they never stall on a prompt while unattended. Everything they do happens in git worktrees, and the agent reports its branch back.
 - Landing never pushes, and it is the only command that writes to your git history. Everything else is confined to tmux and the OpenSpec files.
 - The `ops-applier` agent has no `Skill` tool, so it drives the `openspec` CLI directly (`openspec instructions apply --change <c> --json`) instead of calling `/opsx:apply`. That is the same work the command describes. Add `Skill` to its `tools:` list in `agents/opsx-applier.md` if you want it to use the command instead.
 - Back-to-back sends to the same window are spaced slightly, because the Claude TUI can concatenate two prompts into one input box otherwise.

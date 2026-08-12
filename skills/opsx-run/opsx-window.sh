@@ -2,16 +2,23 @@
 # opsx-window.sh — tmux window management for the /opsx-run skill.
 #
 # One OpenSpec change = one tmux window named after the change, in the caller's
-# tmux session, running an interactive `claude` that delegates to the
-# ops-applier subagent. The window is reused for every follow-up instruction.
+# tmux session, running an interactive agent CLI (Claude Code or Cursor CLI)
+# that delegates to the ops-applier subagent. The window is reused for every
+# follow-up instruction.
 #
 # Usage:
-#   opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>]
+#   opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>]
 #   opsx-window.sh send   <change> --prompt-file <f>
 #   opsx-window.sh close  <change> [--force] [--keep-session]
 #   opsx-window.sh close  --all    [--force] [--keep-session]
 #   opsx-window.sh status <change> [--lines N]
 #   opsx-window.sh list
+#
+# Agent CLI selection (ensure only):
+#   --agent-cli <name>   Launch with this command (claude, agent, cursor, or a path)
+#   $OPSX_AGENT_CLI      Same, as a default for every call
+#   Auto-detect           Cursor when $CURSOR_AGENT is set, else claude if on PATH,
+#                         else agent (Linux Cursor CLI), else error
 #
 # Inside tmux the window goes in the caller's session. Outside tmux, `ensure`
 # creates (or reuses) a session named after the project folder and prints an
@@ -88,6 +95,7 @@ find_window() {
 # active change (e.g. after archiving).
 tag_window() {
   tmux set-option -w -t "$1" @opsx_change "$2" >/dev/null 2>&1
+  [ -n "${3:-}" ] && tmux set-option -w -t "$1" @opsx_agent_cli "$3" >/dev/null 2>&1
   tmux set-window-option -t "$1" automatic-rename off >/dev/null 2>&1
   tmux set-window-option -t "$1" allow-rename off >/dev/null 2>&1
 }
@@ -113,25 +121,76 @@ send_prompt() {
   tmux send-keys -t "$win" Enter || die "failed to submit prompt in $win"
 }
 
+# Normalize user-facing CLI names to the binary we exec.
+normalize_agent_cli() {
+  case "$1" in
+    cursor) printf '%s' agent ;;
+    *)      printf '%s' "$1" ;;
+  esac
+}
+
+# Pick which agent CLI launches new windows. Precedence: flag > $OPSX_AGENT_CLI >
+# Cursor session env > claude on PATH > agent on PATH > error.
+resolve_agent_cli() {
+  local explicit=${1:-}
+  local cli=""
+  if [ -n "$explicit" ]; then
+    cli=$(normalize_agent_cli "$explicit")
+  elif [ -n "${OPSX_AGENT_CLI:-}" ]; then
+    cli=$(normalize_agent_cli "$OPSX_AGENT_CLI")
+  elif [ -n "${CURSOR_AGENT:-}" ] || [ "${CURSOR_INVOKED_AS:-}" = agent ]; then
+    cli=agent
+  elif command -v claude >/dev/null 2>&1; then
+    cli=claude
+  elif command -v agent >/dev/null 2>&1; then
+    cli=agent
+  else
+    die "no agent CLI found — install claude (Claude Code) or agent (Cursor CLI), or pass --agent-cli <cmd>."
+  fi
+  command -v "$cli" >/dev/null 2>&1 \
+    || die "agent CLI '$cli' is not on PATH — install it or pass --agent-cli <cmd>."
+  printf '%s' "$cli"
+}
+
+# Shell command that reads the prompt inside the new window's cwd.
+build_launch_cmd() {
+  local prompt_file=$1 cli=$2
+  case "$cli" in
+    claude)
+      printf 'claude --permission-mode bypassPermissions "$(cat %q)"' "$prompt_file"
+      ;;
+    agent)
+      # Linux/macOS Cursor CLI is the `agent` binary; --force skips approval prompts.
+      printf 'agent --force "$(cat %q)"' "$prompt_file"
+      ;;
+    *)
+      # Custom binary/path — pass the prompt the same way.
+      printf '%s "$(cat %q)"' "$cli" "$prompt_file"
+      ;;
+  esac
+}
+
 cmd_ensure() {
-  local change=${1:-} prompt_file="" cwd="$PWD" create_only=0
+  local change=${1:-} prompt_file="" cwd="$PWD" create_only=0 agent_cli=""
   shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt-file) prompt_file=${2:-}; shift 2 ;;
       --cwd)         cwd=${2:-}; shift 2 ;;
+      --agent-cli)   agent_cli=${2:-}; shift 2 ;;
       --create-only) create_only=1; shift ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  [ -n "$change" ] || die "usage: opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>]"
+  [ -n "$change" ] || die "usage: opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>]"
   [ -n "$prompt_file" ] || die "--prompt-file is required"
   [ -f "$prompt_file" ] || die "prompt file not found: $prompt_file"
   [ -d "$cwd" ] || die "cwd not found: $cwd"
 
   require_tmux
-  local sess win launch
-  launch="claude --permission-mode bypassPermissions \"\$(cat $(printf '%q' "$prompt_file"))\""
+  local sess win launch cli
+  cli=$(resolve_agent_cli "$agent_cli")
+  launch=$(build_launch_cmd "$prompt_file" "$cli")
 
   if inside_tmux; then
     sess=$(current_session) || exit 1
@@ -144,8 +203,8 @@ cmd_ensure() {
       # has no stray shell window sitting next to the work.
       win=$(tmux new-session -d -s "$sess" -n "$change" -c "$cwd" -P -F '#{window_id}' \
             "$launch" 2>&1) || die "failed to create session '$sess': $win"
-      tag_window "$win" "$change"
-      printf 'created %s %s:%s session=created\n' "$win" "$sess" "$change"
+      tag_window "$win" "$change" "$cli"
+      printf 'created %s %s:%s agent=%s session=created\n' "$win" "$sess" "$change" "$cli"
       printf '# attach with: tmux attach -t %s\n' "$sess"
       return 0
     fi
@@ -168,11 +227,11 @@ cmd_ensure() {
     || die "failed to create window: $win"
 
   # tag_window also disables tmux's automatic rename, which would otherwise
-  # relabel the window to the running command ("claude") and lose the change
-  # name the whole workflow keys off.
-  tag_window "$win" "$change"
+  # relabel the window to the running command ("claude" / "agent") and lose the
+  # change name the whole workflow keys off.
+  tag_window "$win" "$change" "$cli"
 
-  printf 'created %s %s:%s\n' "$win" "$sess" "$change"
+  printf 'created %s %s:%s agent=%s\n' "$win" "$sess" "$change" "$cli"
 }
 
 cmd_send() {
@@ -255,7 +314,7 @@ cmd_close() {
              "$win" "$name"
       continue
     fi
-    # kill-window ends the claude session in it, along with any work it is
+    # kill-window ends the agent session in it, along with any work it is
     # still doing. Worktrees and commits it already made survive on disk.
     tmux kill-window -t "$win" 2>/dev/null || die "failed to close $win ($name)"
     printf 'closed %s %s:%s\n' "$win" "$sess" "$name"
