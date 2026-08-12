@@ -144,5 +144,5 @@ opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
 
 - New windows launch with permission bypass so they never stall on a prompt while unattended: `claude --permission-mode bypassPermissions` or `agent --force` (Cursor CLI on Linux).
 - Forward `--agent-cli` from the user's `/opsx-run` message to `opsx-window.sh ensure` when they name a CLI explicitly; otherwise let the script auto-detect.
-- `ops-applier` (`~/.claude/agents/opsx-applier.md`) has no `Skill` tool, so it drives the `openspec` CLI directly rather than invoking `/opsx:apply`. The `/opsx:*` commands are installed globally at `~/.claude/commands/opsx/`, so the dispatcher session (which does have `Skill`) can use them; a project copy under `<project>/.claude/commands/opsx/` takes precedence where one exists.
+- `ops-applier` — Claude Code: `~/.claude/agents/opsx-applier.md`; Cursor CLI: `~/.cursor/agents/opsx-applier.md`. It drives the `openspec` CLI directly rather than invoking `/opsx:apply`. The `/opsx:*` commands live under `~/.claude/commands/opsx/` (Claude Code); for Cursor, run `openspec init --tools cursor` in a project for project-local commands.
 - Window names are set with `automatic-rename`/`allow-rename` disabled, so a window keeps its change name for the whole lifecycle and stays findable.

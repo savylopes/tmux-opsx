@@ -23,10 +23,10 @@ Not in tmux? It starts a session named after the project folder for you.
 
 | Piece | Installs to | What it does |
 |---|---|---|
-| `/opsx-run` skill | `~/.claude/skills/opsx-run/` | The lifecycle: apply, verify, archive, land, close — one window per change |
+| `/opsx-run` skill | `~/.claude/skills/opsx-run/` (Claude Code) · `~/.cursor/skills/opsx-run/` (Cursor CLI) | The lifecycle: apply, verify, archive, land, close — one window per change |
 | `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
 | `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — gates, merge, archive, branch/worktree cleanup |
-| `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` | Does the implementation: spawns a team of workers in isolated worktrees, integrates, commits |
+| `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` (Claude Code) · `~/.cursor/agents/opsx-applier.md` (Cursor CLI) | Does the implementation: spawns a team of workers in isolated worktrees, integrates, commits |
 | `/opsx:*` commands | `~/.claude/commands/opsx/` | OpenSpec's own workflow commands, made global |
 | OpenSpec CLI | npm global | `openspec` — the spec/change engine everything is built on |
 
@@ -50,7 +50,7 @@ cd tmux-opsx
 ./install.sh
 ```
 
-The installer checks prerequisites, installs the OpenSpec CLI, generates the global `/opsx:*` commands, and installs the subagent and the skill. It backs up anything it would overwrite and is safe to re-run to upgrade.
+The installer checks prerequisites, installs the OpenSpec CLI, generates the global `/opsx:*` commands (Claude Code), and installs the subagent and skill for **both Claude Code and Cursor CLI** automatically.
 
 ```
 ./install.sh --prefix <dir>     # Claude config dir (default ~/.claude, or $CLAUDE_CONFIG_DIR)
@@ -60,7 +60,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, generates the glo
 ./install.sh --uninstall        # remove everything except the CLI
 ```
 
-**Restart Claude Code afterwards** so it picks up the new skill, agent, and commands.
+**Restart your agent CLI afterwards** (Claude Code or Cursor) so it picks up the new skill, subagent, and commands.
 
 ### Manual install
 
@@ -69,10 +69,16 @@ If you would rather not run the script:
 ```bash
 npm install -g @fission-ai/openspec                      # 1. the CLI
 
-mkdir -p ~/.claude/skills ~/.claude/agents               # 2. skill + subagent
+mkdir -p ~/.claude/skills ~/.claude/agents ~/.cursor/agents ~/.cursor/skills   # 2. skill + subagents
 cp -r skills/opsx-run ~/.claude/skills/
-chmod +x ~/.claude/skills/opsx-run/*.sh
+cp -r skills/opsx-run ~/.cursor/skills/
+chmod +x ~/.claude/skills/opsx-run/*.sh ~/.cursor/skills/opsx-run/*.sh
 cp agents/opsx-applier.md ~/.claude/agents/
+# Cursor CLI subagent (name + description frontmatter only):
+awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' agents/opsx-applier.md \
+  | { printf '%s\n' '---' 'name: ops-applier' \
+      'description: Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree' \
+      '---'; cat; } > ~/.cursor/agents/opsx-applier.md
 
 tmp=$(mktemp -d)                                         # 3. global /opsx:* commands
 (cd "$tmp" && openspec init --tools claude .)

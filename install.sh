@@ -5,7 +5,9 @@
 #   1. the OpenSpec CLI            (npm -g @fission-ai/openspec)
 #   2. the /opsx:* slash commands  -> ~/.claude/commands/opsx/
 #   3. the ops-applier subagent    -> ~/.claude/agents/opsx-applier.md
+#                                   -> ~/.cursor/agents/opsx-applier.md
 #   4. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
+#                                   -> ~/.cursor/skills/opsx-run/
 #      (opsx-window.sh + opsx-land.sh)
 #
 # Usage: ./install.sh [options]
@@ -159,11 +161,42 @@ install_file() {
   cp "$src" "$dest" || die "cannot write $dest"
 }
 
+CURSOR_AGENTS_DIR=$HOME/.cursor/agents
+CURSOR_SKILLS_DIR=$HOME/.cursor/skills/opsx-run
+
+# Cursor subagents use a simpler frontmatter (name + description only). Reuse the
+# body from agents/opsx-applier.md and strip Claude-specific YAML keys.
+install_cursor_agent() {
+  local src=$1 dest=$2 tmp desc
+  desc=$(awk '
+    /^---$/ { n++; next }
+    n == 1 && /^description:/ {
+      sub(/^description:[[:space:]]*/, "")
+      gsub(/^"/, ""); gsub(/"$/, "")
+      print
+      exit
+    }
+  ' "$src")
+  [ -n "$desc" ] || desc="Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree"
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  {
+    printf '%s\n' '---'
+    printf 'name: ops-applier\n'
+    printf 'description: %s\n' "$desc"
+    printf '%s\n' '---'
+    awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
+  } > "$tmp"
+  install_file "$tmp" "$dest"
+  rm -f "$tmp"
+}
+
 # ---------- uninstall ----------
 if [ "$UNINSTALL" -eq 1 ]; then
   step "Uninstalling tmux-opsx from $PREFIX"
-  rm -rf "$PREFIX/skills/opsx-run" && ok "removed skills/opsx-run"
-  rm -f  "$PREFIX/agents/opsx-applier.md" && ok "removed agents/opsx-applier.md"
+  rm -rf "$PREFIX/skills/opsx-run" && ok "removed skills/opsx-run (Claude Code)"
+  rm -rf "$CURSOR_SKILLS_DIR" && ok "removed ~/.cursor/skills/opsx-run (Cursor CLI)"
+  rm -f  "$PREFIX/agents/opsx-applier.md" && ok "removed agents/opsx-applier.md (Claude Code)"
+  rm -f  "$CURSOR_AGENTS_DIR/opsx-applier.md" && ok "removed ~/.cursor/agents/opsx-applier.md (Cursor)"
   rm -rf "$PREFIX/commands/opsx" && ok "removed commands/opsx"
   info ""
   info "The OpenSpec CLI was left installed. Remove it with:"
@@ -284,19 +317,27 @@ info ""
 step "Installing the ops-applier subagent"
 [ -f "$SRC/agents/opsx-applier.md" ] || die "missing $SRC/agents/opsx-applier.md — run this script from the repo checkout"
 install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
-ok "ops-applier -> $PREFIX/agents/opsx-applier.md"
+ok "ops-applier -> $PREFIX/agents/opsx-applier.md (Claude Code)"
+install_cursor_agent "$SRC/agents/opsx-applier.md" "$CURSOR_AGENTS_DIR/opsx-applier.md"
+ok "ops-applier -> $CURSOR_AGENTS_DIR/opsx-applier.md (Cursor CLI)"
 note "spawns a team of workers in isolated git worktrees to apply changes"
 info ""
 
 # ---------- 5. /opsx-run skill ----------
 step "Installing the /opsx-run skill"
 [ -f "$SRC/skills/opsx-run/SKILL.md" ] || die "missing $SRC/skills/opsx-run/SKILL.md — run this script from the repo checkout"
-install_file "$SRC/skills/opsx-run/SKILL.md"       "$PREFIX/skills/opsx-run/SKILL.md"
-install_file "$SRC/skills/opsx-run/opsx-window.sh" "$PREFIX/skills/opsx-run/opsx-window.sh"
-install_file "$SRC/skills/opsx-run/opsx-land.sh"   "$PREFIX/skills/opsx-run/opsx-land.sh"
+install_file "$SRC/skills/opsx-run/SKILL.md"         "$PREFIX/skills/opsx-run/SKILL.md"
+install_file "$SRC/skills/opsx-run/opsx-window.sh"   "$PREFIX/skills/opsx-run/opsx-window.sh"
+install_file "$SRC/skills/opsx-run/opsx-land.sh"     "$PREFIX/skills/opsx-run/opsx-land.sh"
 chmod +x "$PREFIX/skills/opsx-run/opsx-window.sh" || die "cannot chmod +x opsx-window.sh"
 chmod +x "$PREFIX/skills/opsx-run/opsx-land.sh"   || die "cannot chmod +x opsx-land.sh"
-ok "/opsx-run -> $PREFIX/skills/opsx-run/"
+ok "/opsx-run -> $PREFIX/skills/opsx-run/ (Claude Code)"
+install_file "$SRC/skills/opsx-run/SKILL.md"         "$CURSOR_SKILLS_DIR/SKILL.md"
+install_file "$SRC/skills/opsx-run/opsx-window.sh"   "$CURSOR_SKILLS_DIR/opsx-window.sh"
+install_file "$SRC/skills/opsx-run/opsx-land.sh"     "$CURSOR_SKILLS_DIR/opsx-land.sh"
+chmod +x "$CURSOR_SKILLS_DIR/opsx-window.sh" || die "cannot chmod +x opsx-window.sh"
+chmod +x "$CURSOR_SKILLS_DIR/opsx-land.sh"   || die "cannot chmod +x opsx-land.sh"
+ok "/opsx-run -> $CURSOR_SKILLS_DIR/ (Cursor CLI)"
 info ""
 
 # ---------- verify ----------
@@ -305,11 +346,16 @@ FAIL=0
 for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$PREFIX/skills/opsx-run/opsx-window.sh" \
          "$PREFIX/skills/opsx-run/opsx-land.sh" \
-         "$PREFIX/agents/opsx-applier.md"; do
+         "$CURSOR_SKILLS_DIR/SKILL.md" \
+         "$CURSOR_SKILLS_DIR/opsx-window.sh" \
+         "$CURSOR_SKILLS_DIR/opsx-land.sh" \
+         "$PREFIX/agents/opsx-applier.md" \
+         "$CURSOR_AGENTS_DIR/opsx-applier.md"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
 for sh in opsx-window.sh opsx-land.sh; do
-  [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable"; FAIL=1; }
+  [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
+  [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
   if bash -n "$PREFIX/skills/opsx-run/$sh" 2>/dev/null; then
     ok "$sh parses"
   else
@@ -322,8 +368,9 @@ info ""
 info "${G}${B}Done.${N}"
 info ""
 info "${B}Next steps${N}"
-info "  1. In a project:   ${B}openspec init --tools claude${N}"
-info "  2. Restart Claude Code so it picks up the new skill, agent and commands"
+info "  1. In a project:   ${B}openspec init --tools claude${N}  (Claude Code)"
+info "                     ${B}openspec init --tools cursor${N}  (Cursor CLI / IDE)"
+info "  2. Restart your agent CLI so it picks up the new skill and subagent"
 info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
 info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
 info ""
