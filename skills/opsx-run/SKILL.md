@@ -17,6 +17,8 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> archive
 /opsx-run <change> status               # snapshot of what the window is doing right now
 /opsx-run <change> "<free-form text>"   # send any instruction to that change's window
+/opsx-run <change> close                # close that change's window
+/opsx-run close-all                     # close every opsx window in the session
 /opsx-run list                          # show the windows in this session
 ```
 
@@ -27,6 +29,8 @@ All tmux calls go through `~/.claude/skills/opsx-run/opsx-window.sh`. **Never ha
 ```
 opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>]   # create window (launching claude with the prompt), or send prompt to the existing one
 opsx-window.sh send   <change> --prompt-file <f>                 # send only; errors if the window doesn't exist
+opsx-window.sh close  <change> [--force] [--keep-session]        # close one window
+opsx-window.sh close  --all    [--force] [--keep-session]        # close every tagged opsx window
 opsx-window.sh status <change> [--lines N]                       # capture-pane snapshot (default 60 lines)
 opsx-window.sh list                                              # windows in the current session
 ```
@@ -53,6 +57,8 @@ Both `openspec` and the window's `claude` run from the current working directory
 | `archive` | Gate inline: `validate --strict` passes **and** `status.isComplete` is true. If not, refuse and say exactly which check failed | Archive dispatcher prompt |
 | `status` | — | Nothing; run `opsx-window.sh status <c>` and relay the meaningful tail |
 | free text | — | `send` the user's text verbatim (window must already exist) |
+| `close` | — | Nothing; `opsx-window.sh close <c>` kills that window |
+| `close-all` | Confirm with **AskUserQuestion** first — this kills several live sessions at once | Nothing; `opsx-window.sh close --all` |
 
 `verify` and `archive` deliberately run their read-only `openspec` checks in **this** session: they are fast, and a failed gate should be reported to the user immediately rather than discovered inside a window they are not watching.
 
@@ -91,6 +97,15 @@ After every invocation, tell the user:
 - how to jump to it: `tmux select-window -t <session>:<change>`.
 
 Do not wait on or poll the window — it runs its own conversation. Use `/opsx-run <change> status` to check on it later.
+
+## Closing windows
+
+`close` kills the window and the `claude` session running in it, ending any work that session still had in flight. Worktrees, commits and files already written survive on disk. Say this plainly before a `close-all`, and confirm it with **AskUserQuestion**; a single named `close` is unambiguous enough to just do.
+
+- `--all` only touches windows this script created — they carry an `@opsx_change` tmux option. The user's own windows in the same session are never closed. Windows created before tagging existed aren't matched either; close those by name.
+- The script refuses to close the window the caller is *in* unless `--force` is passed, so a `close-all` from inside a change window can't kill the caller mid-command. Relay the `# skipped …` line when it appears.
+- Closing the last window in a session destroys the session — the script says so. Pass `--keep-session` to park a plain shell window and keep it alive.
+- If the user asks to close a change that has no window, say so; it is not an error worth escalating.
 
 ## Notes
 

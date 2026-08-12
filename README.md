@@ -20,7 +20,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | Piece | Installs to | What it does |
 |---|---|---|
 | `/opsx-run` skill | `~/.claude/skills/opsx-run/` | Creates/reuses the per-change tmux window; runs the validate/status gates |
-| `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — window lookup, literal-text sends, rename suppression |
+| `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
 | `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` | Does the implementation: spawns a team of workers in isolated worktrees, integrates, commits |
 | `/opsx:*` commands | `~/.claude/commands/opsx/` | OpenSpec's own workflow commands, made global |
 | OpenSpec CLI | npm global | `openspec` — the spec/change engine everything is built on |
@@ -127,6 +127,8 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
 | `/opsx-run <change> status` | Snapshot of what that window is doing right now |
 | `/opsx-run <change> "<text>"` | Sends any instruction to that change's window |
+| `/opsx-run <change> close` | Closes that change's window |
+| `/opsx-run close-all` | Closes every tmux-opsx window in the session (asks first) |
 | `/opsx-run list` | Shows the windows in the current session (or the project's, from outside tmux) |
 
 Jump to a change's window with `tmux select-window -t <session>:<change>`, or your usual prefix + window number. If the session was created for you, `tmux attach -t <project-folder>` gets you in.
@@ -140,6 +142,8 @@ Everything tmux-related goes through one script, which you can also drive by han
 ```bash
 ~/.claude/skills/opsx-run/opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>]
 ~/.claude/skills/opsx-run/opsx-window.sh send   <change> --prompt-file <f>
+~/.claude/skills/opsx-run/opsx-window.sh close  <change> [--force] [--keep-session]
+~/.claude/skills/opsx-run/opsx-window.sh close  --all    [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh status <change> [--lines N]
 ~/.claude/skills/opsx-run/opsx-window.sh list
 ```
@@ -159,7 +163,20 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 5. **Apply.** `ops-applier` splits the change's tasks across a team of workers, each in its own git worktree, then integrates their branches, runs the build, and reports.
 6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
 
-Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send.
+Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send. Each one is also stamped with an `@opsx_change` tmux option, which is how `close --all` finds exactly the windows tmux-opsx created.
+
+### Closing windows
+
+```bash
+/opsx-run add-auth close      # close one change's window
+/opsx-run close-all           # close all of them (confirms first)
+```
+
+Closing kills the `claude` session in that window along with anything it still had in flight; worktrees, commits and files already written stay on disk.
+
+- `--all` only matches windows tmux-opsx created — your own windows in the same session are never touched.
+- It refuses to close the window you are currently *in* unless you pass `--force`, so `close-all` from inside a change window can't pull the rug out from under itself.
+- Closing the last window of a session ends the session (tmux behaviour) and the script tells you. `--keep-session` parks a plain shell window instead so the session survives.
 
 ---
 

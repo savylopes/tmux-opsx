@@ -8,6 +8,8 @@
 # Usage:
 #   opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>]
 #   opsx-window.sh send   <change> --prompt-file <f>
+#   opsx-window.sh close  <change> [--force] [--keep-session]
+#   opsx-window.sh close  --all    [--force] [--keep-session]
 #   opsx-window.sh status <change> [--lines N]
 #   opsx-window.sh list
 #
@@ -81,6 +83,21 @@ find_window() {
     | awk -v n="$2" '{ id=$1; $1=""; sub(/^ /,""); if ($0==n) { print id; exit } }'
 }
 
+# Stamp a window as ours. Bulk close then targets exactly the windows this
+# script created, instead of guessing from names that may no longer match an
+# active change (e.g. after archiving).
+tag_window() {
+  tmux set-option -w -t "$1" @opsx_change "$2" >/dev/null 2>&1
+  tmux set-window-option -t "$1" automatic-rename off >/dev/null 2>&1
+  tmux set-window-option -t "$1" allow-rename off >/dev/null 2>&1
+}
+
+# Window id of the pane we are running in, empty when outside tmux.
+current_window() {
+  [ -n "${TMUX_PANE:-}" ] || return 0
+  tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null
+}
+
 send_prompt() {
   local win=$1 file=$2 text
   # Newlines would submit the prompt early in the TUI, so collapse them.
@@ -127,8 +144,7 @@ cmd_ensure() {
       # has no stray shell window sitting next to the work.
       win=$(tmux new-session -d -s "$sess" -n "$change" -c "$cwd" -P -F '#{window_id}' \
             "$launch" 2>&1) || die "failed to create session '$sess': $win"
-      tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1
-      tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1
+      tag_window "$win" "$change"
       printf 'created %s %s:%s session=created\n' "$win" "$sess" "$change"
       printf '# attach with: tmux attach -t %s\n' "$sess"
       return 0
@@ -151,10 +167,10 @@ cmd_ensure() {
         "$launch" 2>&1) \
     || die "failed to create window: $win"
 
-  # Without these tmux renames the window to the running command ("claude"),
-  # losing the change name the whole workflow keys off.
-  tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1
-  tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1
+  # tag_window also disables tmux's automatic rename, which would otherwise
+  # relabel the window to the running command ("claude") and lose the change
+  # name the whole workflow keys off.
+  tag_window "$win" "$change"
 
   printf 'created %s %s:%s\n' "$win" "$sess" "$change"
 }
@@ -180,6 +196,80 @@ cmd_send() {
 
   send_prompt "$win" "$prompt_file"
   printf 'sent %s %s:%s\n' "$win" "$sess" "$change"
+}
+
+cmd_close() {
+  local change="" all=0 force=0 keep_session=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --all)          all=1; shift ;;
+      --force|-f)     force=1; shift ;;
+      --keep-session) keep_session=1; shift ;;
+      -*) die "unknown option: $1" ;;
+      *)  [ -z "$change" ] || die "close takes one change name (got '$change' and '$1')"
+          change=$1; shift ;;
+    esac
+  done
+  if [ "$all" -eq 1 ]; then
+    [ -z "$change" ] || die "pass either a change name or --all, not both"
+  else
+    [ -n "$change" ] || die "usage: opsx-window.sh close <change> [--force] | close --all [--force]"
+  fi
+
+  require_tmux
+  local sess here targets closed=0 skipped_self=0 total
+  sess=$(lookup_session) || exit 1
+  here=$(current_window)
+
+  if [ "$all" -eq 1 ]; then
+    # Only windows this script stamped — never the user's own windows that
+    # happen to sit in the same session.
+    targets=$(tmux list-windows -t "$sess" -F '#{window_id} #{@opsx_change}' 2>/dev/null \
+              | awk 'NF>1 && $2!="" { print $1 }')
+    if [ -z "$targets" ]; then
+      printf 'no opsx windows in session %s\n' "$sess"
+      printf '# windows created before tagging was added are not matched by --all; close them by name\n'
+      return 0
+    fi
+  else
+    targets=$(find_window "$sess" "$change")
+    [ -n "$targets" ] || die "no window named '$change' in session '$sess'."
+  fi
+
+  # tmux destroys a session once its last window goes. When asked to keep it,
+  # park a plain shell in it first so the session survives the close.
+  if [ "$keep_session" -eq 1 ]; then
+    total=$(tmux list-windows -t "$sess" -F '#{window_id}' 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$total" = "$(printf '%s\n' "$targets" | wc -l | tr -d ' ')" ]; then
+      tmux new-window -d -t "$sess:" -c "$PWD" >/dev/null 2>&1 \
+        && printf '# parked a shell window to keep session %s alive\n' "$sess"
+    fi
+  fi
+
+  local win name
+  for win in $targets; do
+    name=$(tmux display-message -p -t "$win" '#{window_name}' 2>/dev/null)
+    if [ -n "$here" ] && [ "$win" = "$here" ] && [ "$force" -eq 0 ]; then
+      skipped_self=1
+      printf '# skipped %s (%s) — that is the window you are in; pass --force to close it anyway\n' \
+             "$win" "$name"
+      continue
+    fi
+    # kill-window ends the claude session in it, along with any work it is
+    # still doing. Worktrees and commits it already made survive on disk.
+    tmux kill-window -t "$win" 2>/dev/null || die "failed to close $win ($name)"
+    printf 'closed %s %s:%s\n' "$win" "$sess" "$name"
+    closed=$((closed + 1))
+  done
+
+  [ "$all" -eq 1 ] && printf '# closed %s window(s)\n' "$closed"
+
+  # Report a session that went away, rather than letting the next command fail
+  # with a confusing "no session named ..." error.
+  session_exists "$sess" || printf '# session %s had no windows left and is gone\n' "$sess"
+
+  [ "$closed" -gt 0 ] || [ "$skipped_self" -eq 1 ] || die "nothing was closed."
+  return 0
 }
 
 cmd_status() {
@@ -208,17 +298,19 @@ cmd_list() {
   local sess
   sess=$(lookup_session) || exit 1
   printf '# session %s\n' "$sess"
+  # The opsx column marks windows this script created (see tag_window).
   tmux list-windows -t "$sess" \
-    -F '#{window_id}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
+    -F '#{window_id}	#{?@opsx_change,opsx,-}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
 }
 
 case "${1:-}" in
   ensure) shift; cmd_ensure "$@" ;;
   send)   shift; cmd_send "$@" ;;
+  close)  shift; cmd_close "$@" ;;
   status) shift; cmd_status "$@" ;;
   list)   shift; cmd_list "$@" ;;
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|status|list)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|list)" ;;
 esac
