@@ -11,6 +11,10 @@ Not in tmux? It starts a session named after the project folder for you.
 │ 0:claude*  1:add-auth  2:rate-limiting  3:fix-webhooks    │
 │            └─ claude ──> Agent(ops-applier) ──> worktree  │
 └───────────────────────────────────────────────────────────┘
+
+  /opsx-run add-auth ......... window opens, work starts
+  /opsx-run add-auth verify .. gates run in your session
+  /opsx-run add-auth land .... merge + archive + cleanup, window closes
 ```
 
 ---
@@ -19,7 +23,7 @@ Not in tmux? It starts a session named after the project folder for you.
 
 | Piece | Installs to | What it does |
 |---|---|---|
-| `/opsx-run` skill | `~/.claude/skills/opsx-run/` | Creates/reuses the per-change tmux window; runs the validate/status gates |
+| `/opsx-run` skill | `~/.claude/skills/opsx-run/` | The lifecycle: apply, verify, archive, land, close — one window per change |
 | `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
 | `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — gates, merge, archive, branch/worktree cleanup |
 | `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` | Does the implementation: spawns a team of workers in isolated worktrees, integrates, commits |
@@ -67,7 +71,7 @@ npm install -g @fission-ai/openspec                      # 1. the CLI
 
 mkdir -p ~/.claude/skills ~/.claude/agents               # 2. skill + subagent
 cp -r skills/opsx-run ~/.claude/skills/
-chmod +x ~/.claude/skills/opsx-run/opsx-window.sh
+chmod +x ~/.claude/skills/opsx-run/*.sh
 cp agents/opsx-applier.md ~/.claude/agents/
 
 tmp=$(mktemp -d)                                         # 3. global /opsx:* commands
@@ -134,6 +138,18 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run close-all` | Closes every tmux-opsx window in the session (asks first) |
 | `/opsx-run list` | Shows the windows in the current session (or the project's, from outside tmux) |
 
+### The whole arc
+
+```bash
+/opsx:propose "add rate limiting to the public API"   # write proposal/design/specs/tasks
+/opsx-run add-rate-limiting                           # window opens, ops-applier implements on opsx/add-rate-limiting
+/opsx-run add-rate-limiting status                    # peek without leaving your session
+/opsx-run add-rate-limiting "also cover the admin routes"   # steer it, same window
+/opsx-run add-rate-limiting verify                    # validate --strict + status, inline
+/opsx-run add-rate-limiting land                      # merge, archive, delete branch, close window
+git push origin main                                  # you push, never the tool
+```
+
 Jump to a change's window with `tmux select-window -t <session>:<change>`, or your usual prefix + window number. If the session was created for you, `tmux attach -t <project-folder>` gets you in.
 
 `verify` and `archive` run their read-only `openspec` checks in your **calling** session on purpose: they are fast, and a failed gate should reach you immediately rather than sit unread in a window you are not watching.
@@ -153,7 +169,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--dry-run]
 ```
 
-It prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, or `sent @7 2:add-auth`. Called from outside tmux, `ensure` appends `session=created` when it had to start the session, plus an `# attach with: …` hint.
+`opsx-window.sh` prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, or `sent @7 2:add-auth`. Called from outside tmux, `ensure` appends `session=created` when it had to start the session, plus an `# attach with: …` hint.
 
 Session names come from the project folder with `.`, `:` and whitespace folded to `-`, since tmux treats `.` and `:` as target separators — `~/code/my.app` becomes the session `my-app`.
 
@@ -165,7 +181,7 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 2. **Session.** Inside tmux, the window goes in your current session. Outside tmux, it creates (or reuses) a **session named after the project folder** and tells you how to attach.
 3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running `claude --permission-mode bypassPermissions` with a dispatcher prompt. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
 4. **Dispatch.** The prompt tells that session to delegate everything to the `ops-applier` subagent via the Agent tool, and *not* to implement anything itself. That line is what keeps the work on the agent instead of the dispatcher.
-5. **Apply.** `ops-applier` splits the change's tasks across a team of workers, each in its own git worktree, then integrates their branches, runs the build, and reports.
+5. **Apply.** `ops-applier` splits the change's tasks across a team of workers, each in its own git worktree, then integrates their branches, runs the build, and reports. It works on a branch named **`opsx/<change>`** — a fixed convention, because `land` looks the branch up by it later.
 6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
 
 Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send. Each one is also stamped with an `@opsx_change` tmux option, which is how `close --all` finds exactly the windows tmux-opsx created.
@@ -229,6 +245,12 @@ Closing kills the `claude` session in that window along with anything it still h
 **`/opsx:*` commands don't appear** — restart Claude Code. Note a project's own `.claude/commands/opsx/` takes precedence over the global copies, which is usually what you want.
 
 **Window ran but nothing happened** — attach to it and look. The dispatcher session is a normal Claude session; it may be asking a question. `/opsx-run <change> status` prints its recent output without leaving your session.
+
+**`land` says "no branch found"** — the change was never applied, or its branch is named something discovery doesn't reach. `git branch --list "*<change>*"` will show it; pass it with `--branch <name>`. Branches created before the `opsx/<change>` convention are the usual cause.
+
+**`land` says tasks are still unchecked** — that gate reads `- [ ]` boxes in `openspec/changes/<change>/tasks.md` directly, because `openspec status`'s `isComplete` only tells you the artifacts exist and stays `true` with tasks outstanding. Finish them (or tick them) and land again.
+
+**`land` hit conflicts** — nothing was written: the merge is aborted and you are back on your starting branch with a clean tree. Resolve in the change's window, then land again.
 
 **npm permission errors on install** — either `sudo npm install -g @fission-ai/openspec`, or point npm at a writable prefix with `npm config set prefix ~/.local`.
 
