@@ -81,28 +81,35 @@ Both `openspec` and the window's agent CLI run from the current working director
 
 ## Prompt templates
 
-Every window prompt is a **dispatcher** prompt: the window's agent session must hand the work to the `ops-applier` subagent, not do it itself.
+Every window prompt is a **dispatcher**: it must hand the work to the **ops-applier** subagent (isolated context), not implement in the window session itself.
+
+| Host | How to run ops-applier |
+|---|---|
+| **Claude Code** | Agent tool with `subagent_type: "ops-applier"` (`~/.claude/agents/opsx-applier.md`) |
+| **Cursor CLI** | Task tool with `subagent_type: "ops-applier"`. Cursor CLI only loads **project** agents from `<cwd>/.cursor/agents/` (not `~/.cursor/agents/`). `opsx-window.sh ensure` symlinks the installed agent into the project before launching the window so Task can see `ops-applier`. |
 
 **apply**
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
-> Delegate ALL implementation to the ops-applier subagent: call the Agent tool with `subagent_type: "ops-applier"` and `run_in_background: false`. Do NOT read or edit implementation files yourself.
-> Task for the subagent: apply OpenSpec change `<change>` — read `openspec/changes/<change>/` (proposal.md, design.md, tasks.md), execute the remaining unchecked tasks using `openspec instructions apply --change "<change>" --json`, tick the tasks.md checkboxes as it goes, and report modified files, branch name, and pass/fail.
+> Delegate ALL implementation to the ops-applier **subagent** — do not implement in this window yourself.
+> Claude Code: Agent tool, `subagent_type: "ops-applier"`, `run_in_background: false`.
+> Cursor CLI: Task tool, `subagent_type: "ops-applier"`, `run_in_background: false`. Confirm `.cursor/agents/opsx-applier.md` exists in `<cwd>` first (ensure installs it). Do not fall back to `generalPurpose` unless Task rejects `ops-applier` after that file is present — if rejected, say so and stop.
+> Task for the subagent: apply OpenSpec change `<change>` — read `openspec/changes/<change>/` (proposal.md, design.md, tasks.md), execute remaining unchecked tasks using `openspec instructions apply --change "<change>" --json`, tick tasks.md checkboxes as you go, report modified files, branch name (`opsx/<change>`), and pass/fail.
 > When it returns, summarize its report and stop.
 
 **archive**
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
-> Delegate to the ops-applier subagent (Agent tool, `subagent_type: "ops-applier"`, `run_in_background: false`). Do NOT do the work yourself.
+> Delegate to the ops-applier subagent. Claude Code: Agent `subagent_type: "ops-applier"`. Cursor CLI: Task `subagent_type: "ops-applier"` (project `.cursor/agents/opsx-applier.md` must exist). `run_in_background: false`. Do NOT do the work yourself.
 > Task for the subagent: archive OpenSpec change `<change>`. Confirm every task in `openspec/changes/<change>/tasks.md` is checked and `openspec validate "<change>" --strict` passes, then run `openspec archive "<change>" -y` and report what moved and any spec updates.
 > When it returns, summarize its report and stop.
 
 **verify-fix** (only sent when the inline gate fails)
 
 > Verification of OpenSpec change `<change>` failed. `openspec validate "<change>" --strict` reported: `<errors verbatim>`.
-> Delegate the fix to the ops-applier subagent (Agent tool, `subagent_type: "ops-applier"`, `run_in_background: false`). Do NOT fix it yourself. After it returns, re-run `openspec validate "<change>" --strict` and `openspec status --change "<change>" --json` and report the result.
+> Delegate the fix to the ops-applier subagent (Claude: Agent / Cursor: Task, `subagent_type: "ops-applier"`, `run_in_background: false`). Do NOT fix it yourself. After it returns, re-run `openspec validate "<change>" --strict` and `openspec status --change "<change>" --json` and report the result.
 
-The **"Do NOT do the work yourself"** line is load-bearing — it is what makes the window actually use `ops-applier` instead of the outer session quietly doing the implementation.
+The **"Do NOT do the work yourself"** line is load-bearing — the window must use the ops-applier subagent so implementation stays in an isolated context.
 
 ## Reporting back
 
@@ -144,5 +151,5 @@ opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
 
 - New windows launch with permission bypass so they never stall on a prompt while unattended: `claude --permission-mode bypassPermissions` or `agent --force` (Cursor CLI on Linux).
 - Forward `--agent-cli` from the user's `/opsx-run` message to `opsx-window.sh ensure` when they name a CLI explicitly; otherwise let the script auto-detect.
-- `ops-applier` — Claude Code: `~/.claude/agents/opsx-applier.md`; Cursor CLI: `~/.cursor/agents/opsx-applier.md`. It drives the `openspec` CLI directly rather than invoking `/opsx:apply`. The `/opsx:*` commands live under `~/.claude/commands/opsx/` (Claude Code); for Cursor, run `openspec init --tools cursor` in a project for project-local commands.
+- `ops-applier` — Claude Code: `~/.claude/agents/opsx-applier.md`. Cursor CLI: installed to `~/.cursor/agents/opsx-applier.md`, and **`ensure` also links it into `<project>/.cursor/agents/`** because the Cursor CLI Task enum only loads project-level agents (not user-level). Dispatcher windows must use Task/Agent with `subagent_type: "ops-applier"`. It drives the `openspec` CLI directly. For Cursor OpenSpec slash commands, run `openspec init --tools cursor` in a project.
 - Window names are set with `automatic-rename`/`allow-rename` disabled, so a window keeps its change name for the whole lifecycle and stays findable.

@@ -9,7 +9,7 @@ Not in tmux? It starts a session named after the project folder for you.
 ```
 ┌ tmux session ─────────────────────────────────────────────┐
 │ 0:agent*   1:add-auth  2:rate-limiting  3:fix-webhooks    │
-│            └─ agent/claude ──> Agent(ops-applier) ──> worktree  │
+│            └─ agent/claude ──> Task/Agent(ops-applier) ──> worktree  │
 └───────────────────────────────────────────────────────────┘
 
   /opsx-run add-auth ......... window opens, work starts
@@ -189,8 +189,8 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 1. **Preconditions.** The skill refuses to guess a change name — if it is missing or ambiguous it lists the active changes and asks.
 2. **Session.** Inside tmux, the window goes in your current session. Outside tmux, it creates (or reuses) a **session named after the project folder** and tells you how to attach.
 3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running the detected agent CLI (`claude --permission-mode bypassPermissions` or `agent --force` for Cursor) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor` to override, or set `$OPSX_AGENT_CLI`. From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
-4. **Dispatch.** The prompt tells that session to delegate everything to the `ops-applier` subagent via the Agent tool, and *not* to implement anything itself. That line is what keeps the work on the agent instead of the dispatcher.
-5. **Apply.** `ops-applier` implements the change in a single git worktree on branch **`opsx/<change>`**, runs the build, commits, and reports. Parallel workers are opt-in only when you ask for them explicitly.
+4. **Dispatch.** The window delegates to the **ops-applier** subagent (Claude Agent tool / Cursor Task tool). Cursor CLI only loads project agents from `.cursor/agents/` — `ensure` symlinks `~/.cursor/agents/opsx-applier.md` into the project before launch so Task accepts `subagent_type: "ops-applier"`.
+5. **Apply.** The subagent implements in a single git worktree on branch **`opsx/<change>`**, then build/commit/report. Parallel workers are opt-in only when you ask for them explicitly.
 6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
 
 Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send. Each one is also stamped with an `@opsx_change` tmux option, which is how `close --all` finds exactly the windows tmux-opsx created.

@@ -20,6 +20,8 @@
 #   $OPSX_AGENT_CLI      Same, as a default for every call
 #   Auto-detect           Cursor when $CURSOR_AGENT is set, else claude if on PATH,
 #                         else agent (Linux Cursor CLI), else error
+#   When launching `agent`, ensure also links ops-applier into
+#   <cwd>/.cursor/agents/ so Cursor Task can use subagent_type ops-applier.
 #
 # Inside tmux the window goes in the caller's session. Outside tmux, `ensure`
 # creates (or reuses) a session named after the project folder and prints an
@@ -230,6 +232,47 @@ build_launch_cmd() {
   esac
 }
 
+# Cursor CLI only loads *project* subagents from <cwd>/.cursor/agents/ — not
+# ~/.cursor/agents/. Symlink (or copy) ops-applier into the project so Task can
+# take subagent_type: "ops-applier" when the window's agent starts.
+ensure_cursor_project_agent() {
+  local cwd=$1
+  local dir="$cwd/.cursor/agents"
+  local dest="$dir/opsx-applier.md"
+  local src=""
+
+  if [ -f "$HOME/.cursor/agents/opsx-applier.md" ]; then
+    src="$HOME/.cursor/agents/opsx-applier.md"
+  elif [ -f "$HOME/.claude/agents/opsx-applier.md" ]; then
+    # Last resort: install a Cursor-shaped copy from the Claude agent body.
+    mkdir -p "$HOME/.cursor/agents"
+    {
+      printf '%s\n' '---'
+      printf 'name: ops-applier\n'
+      printf 'description: Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree\n'
+      printf '%s\n' '---'
+      awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$HOME/.claude/agents/opsx-applier.md"
+    } > "$HOME/.cursor/agents/opsx-applier.md"
+    src="$HOME/.cursor/agents/opsx-applier.md"
+  else
+    printf '# warning: no ops-applier agent found under ~/.cursor/agents or ~/.claude/agents — run ./install.sh\n' >&2
+    return 1
+  fi
+
+  mkdir -p "$dir" || die "cannot create $dir"
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    # Project owns a real file — leave it alone (may be a committed override).
+    printf '# cursor project agent: %s (existing file)\n' "$dest"
+    return 0
+  fi
+  if ln -sfn "$src" "$dest" 2>/dev/null; then
+    printf '# cursor project agent: %s -> %s\n' "$dest" "$src"
+  else
+    cp "$src" "$dest" || die "cannot install $dest"
+    printf '# cursor project agent: %s (copied)\n' "$dest"
+  fi
+}
+
 cmd_ensure() {
   local change=${1:-} prompt_file="" cwd="$PWD" create_only=0 agent_cli=""
   shift || true
@@ -250,6 +293,9 @@ cmd_ensure() {
   require_tmux
   local sess win launch cli
   cli=$(resolve_agent_cli "$agent_cli")
+  if [ "$cli" = agent ]; then
+    ensure_cursor_project_agent "$cwd" || true
+  fi
   launch=$(build_launch_cmd "$prompt_file" "$cli")
 
   if inside_tmux; then
