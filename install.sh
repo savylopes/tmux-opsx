@@ -183,6 +183,7 @@ install_cursor_agent() {
     printf '%s\n' '---'
     printf 'name: ops-applier\n'
     printf 'description: %s\n' "$desc"
+    printf 'model: inherit\n'
     printf '%s\n' '---'
     awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
   } > "$tmp"

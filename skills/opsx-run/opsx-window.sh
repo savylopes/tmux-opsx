@@ -7,12 +7,13 @@
 # follow-up instruction.
 #
 # Usage:
-#   opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>]
-#   opsx-window.sh send   <change> --prompt-file <f>
+#   opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>]
+#   opsx-window.sh send   <change> --prompt-file <f>   # send, or create the window if missing
 #   opsx-window.sh close  <change> [--force] [--keep-session]
 #   opsx-window.sh close  --all    [--force] [--keep-session]
 #   opsx-window.sh status <change> [--lines N]
 #   opsx-window.sh detect-cli [--agent-cli <cmd>]
+#   opsx-window.sh detect-model [--model <id>]
 #   opsx-window.sh list
 #
 # Agent CLI selection (ensure only):
@@ -20,6 +21,10 @@
 #   $OPSX_AGENT_CLI      Same, as a default for every call
 #   Auto-detect           Cursor when $CURSOR_AGENT is set, else claude if on PATH,
 #                         else agent (Linux Cursor CLI), else error
+#   --model <id>         Model for new windows (claude/agent --model)
+#   $OPSX_MODEL          Same, as a default for every call
+#   Auto-detect           Cursor ~/.cursor/cli-config.json selectedModel,
+#                         else $ANTHROPIC_MODEL, else Claude settings.json model
 #   When launching `agent`, ensure also links ops-applier into
 #   <cwd>/.cursor/agents/ so Cursor Task can use subagent_type ops-applier.
 #
@@ -99,6 +104,7 @@ find_window() {
 tag_window() {
   tmux set-option -w -t "$1" @opsx_change "$2" >/dev/null 2>&1
   [ -n "${3:-}" ] && tmux set-option -w -t "$1" @opsx_agent_cli "$3" >/dev/null 2>&1
+  [ -n "${4:-}" ] && tmux set-option -w -t "$1" @opsx_model "$4" >/dev/null 2>&1
   tmux set-window-option -t "$1" automatic-rename off >/dev/null 2>&1
   tmux set-window-option -t "$1" allow-rename off >/dev/null 2>&1
 }
@@ -214,20 +220,73 @@ resolve_agent_cli() {
   printf '%s' "$cli"
 }
 
+# Read a dotted JSON string field (python3, else jq). Empty on miss.
+json_str() {
+  local file=$1 path=$2 val=""
+  [ -f "$file" ] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    val=$(python3 -c '
+import json, sys
+obj = json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."):
+    obj = obj.get(k) if isinstance(obj, dict) else None
+    if obj is None:
+        print("")
+        raise SystemExit(0)
+print(obj if isinstance(obj, str) else "")
+' "$file" "$path" 2>/dev/null) || val=""
+  elif command -v jq >/dev/null 2>&1; then
+    val=$(jq -r --arg p "$path" 'getpath($p|split(".")) // empty' "$file" 2>/dev/null) || val=""
+  fi
+  printf '%s' "$val"
+}
+
+# True when this id means "use the CLI default" — omit --model.
+model_is_default() {
+  case "$1" in
+    ""|default|auto|inherit|Auto) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Precedence: flag > $OPSX_MODEL > host session default.
+resolve_model() {
+  local explicit=${1:-} model=""
+  if [ -n "$explicit" ]; then
+    model=$explicit
+  elif [ -n "${OPSX_MODEL:-}" ]; then
+    model=$OPSX_MODEL
+  elif [ -n "${ANTHROPIC_MODEL:-}" ]; then
+    model=$ANTHROPIC_MODEL
+  elif running_under_cursor; then
+    model=$(json_str "$HOME/.cursor/cli-config.json" selectedModel.modelId)
+    [ -n "$model" ] || model=$(json_str "$HOME/.cursor/cli-config.json" model.modelId)
+  elif running_under_claude; then
+    model=$(json_str "$HOME/.claude/settings.json" model)
+  fi
+  if model_is_default "$model"; then
+    printf '%s' ""
+    return 0
+  fi
+  printf '%s' "$model"
+}
+
 # Shell command that reads the prompt inside the new window's cwd.
 build_launch_cmd() {
-  local prompt_file=$1 cli=$2
+  local prompt_file=$1 cli=$2 model=${3:-} model_flag=""
+  if [ -n "$model" ]; then
+    model_flag=$(printf ' --model %q' "$model")
+  fi
   case "$cli" in
     claude)
-      printf 'claude --permission-mode bypassPermissions "$(cat %q)"' "$prompt_file"
+      printf 'claude --permission-mode bypassPermissions%s "$(cat %q)"' "$model_flag" "$prompt_file"
       ;;
     agent)
       # Linux/macOS Cursor CLI is the `agent` binary; --force skips approval prompts.
-      printf 'agent --force "$(cat %q)"' "$prompt_file"
+      printf 'agent --force%s "$(cat %q)"' "$model_flag" "$prompt_file"
       ;;
     *)
-      # Custom binary/path — pass the prompt the same way.
-      printf '%s "$(cat %q)"' "$cli" "$prompt_file"
+      printf '%s%s "$(cat %q)"' "$cli" "$model_flag" "$prompt_file"
       ;;
   esac
 }
@@ -274,18 +333,19 @@ ensure_cursor_project_agent() {
 }
 
 cmd_ensure() {
-  local change=${1:-} prompt_file="" cwd="$PWD" create_only=0 agent_cli=""
+  local change=${1:-} prompt_file="" cwd="$PWD" create_only=0 agent_cli="" model=""
   shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt-file) prompt_file=${2:-}; shift 2 ;;
       --cwd)         cwd=${2:-}; shift 2 ;;
       --agent-cli)   agent_cli=${2:-}; shift 2 ;;
+      --model)       model=${2:-}; shift 2 ;;
       --create-only) create_only=1; shift ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  [ -n "$change" ] || die "usage: opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>]"
+  [ -n "$change" ] || die "usage: opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>]"
   [ -n "$prompt_file" ] || die "--prompt-file is required"
   [ -f "$prompt_file" ] || die "prompt file not found: $prompt_file"
   [ -d "$cwd" ] || die "cwd not found: $cwd"
@@ -293,10 +353,11 @@ cmd_ensure() {
   require_tmux
   local sess win launch cli
   cli=$(resolve_agent_cli "$agent_cli")
+  model=$(resolve_model "$model")
   if [ "$cli" = agent ]; then
     ensure_cursor_project_agent "$cwd" || true
   fi
-  launch=$(build_launch_cmd "$prompt_file" "$cli")
+  launch=$(build_launch_cmd "$prompt_file" "$cli" "$model")
 
   if inside_tmux; then
     sess=$(current_session) || exit 1
@@ -309,8 +370,9 @@ cmd_ensure() {
       # has no stray shell window sitting next to the work.
       win=$(tmux new-session -d -s "$sess" -n "$change" -c "$cwd" -P -F '#{window_id}' \
             "$launch" 2>&1) || die "failed to create session '$sess': $win"
-      tag_window "$win" "$change" "$cli"
-      printf 'created %s %s:%s agent=%s session=created\n' "$win" "$sess" "$change" "$cli"
+      tag_window "$win" "$change" "$cli" "$model"
+      printf 'created %s %s:%s agent=%s model=%s session=created\n' \
+        "$win" "$sess" "$change" "$cli" "${model:-default}"
       printf '# attach with: tmux attach -t %s\n' "$sess"
       return 0
     fi
@@ -335,9 +397,10 @@ cmd_ensure() {
   # tag_window also disables tmux's automatic rename, which would otherwise
   # relabel the window to the running command ("claude" / "agent") and lose the
   # change name the whole workflow keys off.
-  tag_window "$win" "$change" "$cli"
+  tag_window "$win" "$change" "$cli" "$model"
 
-  printf 'created %s %s:%s agent=%s\n' "$win" "$sess" "$change" "$cli"
+  printf 'created %s %s:%s agent=%s model=%s\n' \
+    "$win" "$sess" "$change" "$cli" "${model:-default}"
 }
 
 cmd_send() {
@@ -355,9 +418,19 @@ cmd_send() {
 
   require_tmux
   local sess win
-  sess=$(lookup_session) || exit 1
-  win=$(find_window "$sess" "$change")
-  [ -n "$win" ] || die "no window named '$change' in session '$sess' — run '/opsx-run $change apply' first."
+  if inside_tmux || session_exists "$(project_session_name "$PWD")"; then
+    sess=$(lookup_session) || exit 1
+    win=$(find_window "$sess" "$change")
+  else
+    win=""
+  fi
+
+  # Window gone (closed after land, killed, never created): open one with this
+  # prompt instead of telling the user to apply first.
+  if [ -z "$win" ]; then
+    cmd_ensure "$change" --prompt-file "$prompt_file"
+    return $?
+  fi
 
   send_prompt "$win" "$prompt_file"
   printf 'sent %s %s:%s\n' "$win" "$sess" "$change"
@@ -469,6 +542,18 @@ cmd_detect_cli() {
   resolve_agent_cli "$agent_cli"
 }
 
+cmd_detect_model() {
+  local model=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --model) model=${2:-}; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  model=$(resolve_model "$model")
+  printf '%s\n' "${model:-default}"
+}
+
 cmd_list() {
   require_tmux
   local sess
@@ -484,10 +569,11 @@ case "${1:-}" in
   send)       shift; cmd_send "$@" ;;
   close)      shift; cmd_close "$@" ;;
   status)     shift; cmd_status "$@" ;;
-  detect-cli) shift; cmd_detect_cli "$@" ;;
-  list)       shift; cmd_list "$@" ;;
+  detect-cli)   shift; cmd_detect_cli "$@" ;;
+  detect-model) shift; cmd_detect_model "$@" ;;
+  list)         shift; cmd_list "$@" ;;
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|close|status|detect-cli|list)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|detect-cli|detect-model|list)" ;;
 esac

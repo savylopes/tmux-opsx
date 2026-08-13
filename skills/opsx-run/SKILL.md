@@ -15,10 +15,11 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> apply
 /opsx-run <change> apply --agent-cli agent   # force Cursor CLI (Linux: the `agent` command)
 /opsx-run <change> apply --agent-cli claude  # force Claude Code
+/opsx-run <change> apply --model sonnet-4    # pin the apply window's model (default: this session's)
 /opsx-run <change> verify               # inline validate/status gate; only bothers the window on failure
 /opsx-run <change> archive
 /opsx-run <change> status               # snapshot of what the window is doing right now
-/opsx-run <change> "<free-form text>"   # send any instruction to that change's window
+/opsx-run <change> "<free-form text>"   # send to that window (creates it if missing)
 /opsx-run <change> merge                # merge the change branch into main (no archive/cleanup)
 /opsx-run <change> merge --into develop # ... into another branch
 /opsx-run <change> land                 # merge into main, archive, clean up, close the window
@@ -34,9 +35,10 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 All tmux calls go through `~/.claude/skills/opsx-run/opsx-window.sh`. **Never hand-roll `tmux send-keys`** — the script handles literal-text quoting, newline collapsing, window-id targeting, and rename suppression, all of which break subtly when improvised.
 
 ```
-opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>]
+opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>]
 opsx-window.sh detect-cli [--agent-cli <cmd>]                          # print agent|claude for the host session
-opsx-window.sh send   <change> --prompt-file <f>                 # send only; errors if the window doesn't exist
+opsx-window.sh detect-model [--model <id>]                             # print the model id to launch with (or `default`)
+opsx-window.sh send   <change> --prompt-file <f>                 # send; creates the window if it is gone
 opsx-window.sh close  <change> [--force] [--keep-session]        # close one window
 opsx-window.sh close  --all    [--force] [--keep-session]        # close every tagged opsx window
 opsx-window.sh status <change> [--lines N]                       # capture-pane snapshot (default 60 lines)
@@ -52,6 +54,14 @@ It prints one line on success: `created @7 2:add-auth agent=agent`, `reused @7 2
 3. Auto-detect inside `opsx-window.sh`: Cursor env markers (`$CURSOR_AGENT`, `$CURSOR_RIPGREP_PATH`, …) or parent-process walk (Cursor CLI on Linux runs as `MainThread` with `…/agent` in argv) → `agent`; Claude Code markers → `claude`; else first of `claude`/`agent` on PATH
 
 **When calling `ensure`, always pass an explicit CLI if the user named one.** Otherwise run `opsx-window.sh detect-cli` first and forward `--agent-cli "$(opsx-window.sh detect-cli)"` to `ensure` — do not rely on the skill session alone, because an outdated installed script or a stripped environment can otherwise pick `claude` when both CLIs are installed.
+
+**Model selection** (new windows only — reused windows keep the model they were launched with):
+
+1. `--model <id>` on `/opsx-run` (e.g. `sonnet-4`, `opus`, `gpt-5`, a Cursor model id)
+2. `$OPSX_MODEL`
+3. Auto-detect via `opsx-window.sh detect-model`: `$ANTHROPIC_MODEL`, else Cursor `~/.cursor/cli-config.json` `selectedModel.modelId`, else Claude `~/.claude/settings.json` `model`. Values `default` / `auto` / `inherit` mean "CLI default" — omit `--model` so the new window matches this session.
+
+Forward `--model` when the user named one **or** when `detect-model` prints something other than `default`. Tell the dispatcher to spawn ops-applier with `model: inherit` so the apply worker uses that window's model.
 
 After upgrading the repo, re-run `./install.sh` so `~/.claude/skills/opsx-run/opsx-window.sh` picks up detection — an old install hardcodes `claude` and ignores Cursor entirely.
 
@@ -70,11 +80,11 @@ Both `openspec` and the window's agent CLI run from the current working director
 
 | Action | This session does | The window gets |
 |---|---|---|
-| `apply` (default) | `openspec status --change <c> --json` to confirm the change is applyable (report `isComplete` / missing artifacts if not), then `detect-cli` + `ensure --agent-cli …` | Apply dispatcher prompt |
-| `verify` | `openspec validate <c> --strict --json` **and** `openspec status --change <c> --json` inline; report pass/fail with the actual errors | Nothing on pass. On failure, `send` a fix prompt containing the validation errors verbatim |
+| `apply` (default) | `openspec status --change <c> --json` to confirm the change is applyable (report `isComplete` / missing artifacts if not), then `detect-cli` + `detect-model` + `ensure --agent-cli … [--model …]` | Apply dispatcher prompt |
+| `verify` | `openspec validate <c> --strict --json` **and** `openspec status --change <c> --json` inline; report pass/fail with the actual errors | Nothing on pass. On failure, `ensure` a fix prompt (creates the window if it was closed) |
 | `archive` | Gate inline: `validate --strict` passes **and** `status.isComplete` is true. If not, refuse and say exactly which check failed | Archive dispatcher prompt |
 | `status` | — | Nothing; run `opsx-window.sh status <c>` and relay the meaningful tail |
-| free text | — | `send` the user's text verbatim (window must already exist) |
+| free text | — | `ensure` with the user's text verbatim. **If the window is missing, create it** — never tell the user to `apply` first just to recreate the window |
 | `close` | — | Nothing; `opsx-window.sh close <c>` kills that window |
 | `close-all` | Confirm with **AskUserQuestion** first — this kills several live sessions at once | Nothing; `opsx-window.sh close --all` |
 | `merge` | Runs `opsx-merge.sh <change> [--into <branch>]` **inline**; `--no-ff` merge only — keeps the branch, worktree and window | Nothing |
@@ -95,8 +105,8 @@ Every window prompt is a **dispatcher**: it must hand the work to the **ops-appl
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Delegate ALL implementation to the ops-applier **subagent** — do not implement in this window yourself.
-> Claude Code: Agent tool, `subagent_type: "ops-applier"`, `run_in_background: false`.
-> Cursor CLI: Task tool, `subagent_type: "ops-applier"`, `run_in_background: false`. Confirm `.cursor/agents/opsx-applier.md` exists in `<cwd>` first (ensure installs it). Do not fall back to `generalPurpose` unless Task rejects `ops-applier` after that file is present — if rejected, say so and stop.
+> Claude Code: Agent tool, `subagent_type: "ops-applier"`, `run_in_background: false`, `model: inherit` (window model).
+> Cursor CLI: Task tool, `subagent_type: "ops-applier"`, `run_in_background: false`, `model: inherit`. Confirm `.cursor/agents/opsx-applier.md` exists in `<cwd>` first (ensure installs it). Do not fall back to `generalPurpose` unless Task rejects `ops-applier` after that file is present — if rejected, say so and stop.
 > Task for the subagent: apply OpenSpec change `<change>` — read `openspec/changes/<change>/` (proposal.md, design.md, tasks.md), execute remaining unchecked tasks using `openspec instructions apply --change "<change>" --json`, tick tasks.md checkboxes as you go, report modified files, branch name (`opsx/<change>`), and pass/fail.
 > When it returns, summarize its report and stop.
 
@@ -164,10 +174,11 @@ opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
 - The script refuses to close the window the caller is *in* unless `--force` is passed, so a `close-all` from inside a change window can't kill the caller mid-command. Relay the `# skipped …` line when it appears.
 - Closing the last window in a session destroys the session — the script says so. Pass `--keep-session` to park a plain shell window and keep it alive.
 - If the user asks to close a change that has no window, say so; it is not an error worth escalating.
+- Free-form text and verify-fix must **not** fail with "run apply first". `send` now creates the window when it is missing (same as `ensure`). Recreate and deliver the instruction in one step.
 
 ## Notes
 
 - New windows launch with permission bypass so they never stall on a prompt while unattended: `claude --permission-mode bypassPermissions` or `agent --force` (Cursor CLI on Linux).
-- Forward `--agent-cli` from the user's `/opsx-run` message to `opsx-window.sh ensure` when they name a CLI explicitly; otherwise let the script auto-detect.
+- Forward `--agent-cli` and `--model` from the user's `/opsx-run` message to `opsx-window.sh ensure` when they name them; otherwise `detect-cli` / `detect-model`.
 - `ops-applier` — Claude Code: `~/.claude/agents/opsx-applier.md`. Cursor CLI: installed to `~/.cursor/agents/opsx-applier.md`, and **`ensure` also links it into `<project>/.cursor/agents/`** because the Cursor CLI Task enum only loads project-level agents (not user-level). Dispatcher windows must use Task/Agent with `subagent_type: "ops-applier"`. It drives the `openspec` CLI directly. For Cursor OpenSpec slash commands, run `openspec init --tools cursor` in a project.
 - Window names are set with `automatic-rename`/`allow-rename` disabled, so a window keeps its change name for the whole lifecycle and stays findable.

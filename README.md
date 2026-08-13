@@ -138,10 +138,11 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> apply` | Checks the change is applyable, then dispatches the apply to ops-applier |
 | `/opsx-run <change> apply --agent-cli agent` | Same, but launches the window with Cursor CLI (`agent` on Linux) |
 | `/opsx-run <change> apply --agent-cli claude` | Same, but launches with Claude Code |
+| `/opsx-run <change> apply --model sonnet-4` | Same, but pins the apply window's model (default: the session that ran `/opsx-run`) |
 | `/opsx-run <change> verify` | Runs `openspec validate --strict` + `status` **inline** and reports; only bothers the window if it fails |
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
 | `/opsx-run <change> status` | Snapshot of what that window is doing right now |
-| `/opsx-run <change> "<text>"` | Sends any instruction to that change's window |
+| `/opsx-run <change> "<text>"` | Sends any instruction to that change's window (creates the window if it was closed) |
 | `/opsx-run <change> merge` | Merges the change branch into `main` (`--no-ff`). Keeps the branch, worktree and window |
 | `/opsx-run <change> merge --into develop` | Same, into another branch |
 | `/opsx-run <change> land` | Merge (via `opsx-merge.sh`) + archive + delete branch + close the window |
@@ -172,7 +173,7 @@ Jump to a change's window with `tmux select-window -t <session>:<change>`, or yo
 Everything tmux-related goes through one script, which you can also drive by hand:
 
 ```bash
-~/.claude/skills/opsx-run/opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>]
+~/.claude/skills/opsx-run/opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>]
 ~/.claude/skills/opsx-run/opsx-window.sh send   <change> --prompt-file <f>
 ~/.claude/skills/opsx-run/opsx-window.sh close  <change> [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh close  --all    [--force] [--keep-session]
@@ -193,7 +194,7 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 
 1. **Preconditions.** The skill refuses to guess a change name — if it is missing or ambiguous it lists the active changes and asks.
 2. **Session.** Inside tmux, the window goes in your current session. Outside tmux, it creates (or reuses) a **session named after the project folder** and tells you how to attach.
-3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running the detected agent CLI (`claude --permission-mode bypassPermissions` or `agent --force` for Cursor) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor` to override, or set `$OPSX_AGENT_CLI`. From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
+3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running the detected agent CLI (`claude --permission-mode bypassPermissions` or `agent --force` for Cursor) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor` to override, or set `$OPSX_AGENT_CLI`. Pass `--model <id>` (or `$OPSX_MODEL`) to pin the model; the default is this session's model (Cursor `selectedModel`, else `$ANTHROPIC_MODEL` / Claude settings). From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
 4. **Dispatch.** The window delegates to the **ops-applier** subagent (Claude Agent tool / Cursor Task tool). Cursor CLI only loads project agents from `.cursor/agents/` — `ensure` symlinks `~/.cursor/agents/opsx-applier.md` into the project before launch so Task accepts `subagent_type: "ops-applier"`.
 5. **Apply.** The subagent implements in a single git worktree on branch **`opsx/<change>`**, then build/commit/report. Parallel workers are opt-in only when you ask for them explicitly.
 6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
@@ -265,7 +266,7 @@ Closing kills the agent session in that window along with anything it still had 
 
 ## Troubleshooting
 
-**Running outside tmux** — that's fine: `/opsx-run <change>` starts a detached session named after the project folder and puts the change window in it. It tells you the name; attach with `tmux attach -t <project>`. Only `apply`/`archive` can create a session — `status`, `list` and free-form sends look it up and fail with a clear message if it isn't there yet. `/opsx-run` never falls back to running the work inline, because the whole point is not blocking your session.
+**Running outside tmux** — that's fine: `/opsx-run <change>` starts a detached session named after the project folder and puts the change window in it. It tells you the name; attach with `tmux attach -t <project>`. `apply`, `archive`, and free-form instructions all create the window (and the session, if needed) when it is missing. `status` and `list` only look it up. `/opsx-run` never falls back to running the work inline, because the whole point is not blocking your session.
 
 **The window is named `claude` instead of the change** — something re-enabled tmux's automatic rename. The script disables it per window at creation; check `tmux show-window-options -t <win> automatic-rename`.
 

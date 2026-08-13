@@ -2,7 +2,7 @@
 name: "ops-applier"
 description: "Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree"
 tools: [Read, Write, Edit, Bash, Agent, SendMessage, ListAgents]
-model: opus
+model: inherit
 permissionMode: bypassPermissions
 ---
 
