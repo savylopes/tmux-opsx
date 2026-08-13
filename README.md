@@ -14,6 +14,7 @@ Not in tmux? It starts a session named after the project folder for you.
 
   /opsx-run add-auth ......... window opens, work starts
   /opsx-run add-auth verify .. gates run in your session
+  /opsx-run add-auth merge ... merge into main (branch/window stay)
   /opsx-run add-auth land .... merge + archive + cleanup, window closes
 ```
 
@@ -25,7 +26,8 @@ Not in tmux? It starts a session named after the project folder for you.
 |---|---|---|
 | `/opsx-run` skill | `~/.claude/skills/opsx-run/` (Claude Code) · `~/.cursor/skills/opsx-run/` (Cursor CLI) | The lifecycle: apply, verify, archive, land, close — one window per change |
 | `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
-| `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — gates, merge, archive, branch/worktree cleanup |
+| `opsx-merge.sh` | `~/.claude/skills/opsx-run/` | Merge the change branch into a target (default `main`) — no archive or cleanup |
+| `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — OpenSpec gates, then `opsx-merge.sh`, archive, branch/worktree cleanup |
 | `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` (Claude Code) · `~/.cursor/agents/opsx-applier.md` (Cursor CLI) | Does the implementation in an isolated worktree on `opsx/<change>`, commits, and reports |
 | `/opsx:*` commands | `~/.claude/commands/opsx/` | OpenSpec's own workflow commands, made global |
 | OpenSpec CLI | npm global | `openspec` — the spec/change engine everything is built on |
@@ -140,7 +142,9 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
 | `/opsx-run <change> status` | Snapshot of what that window is doing right now |
 | `/opsx-run <change> "<text>"` | Sends any instruction to that change's window |
-| `/opsx-run <change> land` | Merges the change branch into `main`, archives it, deletes the branch, closes the window |
+| `/opsx-run <change> merge` | Merges the change branch into `main` (`--no-ff`). Keeps the branch, worktree and window |
+| `/opsx-run <change> merge --into develop` | Same, into another branch |
+| `/opsx-run <change> land` | Merge (via `opsx-merge.sh`) + archive + delete branch + close the window |
 | `/opsx-run <change> land --into develop` | Same, into another branch |
 | `/opsx-run <change> land --force-tasks` | Same, but skips the unchecked-tasks gate |
 | `/opsx-run <change> close` | Closes that change's window |
@@ -175,6 +179,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-window.sh status <change> [--lines N]
 ~/.claude/skills/opsx-run/opsx-window.sh list
 
+~/.claude/skills/opsx-run/opsx-merge.sh <change> [--into <branch>] [--dry-run]
 ~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--force-tasks] [--dry-run]
 ```
 
@@ -195,6 +200,19 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 
 Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send. Each one is also stamped with an `@opsx_change` tmux option, which is how `close --all` finds exactly the windows tmux-opsx created.
 
+### Merging a change
+
+Merge the applied branch into `main` (or another target) without finishing the OpenSpec lifecycle:
+
+```bash
+/opsx-run add-auth merge                 # into main
+/opsx-run add-auth merge --into develop  # into another branch
+```
+
+**clean tree → find `opsx/<change>` (or its worktree) → merge `--no-ff`.** The change branch, worktree and tmux window stay. `land` uses this same script (`opsx-merge.sh --stay`) before it archives.
+
+If the change is checked out in a worktree with uncommitted files, merge refuses until those are committed.
+
 ### Landing a change
 
 When a change is done, one command finishes it:
@@ -204,7 +222,7 @@ When a change is done, one command finishes it:
 /opsx-run add-auth land --into develop  # into another branch
 ```
 
-**gate → merge `--no-ff` → `openspec archive` → commit → remove worktree → delete branch → close window.**
+**OpenSpec gates → `opsx-merge.sh --stay` → `openspec archive` → commit → remove worktree → delete branch → close window.**
 
 Nothing happens unless every gate passes:
 
@@ -255,11 +273,11 @@ Closing kills the agent session in that window along with anything it still had 
 
 **Window ran but nothing happened** — attach to it and look. The dispatcher session is a normal Claude session; it may be asking a question. `/opsx-run <change> status` prints its recent output without leaving your session.
 
-**`land` says "no branch found"** — the change was never applied, or its branch is named something discovery doesn't reach. `git branch --list "*<change>*"` will show it; pass it with `--branch <name>`. Branches created before the `opsx/<change>` convention are the usual cause.
+**`merge`/`land` says "no branch found"** — the change was never applied, or its branch is named something discovery doesn't reach. `git branch --list "*<change>*"` will show it; pass it with `--branch <name>`. Branches created before the `opsx/<change>` convention are the usual cause.
 
 **`land` says tasks are still unchecked** — that gate reads `- [ ]` boxes in `openspec/changes/<change>/tasks.md` directly, because `openspec status`'s `isComplete` only tells you the artifacts exist and stays `true` with tasks outstanding. Finish them (or tick them) and land again, or pass `--force-tasks` if you are deliberately landing with outstanding boxes.
 
-**`land` hit conflicts** — nothing was written: the merge is aborted and you are back on your starting branch with a clean tree. Resolve in the change's window, then land again.
+**`merge`/`land` hit conflicts** — nothing was written: the merge is aborted and you are back on your starting branch with a clean tree. Resolve in the change's window, then merge (or land) again.
 
 **npm permission errors on install** — either `sudo npm install -g @fission-ai/openspec`, or point npm at a writable prefix with `npm config set prefix ~/.local`.
 

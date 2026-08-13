@@ -150,16 +150,6 @@ else
   warn "no $tasks_file — skipping the task check"
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
-  git status --short | sed 's/^/  /'
-  die "working tree is not clean — commit or stash before landing."
-fi
-ok "working tree clean"
-
-ahead=$(git rev-list --count "$TARGET..$BRANCH" 2>/dev/null || echo 0)
-[ "$ahead" -gt 0 ] || die "'$BRANCH' has no commits that '$TARGET' is missing — nothing to land."
-ok "$ahead commit(s) to merge"
-
 START_BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
 
 say ""
@@ -171,32 +161,12 @@ say "  from:    ${START_BRANCH:-(detached HEAD)}"
 say ""
 
 # ---------------------------------------------------------------- merge
-step "Merging"
-if [ "$DRY_RUN" -eq 1 ]; then
-  printf '  %swould run:%s git checkout %s\n' "$D" "$N" "$TARGET"
-else
-  git checkout "$TARGET" >/dev/null 2>&1 || die "could not check out '$TARGET'."
-  ok "on $TARGET"
-fi
-
-if [ "$DRY_RUN" -eq 1 ]; then
-  printf '  %swould run:%s git merge --no-ff %s -m "Merge change %s"\n' "$D" "$N" "$BRANCH" "$CHANGE"
-else
-  if git merge --no-ff "$BRANCH" -m "Merge change $CHANGE" >/dev/null 2>&1; then
-    ok "merged $BRANCH into $TARGET"
-  else
-    conflicts=$(git diff --name-only --diff-filter=U 2>/dev/null)
-    git merge --abort >/dev/null 2>&1
-    [ -n "$START_BRANCH" ] && git checkout "$START_BRANCH" >/dev/null 2>&1
-    say ""
-    say "${R}Merge conflicts${N} — the merge was aborted and nothing was changed."
-    [ -n "$conflicts" ] && printf '%s\n' "$conflicts" | sed 's/^/  /'
-    say ""
-    say "Resolve them in the change's window, then land again:"
-    say "  /opsx-run $CHANGE \"resolve the conflicts merging $BRANCH into $TARGET\""
-    exit 1
-  fi
-fi
+# Merge-only lives in opsx-merge.sh; --stay leaves HEAD on $TARGET for archive.
+merge_script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-merge.sh"
+[ -x "$merge_script" ] || die "opsx-merge.sh not found next to this script — re-run ./install.sh."
+merge_args=("$CHANGE" --into "$TARGET" --branch "$BRANCH" --stay)
+[ "$DRY_RUN" -eq 1 ] && merge_args+=(--dry-run)
+"$merge_script" "${merge_args[@]}" || exit $?
 MERGE_COMMIT=$([ "$DRY_RUN" -eq 1 ] && echo "(dry run)" || git rev-parse --short HEAD)
 
 # ---------------------------------------------------------------- archive

@@ -19,6 +19,8 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> archive
 /opsx-run <change> status               # snapshot of what the window is doing right now
 /opsx-run <change> "<free-form text>"   # send any instruction to that change's window
+/opsx-run <change> merge                # merge the change branch into main (no archive/cleanup)
+/opsx-run <change> merge --into develop # ... into another branch
 /opsx-run <change> land                 # merge into main, archive, clean up, close the window
 /opsx-run <change> land --into develop  # ... into another branch
 /opsx-run <change> land --force-tasks   # ... even when tasks.md still has unchecked boxes
@@ -75,7 +77,8 @@ Both `openspec` and the window's agent CLI run from the current working director
 | free text | — | `send` the user's text verbatim (window must already exist) |
 | `close` | — | Nothing; `opsx-window.sh close <c>` kills that window |
 | `close-all` | Confirm with **AskUserQuestion** first — this kills several live sessions at once | Nothing; `opsx-window.sh close --all` |
-| `land` | Runs `opsx-land.sh <change> [--into <branch>] [--force-tasks]` **inline**; relays the gate that failed, or the merge commit and cleanup summary | Nothing — the window is closed as the last step |
+| `merge` | Runs `opsx-merge.sh <change> [--into <branch>]` **inline**; `--no-ff` merge only — keeps the branch, worktree and window | Nothing |
+| `land` | Runs `opsx-land.sh`, which calls `opsx-merge.sh --stay` then archive + cleanup | Nothing — the window is closed as the last step |
 
 `verify` and `archive` deliberately run their read-only `openspec` checks in **this** session: they are fast, and a failed gate should be reported to the user immediately rather than discovered inside a window they are not watching.
 
@@ -122,9 +125,24 @@ After every invocation, tell the user:
 
 Do not wait on or poll the window — it runs its own conversation. Use `/opsx-run <change> status` to check on it later.
 
+## Merging a change
+
+`~/.claude/skills/opsx-run/opsx-merge.sh <change> [options]` merges the change branch into a target and **stops**. No archive, no branch/worktree delete, no window close.
+
+```
+opsx-merge.sh <change> [--into <branch>] [--branch <name>] [--stay] [--dry-run]
+```
+
+- Default target is `main`, else `master`. Override with `--into`.
+- Runs **inline in this session**. **It never pushes.**
+- Gates: clean working tree → change branch found → its worktree (if any) is clean → branch is ahead of target.
+- Branch discovery matches `land`: `--branch`, else `opsx/<change>`, `feat/<change>`, `feature/<change>`, `<change>`, else a single fuzzy match.
+- On conflict: abort, restore the starting branch, print the conflicting paths. Then `/opsx-run <change> merge` again (or land).
+- `--stay` leaves HEAD on the target (used by `land` so archive runs on the merged tree). Without it, HEAD returns to the branch you started on.
+
 ## Landing a change
 
-`~/.claude/skills/opsx-run/opsx-land.sh <change> [options]` finishes a change: **gate → merge `--no-ff` → `openspec archive` → commit → remove worktree → delete branch → close window.**
+`~/.claude/skills/opsx-run/opsx-land.sh <change> [options]` finishes a change: **OpenSpec gates → `opsx-merge.sh --stay` → `openspec archive` → commit → remove worktree → delete branch → close window.**
 
 ```
 opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
@@ -133,10 +151,10 @@ opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
 
 - Runs **inline in this session**, never dispatched to the window — a window cannot close itself while still running the merge.
 - **It never pushes.** Relay the `git push origin <branch>` line it prints; do not run it unless the user asks.
-- **Confirm with AskUserQuestion before the first real run** — it writes a merge commit, deletes a branch and kills a live session. Offer `--dry-run` if the user seems unsure. Skip the confirmation when the user's message already spells out the intent ("land add-auth into develop").
-- Gates, in order: change dir exists → `validate --strict` → all artifacts present → **every task in tasks.md checked** (bypass with `--force-tasks`) → clean working tree → branch found → branch is ahead of target. Report *which* gate failed and stop; do not dispatch work to fix it unless asked.
-- Branch discovery: `--branch`, else `opsx/<change>`, `feat/<change>`, `feature/<change>`, `<change>`, else a single fuzzy `*<change>*` match. Several fuzzy matches → it lists them and asks for `--branch`.
-- On merge conflict it aborts the merge, returns to the starting branch and leaves the tree clean. The fix is a normal window instruction: `/opsx-run <change> "resolve the conflicts merging <branch> into <target>"`.
+- **Confirm with AskUserQuestion before the first real run** — it writes a merge commit, deletes a branch and kills a live session. Offer `--dry-run` if the user seems unsure. Skip the confirmation when the user's message already spells out the intent ("land add-auth into develop"). `merge` alone is lighter; still confirm once if the user has not named the target.
+- OpenSpec gates, in order: change dir exists → `validate --strict` → all artifacts present → **every task in tasks.md checked** (bypass with `--force-tasks`). Git merge gates are those of `opsx-merge.sh`. Report *which* gate failed and stop; do not dispatch work to fix it unless asked.
+- Branch discovery is the same as `merge`.
+- On merge conflict `opsx-merge.sh` aborts and restores; the fix is a normal window instruction: `/opsx-run <change> "resolve the conflicts merging <branch> into <target>"`.
 
 ## Closing windows
 

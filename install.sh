@@ -8,7 +8,7 @@
 #                                   -> ~/.cursor/agents/opsx-applier.md
 #   4. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
 #                                   -> ~/.cursor/skills/opsx-run/
-#      (opsx-window.sh + opsx-land.sh)
+#      (opsx-window.sh + opsx-merge.sh + opsx-land.sh)
 #
 # Usage: ./install.sh [options]
 #   --prefix <dir>     Claude config dir (default: ~/.claude, or $CLAUDE_CONFIG_DIR)
@@ -328,14 +328,18 @@ step "Installing the /opsx-run skill"
 [ -f "$SRC/skills/opsx-run/SKILL.md" ] || die "missing $SRC/skills/opsx-run/SKILL.md — run this script from the repo checkout"
 install_file "$SRC/skills/opsx-run/SKILL.md"         "$PREFIX/skills/opsx-run/SKILL.md"
 install_file "$SRC/skills/opsx-run/opsx-window.sh"   "$PREFIX/skills/opsx-run/opsx-window.sh"
+install_file "$SRC/skills/opsx-run/opsx-merge.sh"    "$PREFIX/skills/opsx-run/opsx-merge.sh"
 install_file "$SRC/skills/opsx-run/opsx-land.sh"     "$PREFIX/skills/opsx-run/opsx-land.sh"
 chmod +x "$PREFIX/skills/opsx-run/opsx-window.sh" || die "cannot chmod +x opsx-window.sh"
+chmod +x "$PREFIX/skills/opsx-run/opsx-merge.sh"  || die "cannot chmod +x opsx-merge.sh"
 chmod +x "$PREFIX/skills/opsx-run/opsx-land.sh"   || die "cannot chmod +x opsx-land.sh"
 ok "/opsx-run -> $PREFIX/skills/opsx-run/ (Claude Code)"
 install_file "$SRC/skills/opsx-run/SKILL.md"         "$CURSOR_SKILLS_DIR/SKILL.md"
 install_file "$SRC/skills/opsx-run/opsx-window.sh"   "$CURSOR_SKILLS_DIR/opsx-window.sh"
+install_file "$SRC/skills/opsx-run/opsx-merge.sh"    "$CURSOR_SKILLS_DIR/opsx-merge.sh"
 install_file "$SRC/skills/opsx-run/opsx-land.sh"     "$CURSOR_SKILLS_DIR/opsx-land.sh"
 chmod +x "$CURSOR_SKILLS_DIR/opsx-window.sh" || die "cannot chmod +x opsx-window.sh"
+chmod +x "$CURSOR_SKILLS_DIR/opsx-merge.sh"  || die "cannot chmod +x opsx-merge.sh"
 chmod +x "$CURSOR_SKILLS_DIR/opsx-land.sh"   || die "cannot chmod +x opsx-land.sh"
 ok "/opsx-run -> $CURSOR_SKILLS_DIR/ (Cursor CLI)"
 info ""
@@ -345,15 +349,17 @@ step "Verifying"
 FAIL=0
 for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$PREFIX/skills/opsx-run/opsx-window.sh" \
+         "$PREFIX/skills/opsx-run/opsx-merge.sh" \
          "$PREFIX/skills/opsx-run/opsx-land.sh" \
          "$CURSOR_SKILLS_DIR/SKILL.md" \
          "$CURSOR_SKILLS_DIR/opsx-window.sh" \
+         "$CURSOR_SKILLS_DIR/opsx-merge.sh" \
          "$CURSOR_SKILLS_DIR/opsx-land.sh" \
          "$PREFIX/agents/opsx-applier.md" \
          "$CURSOR_AGENTS_DIR/opsx-applier.md"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
-for sh in opsx-window.sh opsx-land.sh; do
+for sh in opsx-window.sh opsx-merge.sh opsx-land.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
   if bash -n "$PREFIX/skills/opsx-run/$sh" 2>/dev/null; then
