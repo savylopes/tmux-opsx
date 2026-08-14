@@ -8,6 +8,9 @@
 #   --into <branch>    Merge into this branch (default: main, else master)
 #   --branch <name>    The change's branch, if discovery picks wrong
 #   --skip-specs       Pass --skip-specs to `openspec archive` (tooling/doc changes)
+#   --skip-merge       Skip the merge when the change is already in the target
+#                      (archive + cleanup still run). Land exits 2 without this
+#                      flag if there is nothing to merge, so the caller can ask.
 #   --force-tasks      Land even when tasks.md still has unchecked boxes
 #   --no-close         Leave the tmux window open
 #   --keep-branch      Don't delete the change branch
@@ -26,6 +29,7 @@ CHANGE=""
 TARGET=""
 BRANCH=""
 SKIP_SPECS=0
+SKIP_MERGE=0
 FORCE_TASKS=0
 NO_CLOSE=0
 KEEP_BRANCH=0
@@ -52,6 +56,7 @@ while [ $# -gt 0 ]; do
     --into)          TARGET=${2:?--into needs a branch}; shift 2 ;;
     --branch)        BRANCH=${2:?--branch needs a name}; shift 2 ;;
     --skip-specs)    SKIP_SPECS=1; shift ;;
+    --skip-merge)    SKIP_MERGE=1; shift ;;
     --force-tasks)   FORCE_TASKS=1; shift ;;
     --no-close)      NO_CLOSE=1; shift ;;
     --keep-branch)   KEEP_BRANCH=1; shift ;;
@@ -161,13 +166,54 @@ say "  from:    ${START_BRANCH:-(detached HEAD)}"
 say ""
 
 # ---------------------------------------------------------------- merge
-# Merge-only lives in opsx-merge.sh; --stay leaves HEAD on $TARGET for archive.
-merge_script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-merge.sh"
-[ -x "$merge_script" ] || die "opsx-merge.sh not found next to this script — re-run ./install.sh."
-merge_args=("$CHANGE" --into "$TARGET" --branch "$BRANCH" --stay)
-[ "$DRY_RUN" -eq 1 ] && merge_args+=(--dry-run)
-"$merge_script" "${merge_args[@]}" || exit $?
-MERGE_COMMIT=$([ "$DRY_RUN" -eq 1 ] && echo "(dry run)" || git rev-parse --short HEAD)
+ahead=$(git rev-list --count "$TARGET..$BRANCH" 2>/dev/null || echo 0)
+tip=$(git rev-parse --short "$BRANCH" 2>/dev/null || echo "?")
+
+skip_merge_onto_target() {
+  if [ -n "$(git status --porcelain)" ]; then
+    git status --short | sed 's/^/  /'
+    die "working tree is not clean — commit or stash before landing."
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '  %swould run:%s git checkout %s\n' "$D" "$N" "$TARGET"
+    MERGE_COMMIT="(dry run, already merged)"
+    return 0
+  fi
+  git checkout "$TARGET" >/dev/null 2>&1 || die "could not check out '$TARGET'."
+  ok "on $TARGET (merge skipped — $BRANCH already in $TARGET, tip $tip)"
+  MERGE_COMMIT="$(git rev-parse --short HEAD) (already merged)"
+}
+
+if [ "$SKIP_MERGE" -eq 1 ]; then
+  [ "$ahead" -eq 0 ] || die "--skip-merge but '$BRANCH' still has $ahead commit(s) '$TARGET' is missing — merge them first."
+  step "Skipping merge"
+  skip_merge_onto_target
+else
+  if [ "$ahead" -eq 0 ]; then
+    say "ALREADY_MERGED $BRANCH -> $TARGET ($tip)"
+    warn "'$BRANCH' is already in '$TARGET' (tip $tip) — nothing to merge."
+    say ""
+    say "Archive, branch delete, worktree removal, and window close did not run."
+    say ""
+    say "Ask whether to skip the merge and finish cleanup, then re-run with --skip-merge:"
+    rerun=(opsx-land.sh "$CHANGE" --skip-merge --into "$TARGET" --branch "$BRANCH")
+    [ "$SKIP_SPECS" -eq 1 ] && rerun+=(--skip-specs)
+    [ "$FORCE_TASKS" -eq 1 ] && rerun+=(--force-tasks)
+    [ "$NO_CLOSE" -eq 1 ] && rerun+=(--no-close)
+    [ "$KEEP_BRANCH" -eq 1 ] && rerun+=(--keep-branch)
+    [ "$KEEP_WORKTREE" -eq 1 ] && rerun+=(--keep-worktree)
+    [ "$DRY_RUN" -eq 1 ] && rerun+=(--dry-run)
+    printf '  %s\n' "${rerun[*]}"
+    exit 2
+  fi
+  # Merge-only lives in opsx-merge.sh; --stay leaves HEAD on $TARGET for archive.
+  merge_script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-merge.sh"
+  [ -x "$merge_script" ] || die "opsx-merge.sh not found next to this script — re-run ./install.sh."
+  merge_args=("$CHANGE" --into "$TARGET" --branch "$BRANCH" --stay)
+  [ "$DRY_RUN" -eq 1 ] && merge_args+=(--dry-run)
+  "$merge_script" "${merge_args[@]}" || exit $?
+  MERGE_COMMIT=$([ "$DRY_RUN" -eq 1 ] && echo "(dry run)" || git rev-parse --short HEAD)
+fi
 
 # ---------------------------------------------------------------- archive
 step "Archiving"
@@ -263,7 +309,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
   say "${B}Dry run complete.${N} Nothing was changed."
 else
   say "${G}${B}Landed $CHANGE.${N}"
-  say "  merge commit: $MERGE_COMMIT on $TARGET"
+  if [ "$SKIP_MERGE" -eq 1 ]; then
+    say "  merge:        skipped ($MERGE_COMMIT on $TARGET)"
+  else
+    say "  merge commit: $MERGE_COMMIT on $TARGET"
+  fi
   say "  HEAD is now:  $(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD)"
   say ""
   say "  push with: ${B}git push origin $TARGET${N}"

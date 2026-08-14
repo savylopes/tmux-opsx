@@ -8,7 +8,14 @@
 #                                   -> ~/.cursor/agents/opsx-applier.md
 #   4. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
 #                                   -> ~/.cursor/skills/opsx-run/
+#                                   -> ~/.agents/skills/opsx-run/   (Codex user skills)
+#                                   -> ~/.codex/skills/opsx-run/    (Codex home, if CODEX_HOME differs)
 #      (opsx-window.sh + opsx-merge.sh + opsx-land.sh)
+#   5. Codex ops-applier           -> ~/.codex/agents/ops-applier.toml
+#
+# Window CLIs: Claude Code (claude), Cursor CLI (agent), and Codex CLI (codex).
+# At least one of the three must be on PATH. Codex loads skills from
+# ~/.agents/skills (and $CODEX_HOME/skills), not ~/.claude or ~/.cursor.
 #
 # Usage: ./install.sh [options]
 #   --prefix <dir>     Claude config dir (default: ~/.claude, or $CLAUDE_CONFIG_DIR)
@@ -163,6 +170,23 @@ install_file() {
 
 CURSOR_AGENTS_DIR=$HOME/.cursor/agents
 CURSOR_SKILLS_DIR=$HOME/.cursor/skills/opsx-run
+CODEX_HOME_DIR=${CODEX_HOME:-$HOME/.codex}
+CODEX_AGENTS_DIR=$CODEX_HOME_DIR/agents
+CODEX_SKILLS_DIR=$CODEX_HOME_DIR/skills/opsx-run
+AGENTS_SKILLS_DIR=$HOME/.agents/skills/opsx-run
+
+# Install the skill files (SKILL.md + helper scripts) into one destination dir.
+install_opsx_run_skill() {
+  local dest=$1 label=$2
+  install_file "$SRC/skills/opsx-run/SKILL.md"       "$dest/SKILL.md"
+  install_file "$SRC/skills/opsx-run/opsx-window.sh" "$dest/opsx-window.sh"
+  install_file "$SRC/skills/opsx-run/opsx-merge.sh"  "$dest/opsx-merge.sh"
+  install_file "$SRC/skills/opsx-run/opsx-land.sh"   "$dest/opsx-land.sh"
+  chmod +x "$dest/opsx-window.sh" || die "cannot chmod +x $dest/opsx-window.sh"
+  chmod +x "$dest/opsx-merge.sh"  || die "cannot chmod +x $dest/opsx-merge.sh"
+  chmod +x "$dest/opsx-land.sh"   || die "cannot chmod +x $dest/opsx-land.sh"
+  ok "/opsx-run -> $dest ($label)"
+}
 
 # Cursor subagents use a simpler frontmatter (name + description only). Reuse the
 # body from agents/opsx-applier.md and strip Claude-specific YAML keys.
@@ -191,13 +215,50 @@ install_cursor_agent() {
   rm -f "$tmp"
 }
 
+# Quote a string as a TOML basic string (escape \ and ").
+toml_basic_string() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
+# Codex custom agents are TOML under ~/.codex/agents/. Convert the markdown
+# body of opsx-applier.md into developer_instructions.
+install_codex_agent() {
+  local src=$1 dest=$2 tmp desc body
+  desc=$(awk '
+    /^---$/ { n++; next }
+    n == 1 && /^description:/ {
+      sub(/^description:[[:space:]]*/, "")
+      gsub(/^"/, ""); gsub(/"$/, "")
+      print
+      exit
+    }
+  ' "$src")
+  [ -n "$desc" ] || desc="Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree"
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  {
+    printf 'name = "ops-applier"\n'
+    printf 'description = %s\n' "$(toml_basic_string "$desc")"
+    printf 'developer_instructions = """\n'
+    awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
+    printf '"""\n'
+  } > "$tmp"
+  install_file "$tmp" "$dest"
+  rm -f "$tmp"
+}
+
 # ---------- uninstall ----------
 if [ "$UNINSTALL" -eq 1 ]; then
   step "Uninstalling tmux-opsx from $PREFIX"
   rm -rf "$PREFIX/skills/opsx-run" && ok "removed skills/opsx-run (Claude Code)"
   rm -rf "$CURSOR_SKILLS_DIR" && ok "removed ~/.cursor/skills/opsx-run (Cursor CLI)"
+  rm -rf "$AGENTS_SKILLS_DIR" && ok "removed ~/.agents/skills/opsx-run (Codex)"
+  rm -rf "$CODEX_SKILLS_DIR" && ok "removed $CODEX_SKILLS_DIR (Codex home)"
   rm -f  "$PREFIX/agents/opsx-applier.md" && ok "removed agents/opsx-applier.md (Claude Code)"
   rm -f  "$CURSOR_AGENTS_DIR/opsx-applier.md" && ok "removed ~/.cursor/agents/opsx-applier.md (Cursor)"
+  rm -f  "$CODEX_AGENTS_DIR/ops-applier.toml" && ok "removed ~/.codex/agents/ops-applier.toml (Codex)"
   rm -rf "$PREFIX/commands/opsx" && ok "removed commands/opsx"
   info ""
   info "The OpenSpec CLI was left installed. Remove it with:"
@@ -255,12 +316,19 @@ fi
 if have agent; then
   ok "agent $(agent --version 2>/dev/null | head -1)"
 else
-  warn "agent CLI not found — optional if you use Claude Code instead"
+  warn "agent CLI not found — optional if you use Claude Code or Codex instead"
   note "install: https://cursor.com/docs/cli"
 fi
 
-if ! have claude && ! have agent; then
-  warn "neither claude nor agent is on PATH — required, each tmux window runs one of them"
+if have codex; then
+  ok "codex $(codex --version 2>/dev/null | head -1)"
+else
+  warn "codex CLI not found — optional if you use Claude Code or Cursor CLI instead"
+  note "install: https://github.com/openai/codex"
+fi
+
+if ! have claude && ! have agent && ! have codex; then
+  warn "none of claude, agent or codex is on PATH — required, each tmux window runs one of them"
   MISSING=1
 fi
 
@@ -321,28 +389,20 @@ install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
 ok "ops-applier -> $PREFIX/agents/opsx-applier.md (Claude Code)"
 install_cursor_agent "$SRC/agents/opsx-applier.md" "$CURSOR_AGENTS_DIR/opsx-applier.md"
 ok "ops-applier -> $CURSOR_AGENTS_DIR/opsx-applier.md (Cursor CLI)"
+install_codex_agent "$SRC/agents/opsx-applier.md" "$CODEX_AGENTS_DIR/ops-applier.toml"
+ok "ops-applier -> $CODEX_AGENTS_DIR/ops-applier.toml (Codex CLI)"
 note "implements changes in an isolated git worktree on opsx/<change>"
 info ""
 
 # ---------- 5. /opsx-run skill ----------
 step "Installing the /opsx-run skill"
 [ -f "$SRC/skills/opsx-run/SKILL.md" ] || die "missing $SRC/skills/opsx-run/SKILL.md — run this script from the repo checkout"
-install_file "$SRC/skills/opsx-run/SKILL.md"         "$PREFIX/skills/opsx-run/SKILL.md"
-install_file "$SRC/skills/opsx-run/opsx-window.sh"   "$PREFIX/skills/opsx-run/opsx-window.sh"
-install_file "$SRC/skills/opsx-run/opsx-merge.sh"    "$PREFIX/skills/opsx-run/opsx-merge.sh"
-install_file "$SRC/skills/opsx-run/opsx-land.sh"     "$PREFIX/skills/opsx-run/opsx-land.sh"
-chmod +x "$PREFIX/skills/opsx-run/opsx-window.sh" || die "cannot chmod +x opsx-window.sh"
-chmod +x "$PREFIX/skills/opsx-run/opsx-merge.sh"  || die "cannot chmod +x opsx-merge.sh"
-chmod +x "$PREFIX/skills/opsx-run/opsx-land.sh"   || die "cannot chmod +x opsx-land.sh"
-ok "/opsx-run -> $PREFIX/skills/opsx-run/ (Claude Code)"
-install_file "$SRC/skills/opsx-run/SKILL.md"         "$CURSOR_SKILLS_DIR/SKILL.md"
-install_file "$SRC/skills/opsx-run/opsx-window.sh"   "$CURSOR_SKILLS_DIR/opsx-window.sh"
-install_file "$SRC/skills/opsx-run/opsx-merge.sh"    "$CURSOR_SKILLS_DIR/opsx-merge.sh"
-install_file "$SRC/skills/opsx-run/opsx-land.sh"     "$CURSOR_SKILLS_DIR/opsx-land.sh"
-chmod +x "$CURSOR_SKILLS_DIR/opsx-window.sh" || die "cannot chmod +x opsx-window.sh"
-chmod +x "$CURSOR_SKILLS_DIR/opsx-merge.sh"  || die "cannot chmod +x opsx-merge.sh"
-chmod +x "$CURSOR_SKILLS_DIR/opsx-land.sh"   || die "cannot chmod +x opsx-land.sh"
-ok "/opsx-run -> $CURSOR_SKILLS_DIR/ (Cursor CLI)"
+install_opsx_run_skill "$PREFIX/skills/opsx-run" "Claude Code"
+install_opsx_run_skill "$CURSOR_SKILLS_DIR" "Cursor CLI"
+install_opsx_run_skill "$AGENTS_SKILLS_DIR" "Codex (~/.agents/skills)"
+if [ "$CODEX_SKILLS_DIR" != "$AGENTS_SKILLS_DIR" ]; then
+  install_opsx_run_skill "$CODEX_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
+fi
 info ""
 
 # ---------- verify ----------
@@ -356,13 +416,19 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$CURSOR_SKILLS_DIR/opsx-window.sh" \
          "$CURSOR_SKILLS_DIR/opsx-merge.sh" \
          "$CURSOR_SKILLS_DIR/opsx-land.sh" \
+         "$AGENTS_SKILLS_DIR/SKILL.md" \
+         "$AGENTS_SKILLS_DIR/opsx-window.sh" \
+         "$CODEX_SKILLS_DIR/SKILL.md" \
          "$PREFIX/agents/opsx-applier.md" \
-         "$CURSOR_AGENTS_DIR/opsx-applier.md"; do
+         "$CURSOR_AGENTS_DIR/opsx-applier.md" \
+         "$CODEX_AGENTS_DIR/ops-applier.toml"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
 for sh in opsx-window.sh opsx-merge.sh opsx-land.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
+  [ -x "$AGENTS_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex ~/.agents)"; FAIL=1; }
+  [ -x "$CODEX_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex home)"; FAIL=1; }
   if bash -n "$PREFIX/skills/opsx-run/$sh" 2>/dev/null; then
     ok "$sh parses"
   else
@@ -377,7 +443,7 @@ info ""
 info "${B}Next steps${N}"
 info "  1. In a project:   ${B}openspec init --tools claude${N}  (Claude Code)"
 info "                     ${B}openspec init --tools cursor${N}  (Cursor CLI / IDE)"
-info "  2. Restart your agent CLI so it picks up the new skill and subagent"
+info "  2. Restart your agent CLI (Claude, Cursor, or Codex) so it picks up the skill"
 info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
 info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
 info ""

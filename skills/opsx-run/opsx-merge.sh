@@ -126,7 +126,13 @@ else
 fi
 
 ahead=$(git rev-list --count "$TARGET..$BRANCH" 2>/dev/null || echo 0)
-[ "$ahead" -gt 0 ] || die "'$BRANCH' has no commits that '$TARGET' is missing — nothing to merge."
+if [ "$ahead" -eq 0 ]; then
+  tip=$(git rev-parse --short "$BRANCH" 2>/dev/null || echo "?")
+  say "ALREADY_MERGED $BRANCH -> $TARGET ($tip)"
+  printf '%sopsx-merge:%s %s\n' "$R" "$N" \
+    "'$BRANCH' is already in '$TARGET' (tip $tip) — nothing to merge." >&2
+  exit 2
+fi
 ok "$ahead commit(s) to merge"
 
 START_BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")

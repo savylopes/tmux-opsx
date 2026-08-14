@@ -1,15 +1,16 @@
 # tmux-opsx
 
-Run [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in Claude Code or Cursor CLI without blocking your session.
+Run [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in Claude Code, Cursor CLI, or Codex CLI without blocking your session.
 
-**One change = one tmux window, named after the change.** `/opsx-run add-auth` opens a window called `add-auth` running an agent session (Claude Code or Cursor CLI — the `agent` command on Linux) that hands the implementation to the **ops-applier** subagent, which does the work in isolated git worktrees. You keep your prompt. Every later instruction about that change goes back into the same window, so each change keeps one long-lived conversation you can jump into at any time.
+**One change = one tmux window, named after the change.** `/opsx-run add-auth` opens a window called `add-auth` running an agent session (Claude Code, Cursor CLI — the `agent` command on Linux — or Codex CLI). On Claude/Cursor it hands the implementation to the **ops-applier** subagent; a Codex window applies the change itself in an isolated git worktree. You keep your prompt. Every later instruction about that change goes back into the same window, so each change keeps one long-lived conversation you can jump into at any time.
 
 Not in tmux? It starts a session named after the project folder for you.
 
 ```
 ┌ tmux session ─────────────────────────────────────────────┐
 │ 0:agent*   1:add-auth  2:rate-limiting  3:fix-webhooks    │
-│            └─ agent/claude ──> Task/Agent(ops-applier) ──> worktree  │
+│    claude/agent ─> Task/Agent(ops-applier) ─> worktree    │
+│    codex ───────> (applies directly) ──────> worktree     │
 └───────────────────────────────────────────────────────────┘
 
   /opsx-run add-auth ......... window opens, work starts
@@ -24,11 +25,11 @@ Not in tmux? It starts a session named after the project folder for you.
 
 | Piece | Installs to | What it does |
 |---|---|---|
-| `/opsx-run` skill | `~/.claude/skills/opsx-run/` (Claude Code) · `~/.cursor/skills/opsx-run/` (Cursor CLI) | The lifecycle: apply, verify, archive, land, close — one window per change |
+| `/opsx-run` skill | `~/.claude/skills/opsx-run/` · `~/.cursor/skills/opsx-run/` · `~/.agents/skills/opsx-run/` (Codex) · `$CODEX_HOME/skills/opsx-run/` | The lifecycle: apply, verify, archive, land, close — one window per change |
 | `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
 | `opsx-merge.sh` | `~/.claude/skills/opsx-run/` | Merge the change branch into a target (default `main`) — no archive or cleanup |
 | `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — OpenSpec gates, then `opsx-merge.sh`, archive, branch/worktree cleanup |
-| `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` (Claude Code) · `~/.cursor/agents/opsx-applier.md` (Cursor CLI) | Does the implementation in an isolated worktree on `opsx/<change>`, commits, and reports |
+| `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` · `~/.cursor/agents/opsx-applier.md` · `~/.codex/agents/ops-applier.toml` | Does the implementation in an isolated worktree on `opsx/<change>`. A Codex dispatcher window usually applies directly (spawn-by-name is unreliable) |
 | `/opsx:*` commands | `~/.claude/commands/opsx/` | OpenSpec's own workflow commands, made global |
 | OpenSpec CLI | npm global | `openspec` — the spec/change engine everything is built on |
 
@@ -39,7 +40,7 @@ Not in tmux? It starts a session named after the project folder for you.
 - **tmux** — every change runs in a tmux window (you don't have to be inside a session; one is created per project if needed)
 - **git** — the ops-applier agent works in worktrees
 - **Node.js + npm** — to install the OpenSpec CLI
-- **Claude Code** (`claude`) **or Cursor CLI** (`agent` on Linux) — each window runs one of these
+- **Claude Code** (`claude`), **Cursor CLI** (`agent` on Linux), **or Codex CLI** (`codex`) — each window runs one of these (at least one must be on PATH)
 - macOS or Linux
 
 ---
@@ -52,7 +53,7 @@ cd tmux-opsx
 ./install.sh
 ```
 
-The installer checks prerequisites, installs the OpenSpec CLI, generates the global `/opsx:*` commands (Claude Code), and installs the subagent and skill for **both Claude Code and Cursor CLI** automatically.
+The installer checks prerequisites, installs the OpenSpec CLI, generates the global `/opsx:*` commands (Claude Code), and installs the subagent and skill for **Claude Code, Cursor CLI, and Codex CLI** automatically.
 
 ```
 ./install.sh --prefix <dir>     # Claude config dir (default ~/.claude, or $CLAUDE_CONFIG_DIR)
@@ -62,7 +63,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, generates the glo
 ./install.sh --uninstall        # remove everything except the CLI
 ```
 
-**Restart your agent CLI afterwards** (Claude Code or Cursor) so it picks up the new skill, subagent, and commands.
+**Restart your agent CLI afterwards** (Claude Code, Cursor, or Codex) so it picks up the new skill, subagent, and commands.
 
 ### Manual install
 
@@ -71,10 +72,14 @@ If you would rather not run the script:
 ```bash
 npm install -g @fission-ai/openspec                      # 1. the CLI
 
-mkdir -p ~/.claude/skills ~/.claude/agents ~/.cursor/agents ~/.cursor/skills   # 2. skill + subagents
+mkdir -p ~/.claude/skills ~/.claude/agents ~/.cursor/agents ~/.cursor/skills \
+         ~/.agents/skills ~/.codex/skills ~/.codex/agents   # 2. skill + subagents
 cp -r skills/opsx-run ~/.claude/skills/
 cp -r skills/opsx-run ~/.cursor/skills/
-chmod +x ~/.claude/skills/opsx-run/*.sh ~/.cursor/skills/opsx-run/*.sh
+cp -r skills/opsx-run ~/.agents/skills/
+cp -r skills/opsx-run ~/.codex/skills/
+chmod +x ~/.claude/skills/opsx-run/*.sh ~/.cursor/skills/opsx-run/*.sh \
+         ~/.agents/skills/opsx-run/*.sh ~/.codex/skills/opsx-run/*.sh
 cp agents/opsx-applier.md ~/.claude/agents/
 # Cursor CLI subagent (name + description frontmatter only):
 awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' agents/opsx-applier.md \
@@ -138,6 +143,7 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> apply` | Checks the change is applyable, then dispatches the apply to ops-applier |
 | `/opsx-run <change> apply --agent-cli agent` | Same, but launches the window with Cursor CLI (`agent` on Linux) |
 | `/opsx-run <change> apply --agent-cli claude` | Same, but launches with Claude Code |
+| `/opsx-run <change> apply --agent-cli codex` | Same, but launches with Codex CLI (applies directly — no subagent) |
 | `/opsx-run <change> apply --model sonnet-4` | Same, but pins the apply window's model (default: the session that ran `/opsx-run`) |
 | `/opsx-run <change> verify` | Runs `openspec validate --strict` + `status` **inline** and reports; only bothers the window if it fails |
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
@@ -148,6 +154,7 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> land` | Merge (via `opsx-merge.sh`) + archive + delete branch + close the window |
 | `/opsx-run <change> land --into develop` | Same, into another branch |
 | `/opsx-run <change> land --force-tasks` | Same, but skips the unchecked-tasks gate |
+| `/opsx-run <change> land --skip-merge` | Already merged: skip merge, still archive + cleanup |
 | `/opsx-run <change> close` | Closes that change's window |
 | `/opsx-run close-all` | Closes every tmux-opsx window in the session (asks first) |
 | `/opsx-run list` | Shows the windows in the current session (or the project's, from outside tmux) |
@@ -178,13 +185,16 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-window.sh close  <change> [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh close  --all    [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh status <change> [--lines N]
+~/.claude/skills/opsx-run/opsx-window.sh mark   <change> <busy|done|fail|idle>
 ~/.claude/skills/opsx-run/opsx-window.sh list
 
 ~/.claude/skills/opsx-run/opsx-merge.sh <change> [--into <branch>] [--dry-run]
-~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--force-tasks] [--dry-run]
+~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--skip-merge] [--force-tasks] [--dry-run]
 ```
 
-`opsx-window.sh` prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, or `sent @7 2:add-auth`. Called from outside tmux, `ensure` appends `session=created` when it had to start the session, plus an `# attach with: …` hint.
+`opsx-window.sh` prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, `sent @7 2:add-auth`, or `marked @7 2:add-auth status=done`. Called from outside tmux, `ensure` appends `session=created` when it had to start the session, plus an `# attach with: …` hint.
+
+Windows show work state in the **title and status-bar color**: `…change` (busy, yellow), `✓change` (done, green), `✗change` (fail, red). Lookups use the `@opsx_change` tag, so badges do not break later commands.
 
 Session names come from the project folder with `.`, `:` and whitespace folded to `-`, since tmux treats `.` and `:` as target separators — `~/code/my.app` becomes the session `my-app`.
 
@@ -194,9 +204,9 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 
 1. **Preconditions.** The skill refuses to guess a change name — if it is missing or ambiguous it lists the active changes and asks.
 2. **Session.** Inside tmux, the window goes in your current session. Outside tmux, it creates (or reuses) a **session named after the project folder** and tells you how to attach.
-3. **Window.** `opsx-window.sh` finds a window whose name matches the change, or creates one with `tmux new-window -n <change> -c <project>` running the detected agent CLI (`claude --permission-mode bypassPermissions` or `agent --force` for Cursor) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor` to override, or set `$OPSX_AGENT_CLI`. Pass `--model <id>` (or `$OPSX_MODEL`) to pin the model; the default is this session's model (Cursor `selectedModel`, else `$ANTHROPIC_MODEL` / Claude settings). From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`. `automatic-rename` and `allow-rename` are turned off, so the window keeps the change's name for the whole lifecycle.
-4. **Dispatch.** The window delegates to the **ops-applier** subagent (Claude Agent tool / Cursor Task tool). Cursor CLI only loads project agents from `.cursor/agents/` — `ensure` symlinks `~/.cursor/agents/opsx-applier.md` into the project before launch so Task accepts `subagent_type: "ops-applier"`.
-5. **Apply.** The subagent implements in a single git worktree on branch **`opsx/<change>`**, then build/commit/report. Parallel workers are opt-in only when you ask for them explicitly.
+3. **Window.** `opsx-window.sh` finds a window by `@opsx_change` (or creates one with `tmux new-window -n <change> -c <project>`) running the detected agent CLI (`claude --permission-mode bypassPermissions`, `agent --force --approve-mcps --trust` for Cursor, or `codex --dangerously-bypass-approvals-and-sandbox` for Codex) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor|codex` to override, or set `$OPSX_AGENT_CLI`. Pass `--model <id>` (or `$OPSX_MODEL`) to pin the model; the default is this session's model (Cursor `selectedModel`, else `$ANTHROPIC_MODEL` / Claude settings / Codex `~/.codex/config.toml`). From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`; from a Codex session, to `codex`. New work marks the window **busy** (`…change`, yellow). When the agent finishes it marks **done** (`✓change`, green) or **fail** (`✗change`, red). `automatic-rename` / `allow-rename` stay off so the badge is not overwritten by the process name.
+4. **Dispatch.** On Claude/Cursor the window delegates to the **ops-applier** subagent (Claude Agent tool / Cursor Task tool). Cursor CLI only loads project agents from `.cursor/agents/` — `ensure` symlinks `~/.cursor/agents/opsx-applier.md` into the project before launch so Task accepts `subagent_type: "ops-applier"`. A Codex window applies the change itself (custom agent `~/.codex/agents/ops-applier.toml` is installed, but spawn-by-name is unreliable).
+5. **Apply.** The subagent (or, on Codex, the window itself) implements in a single git worktree on branch **`opsx/<change>`**, then build/commit/report. Parallel workers are opt-in only when you ask for them explicitly.
 6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
 
 Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send. Each one is also stamped with an `@opsx_change` tmux option, which is how `close --all` finds exactly the windows tmux-opsx created.
@@ -233,9 +243,10 @@ Nothing happens unless every gate passes:
 | All artifacts present | Proposal/design/specs/tasks exist |
 | **Every task in `tasks.md` checked** | `openspec status`'s `isComplete` only means the *artifacts* exist — it is true with tasks still unchecked, so the checkboxes are counted directly |
 | Clean working tree | Never merge on top of uncommitted work |
-| Branch found, and ahead of the target | Nothing to land otherwise |
+| Branch found | Discovery must pick the change branch |
+| Branch ahead of the target | If it is **already merged**, land stops with `ALREADY_MERGED` (exit 2) and asks whether to `--skip-merge` and still archive + clean up |
 
-Run it with `--dry-run` first to see exactly what it would do. Other flags: `--branch <name>` when discovery guesses wrong, `--skip-specs` for tooling/doc changes, `--force-tasks` to land with unchecked boxes still in `tasks.md`, `--no-close`, `--keep-branch`, `--keep-worktree`.
+Run it with `--dry-run` first to see exactly what it would do. Other flags: `--branch <name>` when discovery guesses wrong, `--skip-specs` for tooling/doc changes, `--force-tasks` to land with unchecked boxes still in `tasks.md`, `--skip-merge` when the branch is already in the target, `--no-close`, `--keep-branch`, `--keep-worktree`.
 
 **It never pushes.** The merge, archive and commit stay local, and it prints the `git push origin <branch>` to run when you're ready.
 
@@ -280,13 +291,15 @@ Closing kills the agent session in that window along with anything it still had 
 
 **`merge`/`land` hit conflicts** — nothing was written: the merge is aborted and you are back on your starting branch with a clean tree. Resolve in the change's window, then merge (or land) again.
 
+**`land` says already merged** — the change branch has no commits the target is missing (squash, merge, or cherry-pick already landed). Archive and cleanup did not run. `/opsx-run` asks whether to skip the merge and finish those steps (`--skip-merge`); it will not tell you to archive by hand.
+
 **npm permission errors on install** — either `sudo npm install -g @fission-ai/openspec`, or point npm at a writable prefix with `npm config set prefix ~/.local`.
 
 ---
 
 ## Notes and limits
 
-- Windows launch with permission bypass (`claude --permission-mode bypassPermissions` or `agent --force`) so they never stall on a prompt while unattended. Everything they do happens in git worktrees, and the agent reports its branch back.
+- Windows launch with permission bypass (`claude --permission-mode bypassPermissions`, `agent --force --approve-mcps --trust`, or `codex --dangerously-bypass-approvals-and-sandbox`) so they never stall on a prompt while unattended. `--approve-mcps` loads `~/.cursor/mcp.json` (browser-use) into the Cursor tmux window. Cursor Task subagents often still lack MCP — the dispatcher then runs browser-use MCP itself. A Codex window applies the change itself. Everything they do happens in git worktrees, and the agent reports its branch back.
 - Landing never pushes, and it is the only command that writes to your git history. Everything else is confined to tmux and the OpenSpec files.
 - The `ops-applier` agent has no `Skill` tool, so it drives the `openspec` CLI directly (`openspec instructions apply --change <c> --json`) instead of calling `/opsx:apply`. That is the same work the command describes. Add `Skill` to its `tools:` list in `agents/opsx-applier.md` if you want it to use the command instead.
 - Back-to-back sends to the same window are spaced slightly, because the Claude TUI can concatenate two prompts into one input box otherwise.

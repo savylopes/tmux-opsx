@@ -14,22 +14,37 @@
 #   opsx-window.sh status <change> [--lines N]
 #   opsx-window.sh detect-cli [--agent-cli <cmd>]
 #   opsx-window.sh detect-model [--model <id>]
+#   opsx-window.sh mark   <change> <busy|done|fail|idle>   # title badge + status color
 #   opsx-window.sh list
 #
+# Window status badges (title + status-bar color). Lookups use @opsx_change, so
+# renaming for the badge does not break ensure/send/close.
 # Agent CLI selection (ensure only):
-#   --agent-cli <name>   Launch with this command (claude, agent, cursor, or a path)
+#   --agent-cli <name>   Launch with this command (claude, agent, cursor, codex, or a path)
 #   $OPSX_AGENT_CLI      Same, as a default for every call
-#   Auto-detect           Cursor when $CURSOR_AGENT is set, else claude if on PATH,
-#                         else agent (Linux Cursor CLI), else error
-#   --model <id>         Model for new windows (claude/agent --model)
+#   Auto-detect           Cursor when $CURSOR_AGENT is set, else Codex when running
+#                         under codex, else claude if on PATH, else agent (Linux
+#                         Cursor CLI), else codex, else error
+#   --model <id>         Model for new windows (claude/agent/codex --model)
 #   $OPSX_MODEL          Same, as a default for every call
 #   Auto-detect           Cursor ~/.cursor/cli-config.json selectedModel,
-#                         else $ANTHROPIC_MODEL, else Claude settings.json model
+#                         else $ANTHROPIC_MODEL, else Claude settings.json model,
+#                         else Codex ~/.codex/config.toml model
 #   When launching `agent`, ensure also links ops-applier into
 #   <cwd>/.cursor/agents/ so Cursor Task can use subagent_type ops-applier.
+#   Cursor windows use `agent --force --approve-mcps --trust` so ~/.cursor/mcp.json
+#   (browser-use) is loaded; Task subagents still often lack MCP — the dispatcher
+#   prompt tells the window to run MCP browser tests itself.
+#   Codex CLI has no subagent/Task tool, so a codex window applies the change
+#   directly (its tmux window/session is the isolation boundary). It launches as
+#   `codex --dangerously-bypass-approvals-and-sandbox` so it never stalls on a
+#   prompt while unattended.
 #
-# Inside tmux the window goes in the caller's session. Outside tmux, `ensure`
-# creates (or reuses) a session named after the project folder and prints an
+# Inside tmux the window goes in the caller's session. Codex (and some
+# sandboxes) strip $TMUX from the child environment; opsx-window.sh recovers
+# TMUX/TMUX_PANE from /proc so it still uses the same session instead of
+# creating a new one named after the project. Outside tmux, `ensure` creates
+# (or reuses) a session named after the project folder and prints an
 # "attach with:" hint; `send`/`status`/`list` look that session up and never
 # create one.
 #
@@ -42,9 +57,49 @@ die() { printf 'opsx-window: %s\n' "$1" >&2; exit 1; }
 
 require_tmux() {
   command -v tmux >/dev/null 2>&1 || die "tmux is not installed."
+  recover_tmux_env || true
 }
 
-inside_tmux() { [ -n "${TMUX:-}" ]; }
+inside_tmux() { recover_tmux_env; [ -n "${TMUX:-}" ]; }
+
+# Codex (and some sandboxes) strip $TMUX / $TMUX_PANE from the child environment
+# even when the process is still inside a tmux pane. Without $TMUX, `ensure`
+# thinks it is outside tmux and starts a *new* session named after the project.
+# Walk /proc for the real values before deciding.
+recover_tmux_env() {
+  local pid=$$ i=0 envline pane sock
+  if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+    return 0
+  fi
+  while [ "$pid" -gt 1 ] && [ "$i" -lt 30 ]; do
+    if [ -r "/proc/$pid/environ" ]; then
+      if [ -z "${TMUX:-}" ]; then
+        envline=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+                  | awk -F= '/^TMUX=/{print substr($0,6); exit}')
+        if [ -n "$envline" ]; then
+          sock=${envline%%,*}
+          if [ -z "$sock" ] || [ -S "$sock" ]; then
+            TMUX=$envline
+            export TMUX
+          fi
+        fi
+      fi
+      if [ -z "${TMUX_PANE:-}" ]; then
+        pane=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+               | awk -F= '/^TMUX_PANE=/{print $2; exit}')
+        if [ -n "$pane" ]; then
+          TMUX_PANE=$pane
+          export TMUX_PANE
+        fi
+      fi
+    fi
+    [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] && return 0
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -z "$pid" ] && break
+    i=$((i + 1))
+  done
+  [ -n "${TMUX:-}" ] || [ -n "${TMUX_PANE:-}" ]
+}
 
 # Session name for a project directory: its folder name, with tmux's target
 # metacharacters ('.' and ':') and whitespace folded to '-'.
@@ -68,6 +123,7 @@ session_exists() {
 # wrong answer when several clients are attached.
 current_session() {
   local s
+  recover_tmux_env || true
   if [ -n "${TMUX_PANE:-}" ]; then
     s=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
   fi
@@ -90,10 +146,17 @@ lookup_session() {
   printf '%s' "$sess"
 }
 
-# Window id (@N) for a window named exactly $2 in session $1, empty if absent.
-# Everything downstream targets the id: it survives renames and index shifts,
-# and sidesteps ':' / '.' being target metacharacters.
+# Window id (@N) for change $2 in session $1, empty if absent.
+# Prefer @opsx_change (survives title badges like "✓add-auth"); fall back to an
+# exact window-name match for older windows created before tagging.
 find_window() {
+  local id
+  id=$(tmux list-windows -t "$1" -F '#{window_id} #{@opsx_change}' 2>/dev/null \
+       | awk -v n="$2" 'NF>1 && $2==n { print $1; exit }')
+  if [ -n "$id" ]; then
+    printf '%s' "$id"
+    return 0
+  fi
   tmux list-windows -t "$1" -F '#{window_id} #{window_name}' 2>/dev/null \
     | awk -v n="$2" '{ id=$1; $1=""; sub(/^ /,""); if ($0==n) { print id; exit } }'
 }
@@ -107,6 +170,46 @@ tag_window() {
   [ -n "${4:-}" ] && tmux set-option -w -t "$1" @opsx_model "$4" >/dev/null 2>&1
   tmux set-window-option -t "$1" automatic-rename off >/dev/null 2>&1
   tmux set-window-option -t "$1" allow-rename off >/dev/null 2>&1
+}
+
+# Apply a status badge to the window title and a status-bar color.
+# Statuses: idle (plain name) | busy (…name, yellow) | done (✓name, green) | fail (✗name, red)
+apply_window_status() {
+  local win=$1 change=$2 status=$3
+  local title style
+  case "$status" in
+    idle|"")
+      title=$change
+      style="default"
+      status=idle
+      ;;
+    busy|working|running)
+      title="…${change}"
+      style="fg=black,bg=yellow,bold"
+      status=busy
+      ;;
+    done|ok|pass|success)
+      title="✓${change}"
+      style="fg=black,bg=green,bold"
+      status=done
+      ;;
+    fail|failed|error)
+      title="✗${change}"
+      style="fg=white,bg=red,bold"
+      status=fail
+      ;;
+    *)
+      die "unknown status '$status' (expected busy|done|fail|idle)"
+      ;;
+  esac
+  tmux set-option -w -t "$win" @opsx_status "$status" >/dev/null 2>&1
+  tmux rename-window -t "$win" "$title" >/dev/null 2>&1 \
+    || die "failed to rename window $win to $title"
+  tmux set-window-option -t "$win" window-status-style "$style" >/dev/null 2>&1 || true
+  tmux set-window-option -t "$win" window-status-current-style "$style" >/dev/null 2>&1 || true
+  # Keep rename locked so the agent CLI process cannot overwrite the badge.
+  tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1
+  tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1
 }
 
 # Window id of the pane we are running in, empty when outside tmux.
@@ -133,8 +236,9 @@ send_prompt() {
 # Normalize user-facing CLI names to the binary we exec.
 normalize_agent_cli() {
   case "$1" in
-    cursor) printf '%s' agent ;;
-    *)      printf '%s' "$1" ;;
+    cursor)        printf '%s' agent ;;
+    codex-cli|oai) printf '%s' codex ;;
+    *)             printf '%s' "$1" ;;
   esac
 }
 
@@ -195,6 +299,31 @@ running_under_claude() {
   return 1
 }
 
+# True when running under Codex CLI. Codex sets CODEX_SANDBOX* on the shells it
+# spawns; otherwise walk the parent chain for the `codex` process.
+running_under_codex() {
+  [ -n "${CODEX_SANDBOX:-}" ] && return 0
+  [ -n "${CODEX_SANDBOX_NETWORK_DISABLED:-}" ] && return 0
+
+  local pid=$$ i=0 args comm
+  while [ "$pid" -gt 1 ] && [ "$i" -lt 25 ]; do
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || break
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$args" in
+      *codex\ *|*/codex|*codex-cli*)
+        return 0 ;;
+    esac
+    case "$comm" in
+      codex|Codex)
+        return 0 ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -z "$pid" ] && break
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Pick which agent CLI launches new windows. Precedence: flag > $OPSX_AGENT_CLI >
 # host detection (Cursor vs Claude) > claude on PATH > agent on PATH > error.
 resolve_agent_cli() {
@@ -208,12 +337,16 @@ resolve_agent_cli() {
     cli=agent
   elif running_under_claude && command -v claude >/dev/null 2>&1; then
     cli=claude
+  elif running_under_codex && command -v codex >/dev/null 2>&1; then
+    cli=codex
   elif command -v claude >/dev/null 2>&1; then
     cli=claude
   elif command -v agent >/dev/null 2>&1; then
     cli=agent
+  elif command -v codex >/dev/null 2>&1; then
+    cli=codex
   else
-    die "no agent CLI found — install claude (Claude Code) or agent (Cursor CLI), or pass --agent-cli <cmd>."
+    die "no agent CLI found — install claude (Claude Code), agent (Cursor CLI), or codex (Codex CLI), or pass --agent-cli <cmd>."
   fi
   command -v "$cli" >/dev/null 2>&1 \
     || die "agent CLI '$cli' is not on PATH — install it or pass --agent-cli <cmd>."
@@ -241,6 +374,28 @@ print(obj if isinstance(obj, str) else "")
   printf '%s' "$val"
 }
 
+# Read a top-level string key from a TOML file (e.g. Codex config.toml). Handles
+# `key = "value"` and `key = 'value'`, ignoring commented lines. Empty on miss.
+toml_str() {
+  local file=$1 key=$2
+  [ -f "$file" ] || return 0
+  awk -v k="$key" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*\[/ { insec=1 }             # stop at the first [section]
+    !insec {
+      line=$0
+      sub(/[[:space:]]*#.*$/, "", line)       # strip trailing comments
+      if (match(line, "^[[:space:]]*" k "[[:space:]]*=")) {
+        sub("^[[:space:]]*" k "[[:space:]]*=[[:space:]]*", "", line)
+        gsub(/^["'\'']|["'\'']$/, "", line)
+        gsub(/[[:space:]]*$/, "", line)
+        print line
+        exit
+      }
+    }
+  ' "$file" 2>/dev/null
+}
+
 # True when this id means "use the CLI default" — omit --model.
 model_is_default() {
   case "$1" in
@@ -263,6 +418,8 @@ resolve_model() {
     [ -n "$model" ] || model=$(json_str "$HOME/.cursor/cli-config.json" model.modelId)
   elif running_under_claude; then
     model=$(json_str "$HOME/.claude/settings.json" model)
+  elif running_under_codex; then
+    model=$(toml_str "${CODEX_HOME:-$HOME/.codex}/config.toml" model)
   fi
   if model_is_default "$model"; then
     printf '%s' ""
@@ -282,8 +439,19 @@ build_launch_cmd() {
       printf 'claude --permission-mode bypassPermissions%s "$(cat %q)"' "$model_flag" "$prompt_file"
       ;;
     agent)
-      # Linux/macOS Cursor CLI is the `agent` binary; --force skips approval prompts.
-      printf 'agent --force%s "$(cat %q)"' "$model_flag" "$prompt_file"
+      # --force: skip command approval. --approve-mcps: load ~/.cursor/mcp.json
+      # (browser-use, …) in this unattended window — without it Task/ops-applier
+      # inherit no MCP and fall back to CLI/CDP. --trust: skip workspace prompt.
+      printf 'agent --force --approve-mcps --trust%s "$(cat %q)"' "$model_flag" "$prompt_file"
+      ;;
+    codex)
+      # No subagent tool — the window applies the change itself. Bypass all
+      # approval/sandbox prompts so it runs unattended (the tmux window is the
+      # isolation boundary). Codex takes the model with -m, not --model.
+      local codex_model_flag=""
+      [ -n "$model" ] && codex_model_flag=$(printf ' -m %q' "$model")
+      printf 'codex --dangerously-bypass-approvals-and-sandbox%s "$(cat %q)"' \
+        "$codex_model_flag" "$prompt_file"
       ;;
     *)
       printf '%s%s "$(cat %q)"' "$cli" "$model_flag" "$prompt_file"
@@ -371,6 +539,7 @@ cmd_ensure() {
       win=$(tmux new-session -d -s "$sess" -n "$change" -c "$cwd" -P -F '#{window_id}' \
             "$launch" 2>&1) || die "failed to create session '$sess': $win"
       tag_window "$win" "$change" "$cli" "$model"
+      apply_window_status "$win" "$change" busy
       printf 'created %s %s:%s agent=%s model=%s session=created\n' \
         "$win" "$sess" "$change" "$cli" "${model:-default}"
       printf '# attach with: tmux attach -t %s\n' "$sess"
@@ -382,6 +551,7 @@ cmd_ensure() {
 
   if [ -n "$win" ]; then
     [ "$create_only" -eq 1 ] && die "window '$change' already exists ($win)"
+    apply_window_status "$win" "$change" busy
     send_prompt "$win" "$prompt_file"
     printf 'reused %s %s:%s\n' "$win" "$sess" "$change"
     inside_tmux || printf '# attach with: tmux attach -t %s\n' "$sess"
@@ -398,6 +568,7 @@ cmd_ensure() {
   # relabel the window to the running command ("claude" / "agent") and lose the
   # change name the whole workflow keys off.
   tag_window "$win" "$change" "$cli" "$model"
+  apply_window_status "$win" "$change" busy
 
   printf 'created %s %s:%s agent=%s model=%s\n' \
     "$win" "$sess" "$change" "$cli" "${model:-default}"
@@ -432,6 +603,7 @@ cmd_send() {
     return $?
   fi
 
+  apply_window_status "$win" "$change" busy
   send_prompt "$win" "$prompt_file"
   printf 'sent %s %s:%s\n' "$win" "$sess" "$change"
 }
@@ -554,14 +726,32 @@ cmd_detect_model() {
   printf '%s\n' "${model:-default}"
 }
 
+cmd_mark() {
+  local change=${1:-} status=${2:-}
+  [ -n "$change" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle>"
+  [ -n "$status" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle>"
+
+  require_tmux
+  local sess win
+  sess=$(lookup_session) || exit 1
+  win=$(find_window "$sess" "$change")
+  [ -n "$win" ] || die "no window for change '$change' in session '$sess'."
+  # Ensure the tag exists even on older windows found by name only.
+  tmux set-option -w -t "$win" @opsx_change "$change" >/dev/null 2>&1
+  apply_window_status "$win" "$change" "$status"
+  printf 'marked %s %s:%s status=%s\n' "$win" "$sess" "$change" \
+    "$(tmux show-options -wv -t "$win" @opsx_status 2>/dev/null || echo "$status")"
+}
+
 cmd_list() {
   require_tmux
   local sess
   sess=$(lookup_session) || exit 1
   printf '# session %s\n' "$sess"
   # The opsx column marks windows this script created (see tag_window).
+  # status comes from @opsx_status (busy|done|fail|idle).
   tmux list-windows -t "$sess" \
-    -F '#{window_id}	#{?@opsx_change,opsx,-}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
+    -F '#{window_id}	#{?@opsx_change,opsx,-}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
 }
 
 case "${1:-}" in
@@ -569,11 +759,12 @@ case "${1:-}" in
   send)       shift; cmd_send "$@" ;;
   close)      shift; cmd_close "$@" ;;
   status)     shift; cmd_status "$@" ;;
+  mark)         shift; cmd_mark "$@" ;;
   detect-cli)   shift; cmd_detect_cli "$@" ;;
   detect-model) shift; cmd_detect_model "$@" ;;
   list)         shift; cmd_list "$@" ;;
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|close|status|detect-cli|detect-model|list)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|list)" ;;
 esac
