@@ -3,24 +3,29 @@
 #
 # Installs:
 #   1. the OpenSpec CLI            (npm -g @fission-ai/openspec)
-#   2. the /opsx:* slash commands  -> ~/.claude/commands/opsx/
-#   3. the ops-applier subagent    -> ~/.claude/agents/opsx-applier.md
-#                                   -> ~/.cursor/agents/opsx-applier.md
-#   4. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
+#   2. OpenSpec skills + /opsx:*   -> global dirs for Claude / Cursor / Codex / OpenCode
+#      (openspec-propose, openspec-apply-change, … plus slash commands)
+#   3. Graphify CLI + /graphify    -> global dirs for Claude / Cursor / Codex / OpenCode
+#                                   -> ~/.agents/skills/graphify/
+#   4. ops-applier + ops-qa        -> ~/.claude/agents/opsx-{applier,qa}.md
+#                                   -> ~/.cursor/agents/opsx-{applier,qa}.md
+#                                   -> ~/.codex/agents/ops-{applier,qa}.toml
+#                                   -> ~/.config/opencode/agents/ops-{applier,qa}.md
+#   5. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
 #                                   -> ~/.cursor/skills/opsx-run/
-#                                   -> ~/.agents/skills/opsx-run/   (Codex user skills)
-#                                   -> ~/.codex/skills/opsx-run/    (Codex home, if CODEX_HOME differs)
+#                                   -> ~/.agents/skills/opsx-run/   (Codex / Agent Skills)
+#                                   -> ~/.codex/skills/opsx-run/    (Codex home)
+#                                   -> ~/.config/opencode/skills/opsx-run/  (OpenCode)
 #      (opsx-window.sh + opsx-merge.sh + opsx-land.sh)
-#   5. Codex ops-applier           -> ~/.codex/agents/ops-applier.toml
 #
-# Window CLIs: Claude Code (claude), Cursor CLI (agent), and Codex CLI (codex).
-# At least one of the three must be on PATH. Codex loads skills from
-# ~/.agents/skills (and $CODEX_HOME/skills), not ~/.claude or ~/.cursor.
+# Window CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex), and
+# OpenCode (opencode). At least one must be on PATH.
 #
 # Usage: ./install.sh [options]
 #   --prefix <dir>     Claude config dir (default: ~/.claude, or $CLAUDE_CONFIG_DIR)
 #   --skip-openspec    Don't install/upgrade the OpenSpec CLI
-#   --skip-commands    Don't install the global /opsx:* commands
+#   --skip-graphify    Don't verify/install Graphify or copy its global skill
+#   --skip-commands    Don't install global OpenSpec skills / /opsx:* commands
 #   --no-backup        Overwrite existing files without keeping a .bak copy
 #   --uninstall        Remove everything this script installs (except the CLI)
 #   -h, --help         Show this help
@@ -33,6 +38,7 @@ set -uo pipefail
 
 EXPLICIT_PREFIX=0
 SKIP_OPENSPEC=0
+SKIP_GRAPHIFY=0
 SKIP_COMMANDS=0
 BACKUP=1
 UNINSTALL=0
@@ -57,6 +63,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --prefix)        PREFIX=${2:?--prefix needs a directory}; EXPLICIT_PREFIX=1; shift 2 ;;
     --skip-openspec) SKIP_OPENSPEC=1; shift ;;
+    --skip-graphify) SKIP_GRAPHIFY=1; shift ;;
     --skip-commands) SKIP_COMMANDS=1; shift ;;
     --no-backup)     BACKUP=0; shift ;;
     --uninstall)     UNINSTALL=1; shift ;;
@@ -154,6 +161,108 @@ install_openspec() {
   return 1
 }
 
+graphify_version() {
+  graphify --version 2>/dev/null | awk '{print $NF; exit}'
+}
+
+# Verify graphify is on PATH, or install it (uv tool / pipx / pip --user).
+install_graphify_cli() {
+  local user_local=$HOME/.local
+  export PATH="$user_local/bin:$PATH"
+
+  if have graphify; then
+    ok "graphify $(graphify_version) ($(command -v graphify))"
+    return 0
+  fi
+
+  if have uv; then
+    note "installing graphifyy with uv tool"
+    if run_as_owner uv tool install graphifyy >/dev/null 2>&1; then
+      hash -r 2>/dev/null || true
+      if have graphify; then
+        ok "graphify $(graphify_version) ($(command -v graphify))"
+        return 0
+      fi
+    fi
+  fi
+
+  if have pipx; then
+    note "installing graphifyy with pipx"
+    if run_as_owner pipx install graphifyy >/dev/null 2>&1; then
+      hash -r 2>/dev/null || true
+      if have graphify; then
+        ok "graphify $(graphify_version) ($(command -v graphify))"
+        return 0
+      fi
+    fi
+  fi
+
+  if have python3; then
+    note "installing graphifyy with pip --user"
+    if run_as_owner python3 -m pip install --user graphifyy >/dev/null 2>&1 \
+       || run_as_owner python3 -m pip install --user graphifyy --break-system-packages >/dev/null 2>&1; then
+      hash -r 2>/dev/null || true
+      if have graphify; then
+        ok "graphify $(graphify_version) ($(command -v graphify))"
+        return 0
+      fi
+    fi
+  fi
+
+  warn "could not install graphify"
+  note "try: uv tool install graphifyy"
+  note "or:  pipx install graphifyy"
+  return 1
+}
+
+# Copy a graphify skill tree (SKILL.md + references/) into a global skills dir.
+copy_graphify_skill_tree() {
+  local src=$1 dest=$2 label=$3
+  local f
+  [ -d "$src" ] || return 1
+  [ -f "$src/SKILL.md" ] || return 1
+  mkdir -p "$dest" || die "cannot create $dest"
+  install_file "$src/SKILL.md" "$dest/SKILL.md"
+  [ -f "$src/.graphify_version" ] && install_file "$src/.graphify_version" "$dest/.graphify_version"
+  if [ -d "$src/references" ]; then
+    mkdir -p "$dest/references"
+    for f in "$src/references"/*; do
+      [ -f "$f" ] || continue
+      install_file "$f" "$dest/references/$(basename "$f")"
+    done
+  fi
+  ok "/graphify -> $dest ($label)"
+}
+
+# Install Graphify's packaged skill globally for Claude, Codex, OpenCode, Agent
+# Skills. Cursor has no global `graphify install --platform cursor` (that writes
+# a project rule), so copy the Claude skill tree into ~/.cursor/skills/graphify.
+install_graphify_skills() {
+  local p
+  [ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ "$PREFIX" = "$HOME/.claude" ] || export CLAUDE_CONFIG_DIR=$PREFIX
+
+  for p in claude codex opencode agents; do
+    if graphify install --platform "$p" >/dev/null 2>&1; then
+      ok "graphify install --platform $p"
+    else
+      warn "graphify install --platform $p failed"
+      return 1
+    fi
+  done
+
+  copy_graphify_skill_tree "$PREFIX/skills/graphify" "$HOME/.cursor/skills/graphify" "Cursor CLI" \
+    || copy_graphify_skill_tree "$HOME/.claude/skills/graphify" "$HOME/.cursor/skills/graphify" "Cursor CLI" \
+    || warn "could not copy graphify skill into ~/.cursor/skills/graphify"
+}
+
+remove_graphify_skill() {
+  local dest=$1 label=$2
+  if [ -d "$dest" ]; then
+    rm -rf "$dest"
+    ok "removed $dest ($label)"
+  fi
+}
+
 # Copy a file, keeping a timestamped backup of anything it replaces.
 install_file() {
   local src=$1 dest=$2
@@ -170,10 +279,98 @@ install_file() {
 
 CURSOR_AGENTS_DIR=$HOME/.cursor/agents
 CURSOR_SKILLS_DIR=$HOME/.cursor/skills/opsx-run
+CURSOR_COMMANDS_DIR=$HOME/.cursor/commands
 CODEX_HOME_DIR=${CODEX_HOME:-$HOME/.codex}
 CODEX_AGENTS_DIR=$CODEX_HOME_DIR/agents
 CODEX_SKILLS_DIR=$CODEX_HOME_DIR/skills/opsx-run
+CODEX_OPENSPEC_SKILLS_DIR=$CODEX_HOME_DIR/skills
 AGENTS_SKILLS_DIR=$HOME/.agents/skills/opsx-run
+AGENTS_OPENSPEC_SKILLS_DIR=$HOME/.agents/skills
+OPENCODE_CONFIG_DIR=${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}
+OPENCODE_AGENTS_DIR=$OPENCODE_CONFIG_DIR/agents
+OPENCODE_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/opsx-run
+OPENCODE_OPENSPEC_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills
+OPENCODE_COMMANDS_DIR=$OPENCODE_CONFIG_DIR/commands
+
+# Copy every openspec-* skill folder from a generated tree into a global skills dir.
+install_openspec_skills() {
+  local src_skills=$1 dest_skills=$2 label=$3
+  local d name count=0
+  [ -d "$src_skills" ] || return 0
+  mkdir -p "$dest_skills" || die "cannot create $dest_skills"
+  for d in "$src_skills"/openspec-*; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    mkdir -p "$dest_skills/$name" || die "cannot create $dest_skills/$name"
+    if [ -f "$d/SKILL.md" ]; then
+      install_file "$d/SKILL.md" "$dest_skills/$name/SKILL.md"
+      count=$((count + 1))
+    fi
+  done
+  if [ "$count" -gt 0 ]; then
+    ok "$count OpenSpec skills -> $dest_skills ($label)"
+  fi
+}
+
+# Copy opsx command files (flat opsx-*.md or nested opsx/*.md) into a global dir.
+install_openspec_commands() {
+  local src_commands=$1 dest_commands=$2 label=$3
+  local f name count=0
+  [ -d "$src_commands" ] || return 0
+  mkdir -p "$dest_commands" || die "cannot create $dest_commands"
+  # Cursor / OpenCode style: opsx-propose.md at the commands root.
+  for f in "$src_commands"/opsx-*.md "$src_commands"/opsx-*.toml; do
+    [ -e "$f" ] || continue
+    install_file "$f" "$dest_commands/$(basename "$f")"
+    count=$((count + 1))
+  done
+  # Claude style: commands/opsx/{propose,apply,…}.md
+  if [ -d "$src_commands/opsx" ]; then
+    mkdir -p "$dest_commands/opsx" || die "cannot create $dest_commands/opsx"
+    for f in "$src_commands"/opsx/*; do
+      [ -f "$f" ] || continue
+      install_file "$f" "$dest_commands/opsx/$(basename "$f")"
+      count=$((count + 1))
+    done
+  fi
+  if [ "$count" -gt 0 ]; then
+    ok "$count OpenSpec commands -> $dest_commands ($label)"
+  fi
+}
+
+# Remove globally installed OpenSpec skill folders (openspec-*).
+remove_openspec_skills() {
+  local dest_skills=$1 label=$2
+  local d removed=0
+  [ -d "$dest_skills" ] || return 0
+  for d in "$dest_skills"/openspec-*; do
+    [ -d "$d" ] || continue
+    rm -rf "$d"
+    removed=$((removed + 1))
+  done
+  if [ "$removed" -gt 0 ]; then
+    ok "removed $removed OpenSpec skills from $dest_skills ($label)"
+  fi
+}
+
+# Remove globally installed OpenSpec command files.
+remove_openspec_commands() {
+  local dest_commands=$1 label=$2
+  local f removed=0
+  [ -d "$dest_commands" ] || return 0
+  for f in "$dest_commands"/opsx-*.md "$dest_commands"/opsx-*.toml; do
+    [ -e "$f" ] || continue
+    rm -f "$f"
+    removed=$((removed + 1))
+  done
+  if [ -d "$dest_commands/opsx" ]; then
+    rm -rf "$dest_commands/opsx"
+    ok "removed commands/opsx ($label)"
+  fi
+  if [ "$removed" -gt 0 ]; then
+    ok "removed $removed OpenSpec command files from $dest_commands ($label)"
+  fi
+}
 
 # Install the skill files (SKILL.md + helper scripts) into one destination dir.
 install_opsx_run_skill() {
@@ -190,9 +387,20 @@ install_opsx_run_skill() {
 
 # Cursor subagents use a simpler frontmatter (name + description only). Reuse the
 # body from agents/opsx-applier.md and strip Claude-specific YAML keys.
-install_cursor_agent() {
-  local src=$1 dest=$2 tmp desc
-  desc=$(awk '
+agent_frontmatter_name() {
+  awk '
+    /^---$/ { n++; next }
+    n == 1 && /^name:/ {
+      sub(/^name:[[:space:]]*/, "")
+      gsub(/^"/, ""); gsub(/"$/, "")
+      print
+      exit
+    }
+  ' "$1"
+}
+
+agent_frontmatter_desc() {
+  awk '
     /^---$/ { n++; next }
     n == 1 && /^description:/ {
       sub(/^description:[[:space:]]*/, "")
@@ -200,12 +408,19 @@ install_cursor_agent() {
       print
       exit
     }
-  ' "$src")
-  [ -n "$desc" ] || desc="Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree"
+  ' "$1"
+}
+
+install_cursor_agent() {
+  local src=$1 dest=$2 tmp desc name
+  name=$(agent_frontmatter_name "$src")
+  [ -n "$name" ] || name=$(basename "$dest" .md)
+  desc=$(agent_frontmatter_desc "$src")
+  [ -n "$desc" ] || desc="OpenSpec subagent"
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
   {
     printf '%s\n' '---'
-    printf 'name: ops-applier\n'
+    printf 'name: %s\n' "$name"
     printf 'description: %s\n' "$desc"
     printf 'model: inherit\n'
     printf '%s\n' '---'
@@ -226,24 +441,49 @@ toml_basic_string() {
 # Codex custom agents are TOML under ~/.codex/agents/. Convert the markdown
 # body of opsx-applier.md into developer_instructions.
 install_codex_agent() {
-  local src=$1 dest=$2 tmp desc body
-  desc=$(awk '
-    /^---$/ { n++; next }
-    n == 1 && /^description:/ {
-      sub(/^description:[[:space:]]*/, "")
-      gsub(/^"/, ""); gsub(/"$/, "")
-      print
-      exit
-    }
-  ' "$src")
-  [ -n "$desc" ] || desc="Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree"
+  local src=$1 dest=$2 tmp desc name
+  name=$(agent_frontmatter_name "$src")
+  [ -n "$name" ] || name=$(basename "$dest" .toml)
+  desc=$(agent_frontmatter_desc "$src")
+  [ -n "$desc" ] || desc="OpenSpec subagent"
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
   {
-    printf 'name = "ops-applier"\n'
+    printf 'name = %s\n' "$(toml_basic_string "$name")"
     printf 'description = %s\n' "$(toml_basic_string "$desc")"
     printf 'developer_instructions = """\n'
     awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
     printf '"""\n'
+  } > "$tmp"
+  install_file "$tmp" "$dest"
+  rm -f "$tmp"
+}
+
+# OpenCode agents are markdown under ~/.config/opencode/agents/ (filename = name).
+install_opencode_agent() {
+  local src=$1 dest=$2 tmp desc
+  desc=$(agent_frontmatter_desc "$src")
+  [ -n "$desc" ] || desc="OpenSpec subagent"
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  {
+    printf '%s\n' '---'
+    printf 'description: %s\n' "$desc"
+    printf 'mode: subagent\n'
+    printf 'permission:\n'
+    printf '  edit: allow\n'
+    printf '  bash: allow\n'
+    printf '  read: allow\n'
+    printf '  glob: allow\n'
+    printf '  grep: allow\n'
+    printf '  list: allow\n'
+    printf '  task: allow\n'
+    printf '  skill: allow\n'
+    printf '  webfetch: allow\n'
+    printf '  websearch: allow\n'
+    printf '  todowrite: allow\n'
+    printf '  lsp: allow\n'
+    printf '  external_directory: allow\n'
+    printf '%s\n' '---'
+    awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
   } > "$tmp"
   install_file "$tmp" "$dest"
   rm -f "$tmp"
@@ -256,13 +496,33 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -rf "$CURSOR_SKILLS_DIR" && ok "removed ~/.cursor/skills/opsx-run (Cursor CLI)"
   rm -rf "$AGENTS_SKILLS_DIR" && ok "removed ~/.agents/skills/opsx-run (Codex)"
   rm -rf "$CODEX_SKILLS_DIR" && ok "removed $CODEX_SKILLS_DIR (Codex home)"
+  rm -rf "$OPENCODE_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/opsx-run (OpenCode)"
   rm -f  "$PREFIX/agents/opsx-applier.md" && ok "removed agents/opsx-applier.md (Claude Code)"
+  rm -f  "$PREFIX/agents/opsx-qa.md" && ok "removed agents/opsx-qa.md (Claude Code)"
   rm -f  "$CURSOR_AGENTS_DIR/opsx-applier.md" && ok "removed ~/.cursor/agents/opsx-applier.md (Cursor)"
+  rm -f  "$CURSOR_AGENTS_DIR/opsx-qa.md" && ok "removed ~/.cursor/agents/opsx-qa.md (Cursor)"
   rm -f  "$CODEX_AGENTS_DIR/ops-applier.toml" && ok "removed ~/.codex/agents/ops-applier.toml (Codex)"
-  rm -rf "$PREFIX/commands/opsx" && ok "removed commands/opsx"
+  rm -f  "$CODEX_AGENTS_DIR/ops-qa.toml" && ok "removed ~/.codex/agents/ops-qa.toml (Codex)"
+  rm -f  "$OPENCODE_AGENTS_DIR/ops-applier.md" && ok "removed ~/.config/opencode/agents/ops-applier.md (OpenCode)"
+  rm -f  "$OPENCODE_AGENTS_DIR/ops-qa.md" && ok "removed ~/.config/opencode/agents/ops-qa.md (OpenCode)"
+  remove_openspec_skills "$PREFIX/skills" "Claude Code"
+  remove_openspec_skills "$HOME/.cursor/skills" "Cursor CLI"
+  remove_openspec_skills "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
+  remove_openspec_skills "$CODEX_OPENSPEC_SKILLS_DIR" "Codex"
+  remove_openspec_skills "$OPENCODE_OPENSPEC_SKILLS_DIR" "OpenCode"
+  remove_openspec_commands "$PREFIX/commands" "Claude Code"
+  remove_openspec_commands "$CURSOR_COMMANDS_DIR" "Cursor CLI"
+  remove_openspec_commands "$OPENCODE_COMMANDS_DIR" "OpenCode"
+  remove_graphify_skill "$PREFIX/skills/graphify" "Claude Code"
+  remove_graphify_skill "$HOME/.cursor/skills/graphify" "Cursor CLI"
+  remove_graphify_skill "$HOME/.agents/skills/graphify" "Agent Skills"
+  remove_graphify_skill "$CODEX_HOME_DIR/skills/graphify" "Codex"
+  remove_graphify_skill "$OPENCODE_CONFIG_DIR/skills/graphify" "OpenCode"
   info ""
   info "The OpenSpec CLI was left installed. Remove it with:"
   info "  npm uninstall -g $NPM_PKG"
+  info "The Graphify CLI was left installed. Remove it with:"
+  info "  uv tool uninstall graphifyy"
   exit 0
 fi
 
@@ -309,27 +569,49 @@ fi
 if have claude; then
   ok "claude $(claude --version 2>/dev/null | head -1)"
 else
-  warn "claude CLI not found — optional if you use Cursor CLI instead"
+  warn "claude CLI not found — optional if you use another agent CLI"
   note "install: https://claude.com/claude-code"
 fi
 
 if have agent; then
   ok "agent $(agent --version 2>/dev/null | head -1)"
 else
-  warn "agent CLI not found — optional if you use Claude Code or Codex instead"
+  warn "agent CLI not found — optional if you use another agent CLI"
   note "install: https://cursor.com/docs/cli"
 fi
 
 if have codex; then
   ok "codex $(codex --version 2>/dev/null | head -1)"
 else
-  warn "codex CLI not found — optional if you use Claude Code or Cursor CLI instead"
+  warn "codex CLI not found — optional if you use another agent CLI"
   note "install: https://github.com/openai/codex"
 fi
 
-if ! have claude && ! have agent && ! have codex; then
-  warn "none of claude, agent or codex is on PATH — required, each tmux window runs one of them"
+if have opencode; then
+  ok "opencode $(opencode --version 2>/dev/null | head -1)"
+else
+  warn "opencode CLI not found — optional if you use another agent CLI"
+  note "install: https://opencode.ai"
+fi
+
+if ! have claude && ! have agent && ! have codex && ! have opencode; then
+  warn "none of claude, agent, codex or opencode is on PATH — required, each tmux window runs one of them"
   MISSING=1
+fi
+
+if [ "$SKIP_GRAPHIFY" -eq 1 ]; then
+  if have graphify; then
+    ok "graphify $(graphify_version) (skipped install)"
+  else
+    warn "graphify not on PATH — skipped (--skip-graphify)"
+  fi
+else
+  if have graphify; then
+    ok "graphify $(graphify_version) ($(command -v graphify))"
+  else
+    warn "graphify not found — will install it (uv tool / pipx / pip)"
+    note "install: uv tool install graphifyy"
+  fi
 fi
 
 [ "$MISSING" -eq 0 ] || die "install the missing prerequisites above, then re-run this script."
@@ -350,48 +632,76 @@ else
 fi
 info ""
 
-# ---------- 3. global /opsx:* commands ----------
+# ---------- 3. global OpenSpec skills + /opsx:* commands ----------
 if [ "$SKIP_COMMANDS" -eq 1 ]; then
-  step "Skipping global /opsx:* commands (--skip-commands)"
+  step "Skipping global OpenSpec skills / commands (--skip-commands)"
 else
-  step "Installing the global /opsx:* commands"
+  step "Installing global OpenSpec skills and /opsx:* commands"
   if ! have openspec; then
     warn "openspec not on PATH — skipping (re-run without --skip-openspec)"
   else
-    # Generate the commands with the installed CLI rather than vendoring copies,
-    # so they always match the OpenSpec version actually in use.
+    # Generate with the installed CLI rather than vendoring copies, so they
+    # always match the OpenSpec version actually in use. Then copy into each
+    # tool's *global* config dir (not a project checkout).
     TMPD=$(mktemp -d 2>/dev/null || mktemp -d -t tmuxopsx)
     [ -n "$TMPD" ] && [ -d "$TMPD" ] || die "could not create a temp directory"
-    if (cd "$TMPD" && openspec init --tools claude . >/dev/null 2>&1) \
-       && [ -d "$TMPD/.claude/commands/opsx" ]; then
-      count=0
-      for f in "$TMPD"/.claude/commands/opsx/*.md; do
-        [ -e "$f" ] || continue
-        install_file "$f" "$PREFIX/commands/opsx/$(basename "$f")"
-        count=$((count + 1))
-      done
-      ok "$count commands -> $PREFIX/commands/opsx/"
-      note "available everywhere: /opsx:propose /opsx:apply /opsx:archive /opsx:explore"
-      note "a project's own .claude/commands/opsx/ still takes precedence"
+    if (cd "$TMPD" && openspec init --tools claude,cursor,codex,opencode . >/dev/null 2>&1); then
+      install_openspec_skills "$TMPD/.claude/skills" "$PREFIX/skills" "Claude Code"
+      install_openspec_skills "$TMPD/.cursor/skills" "$HOME/.cursor/skills" "Cursor CLI"
+      install_openspec_skills "$TMPD/.codex/skills" "$CODEX_OPENSPEC_SKILLS_DIR" "Codex"
+      if [ "$AGENTS_OPENSPEC_SKILLS_DIR" != "$CODEX_OPENSPEC_SKILLS_DIR" ]; then
+        install_openspec_skills "$TMPD/.codex/skills" "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
+      fi
+      install_openspec_skills "$TMPD/.opencode/skills" "$OPENCODE_OPENSPEC_SKILLS_DIR" "OpenCode"
+
+      install_openspec_commands "$TMPD/.claude/commands" "$PREFIX/commands" "Claude Code"
+      install_openspec_commands "$TMPD/.cursor/commands" "$CURSOR_COMMANDS_DIR" "Cursor CLI"
+      install_openspec_commands "$TMPD/.opencode/commands" "$OPENCODE_COMMANDS_DIR" "OpenCode"
+      note "available globally: /opsx:propose /opsx:apply /opsx:archive /opsx:explore"
+      note "and skills: openspec-propose, openspec-apply-change, openspec-archive-change, openspec-explore"
+      note "a project's own .claude/.cursor/.opencode copies still take precedence when present"
     else
-      warn "'openspec init' did not produce commands — skipping"
-      note "you can copy them from any OpenSpec project's .claude/commands/opsx/"
+      warn "'openspec init' did not produce skills/commands — skipping"
+      note "you can copy them from any OpenSpec project after: openspec init --tools claude,cursor,codex,opencode"
     fi
     rm -rf "$TMPD"
   fi
 fi
 info ""
 
-# ---------- 4. ops-applier subagent ----------
-step "Installing the ops-applier subagent"
+# ---------- 3b. Graphify CLI + global /graphify skill ----------
+if [ "$SKIP_GRAPHIFY" -eq 1 ]; then
+  step "Skipping Graphify (--skip-graphify)"
+  have graphify || warn "graphify is not on PATH — /graphify needs it at runtime"
+else
+  step "Verifying the Graphify CLI"
+  install_graphify_cli || die "could not install graphify (try: uv tool install graphifyy)"
+  step "Installing the /graphify skill globally"
+  install_graphify_skills || die "could not install the graphify skill"
+fi
+info ""
+
+# ---------- 4. ops-applier + ops-qa subagents ----------
+step "Installing the ops-applier and ops-qa subagents"
 [ -f "$SRC/agents/opsx-applier.md" ] || die "missing $SRC/agents/opsx-applier.md — run this script from the repo checkout"
+[ -f "$SRC/agents/opsx-qa.md" ] || die "missing $SRC/agents/opsx-qa.md — run this script from the repo checkout"
 install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
 ok "ops-applier -> $PREFIX/agents/opsx-applier.md (Claude Code)"
 install_cursor_agent "$SRC/agents/opsx-applier.md" "$CURSOR_AGENTS_DIR/opsx-applier.md"
 ok "ops-applier -> $CURSOR_AGENTS_DIR/opsx-applier.md (Cursor CLI)"
 install_codex_agent "$SRC/agents/opsx-applier.md" "$CODEX_AGENTS_DIR/ops-applier.toml"
 ok "ops-applier -> $CODEX_AGENTS_DIR/ops-applier.toml (Codex CLI)"
-note "implements changes in an isolated git worktree on opsx/<change>"
+install_opencode_agent "$SRC/agents/opsx-applier.md" "$OPENCODE_AGENTS_DIR/ops-applier.md"
+ok "ops-applier -> $OPENCODE_AGENTS_DIR/ops-applier.md (OpenCode)"
+install_file "$SRC/agents/opsx-qa.md" "$PREFIX/agents/opsx-qa.md"
+ok "ops-qa -> $PREFIX/agents/opsx-qa.md (Claude Code)"
+install_cursor_agent "$SRC/agents/opsx-qa.md" "$CURSOR_AGENTS_DIR/opsx-qa.md"
+ok "ops-qa -> $CURSOR_AGENTS_DIR/opsx-qa.md (Cursor CLI)"
+install_codex_agent "$SRC/agents/opsx-qa.md" "$CODEX_AGENTS_DIR/ops-qa.toml"
+ok "ops-qa -> $CODEX_AGENTS_DIR/ops-qa.toml (Codex CLI)"
+install_opencode_agent "$SRC/agents/opsx-qa.md" "$OPENCODE_AGENTS_DIR/ops-qa.md"
+ok "ops-qa -> $OPENCODE_AGENTS_DIR/ops-qa.md (OpenCode)"
+note "applier implements in opsx/<change>; qa verifies UI/UX after each apply round"
 info ""
 
 # ---------- 5. /opsx-run skill ----------
@@ -399,10 +709,11 @@ step "Installing the /opsx-run skill"
 [ -f "$SRC/skills/opsx-run/SKILL.md" ] || die "missing $SRC/skills/opsx-run/SKILL.md — run this script from the repo checkout"
 install_opsx_run_skill "$PREFIX/skills/opsx-run" "Claude Code"
 install_opsx_run_skill "$CURSOR_SKILLS_DIR" "Cursor CLI"
-install_opsx_run_skill "$AGENTS_SKILLS_DIR" "Codex (~/.agents/skills)"
+install_opsx_run_skill "$AGENTS_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
 if [ "$CODEX_SKILLS_DIR" != "$AGENTS_SKILLS_DIR" ]; then
   install_opsx_run_skill "$CODEX_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
 fi
+install_opsx_run_skill "$OPENCODE_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
 info ""
 
 # ---------- verify ----------
@@ -419,16 +730,38 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$AGENTS_SKILLS_DIR/SKILL.md" \
          "$AGENTS_SKILLS_DIR/opsx-window.sh" \
          "$CODEX_SKILLS_DIR/SKILL.md" \
+         "$OPENCODE_SKILLS_DIR/SKILL.md" \
+         "$OPENCODE_SKILLS_DIR/opsx-window.sh" \
          "$PREFIX/agents/opsx-applier.md" \
          "$CURSOR_AGENTS_DIR/opsx-applier.md" \
-         "$CODEX_AGENTS_DIR/ops-applier.toml"; do
+         "$CODEX_AGENTS_DIR/ops-applier.toml" \
+         "$OPENCODE_AGENTS_DIR/ops-applier.md" \
+         "$PREFIX/agents/opsx-qa.md" \
+         "$CURSOR_AGENTS_DIR/opsx-qa.md" \
+         "$CODEX_AGENTS_DIR/ops-qa.toml" \
+         "$OPENCODE_AGENTS_DIR/ops-qa.md"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
+if [ "$SKIP_GRAPHIFY" -eq 0 ]; then
+  for f in "$PREFIX/skills/graphify/SKILL.md" \
+           "$HOME/.cursor/skills/graphify/SKILL.md" \
+           "$HOME/.agents/skills/graphify/SKILL.md" \
+           "$CODEX_HOME_DIR/skills/graphify/SKILL.md" \
+           "$OPENCODE_CONFIG_DIR/skills/graphify/SKILL.md"; do
+    if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
+  done
+  if have graphify; then
+    ok "graphify CLI $(graphify_version)"
+  else
+    warn "graphify CLI not on PATH"; FAIL=1
+  fi
+fi
 for sh in opsx-window.sh opsx-merge.sh opsx-land.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
   [ -x "$AGENTS_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex ~/.agents)"; FAIL=1; }
   [ -x "$CODEX_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex home)"; FAIL=1; }
+  [ -x "$OPENCODE_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (OpenCode)"; FAIL=1; }
   if bash -n "$PREFIX/skills/opsx-run/$sh" 2>/dev/null; then
     ok "$sh parses"
   else
@@ -443,7 +776,7 @@ info ""
 info "${B}Next steps${N}"
 info "  1. In a project:   ${B}openspec init --tools claude${N}  (Claude Code)"
 info "                     ${B}openspec init --tools cursor${N}  (Cursor CLI / IDE)"
-info "  2. Restart your agent CLI (Claude, Cursor, or Codex) so it picks up the skill"
+info "  2. Restart your agent CLI (Claude, Cursor, Codex, or OpenCode) so it picks up the skill"
 info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
 info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
 info ""

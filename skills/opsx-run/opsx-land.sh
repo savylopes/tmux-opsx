@@ -22,6 +22,11 @@
 # window cannot close itself while it is still running the merge.
 #
 # Never pushes. The push command is printed for you to run.
+#
+# If the working tree is dirty, land stashes it (including untracked files),
+# finishes the land, then restores the stash automatically — including on
+# early exits (e.g. ALREADY_MERGED). The change branch's worktree, if dirty,
+# is still refused by opsx-merge.sh.
 
 set -uo pipefail
 
@@ -157,11 +162,58 @@ fi
 
 START_BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
 
+# ---------------------------------------------------------------- stash WIP
+# Merge needs a clean tree. Stash local WIP (incl. untracked), land, then pop.
+# Restored on EXIT so ALREADY_MERGED / merge failure also give the WIP back.
+DID_STASH=0
+STASH_MSG="opsx-land:$CHANGE:$$"
+
+restore_stash() {
+  [ "${DID_STASH:-0}" -eq 1 ] || return 0
+  DID_STASH=0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '  %swould run:%s git stash pop  # restore WIP after land\n' "$D" "$N"
+    return 0
+  fi
+  step "Restoring stashed WIP"
+  # Prefer the stash we just made (match message); fall back to stash@{0}.
+  local idx
+  idx=$(git stash list --format='%gd %s' 2>/dev/null \
+        | awk -v m="$STASH_MSG" 'index($0, m) { sub(/:.*/, "", $1); print $1; exit }')
+  idx=${idx:-stash@{0}}
+  if git stash pop "$idx" >/dev/null 2>&1; then
+    ok "restored stash ($idx)"
+  else
+    warn "could not auto-restore stash $idx — your WIP is still in the stash list"
+    warn "inspect with: git stash list   then: git stash pop"
+  fi
+}
+trap 'restore_stash' EXIT
+
+if [ -n "$(git status --porcelain)" ]; then
+  step "Stashing local WIP"
+  git status --short | sed 's/^/  /'
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '  %swould run:%s git stash push -u -m %s\n' "$D" "$N" "$STASH_MSG"
+    DID_STASH=1
+  else
+    if git stash push -u -m "$STASH_MSG" >/dev/null 2>&1; then
+      DID_STASH=1
+      ok "stashed WIP as \"$STASH_MSG\""
+    else
+      die "could not stash local changes — commit or stash by hand, then land again."
+    fi
+  fi
+else
+  ok "working tree clean"
+fi
+
 say ""
 step "Landing $CHANGE"
 say "  branch:  $BRANCH"
 say "  into:    $TARGET"
 say "  from:    ${START_BRANCH:-(detached HEAD)}"
+[ "$DID_STASH" -eq 1 ] && say "  stash:   yes (will restore after land)"
 [ "$DRY_RUN" -eq 1 ] && say "  ${D}(dry run — nothing will change)${N}"
 say ""
 
@@ -172,7 +224,7 @@ tip=$(git rev-parse --short "$BRANCH" 2>/dev/null || echo "?")
 skip_merge_onto_target() {
   if [ -n "$(git status --porcelain)" ]; then
     git status --short | sed 's/^/  /'
-    die "working tree is not clean — commit or stash before landing."
+    die "working tree is not clean after stash — commit or stash before landing."
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '  %swould run:%s git checkout %s\n' "$D" "$N" "$TARGET"

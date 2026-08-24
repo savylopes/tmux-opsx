@@ -19,26 +19,37 @@
 #
 # Window status badges (title + status-bar color). Lookups use @opsx_change, so
 # renaming for the badge does not break ensure/send/close.
+#   idle  ·change  cyan   (waiting / reusable — not tmux default)
+#   busy  …change  yellow (work in flight)
+#   fail  ✗change  red
+# `done` is an alias of idle: a finished window is still reusable.
+# Busy windows enable monitor-silence; after $OPSX_IDLE_SILENCE seconds with no
+# pane output (default 40) they fall back to idle unless already fail.
 # Agent CLI selection (ensure only):
-#   --agent-cli <name>   Launch with this command (claude, agent, cursor, codex, or a path)
+#   --agent-cli <name>   Launch with this command (claude, agent, cursor, codex,
+#                         opencode, or a path)
 #   $OPSX_AGENT_CLI      Same, as a default for every call
 #   Auto-detect           Cursor when $CURSOR_AGENT is set, else Codex when running
-#                         under codex, else claude if on PATH, else agent (Linux
-#                         Cursor CLI), else codex, else error
-#   --model <id>         Model for new windows (claude/agent/codex --model)
+#                         under codex, else OpenCode when under opencode, else
+#                         claude if on PATH, else agent, else codex, else opencode
+#   --model <id>         Model for new windows (claude/agent/codex/opencode --model)
 #   $OPSX_MODEL          Same, as a default for every call
 #   Auto-detect           Cursor ~/.cursor/cli-config.json selectedModel,
 #                         else $ANTHROPIC_MODEL, else Claude settings.json model,
-#                         else Codex ~/.codex/config.toml model
-#   When launching `agent`, ensure also links ops-applier into
-#   <cwd>/.cursor/agents/ so Cursor Task can use subagent_type ops-applier.
+#                         else Codex ~/.codex/config.toml model,
+#                         else OpenCode ~/.config/opencode/opencode.json{,c} model
+#   When launching `agent`, ensure also links ops-applier and ops-qa into
+#   <cwd>/.cursor/agents/ so Cursor Task can use those subagent_types.
+#   When launching `opencode`, ensure also links ops-applier and ops-qa into
+#   <cwd>/.opencode/agents/ (OpenCode also loads ~/.config/opencode/agents/).
 #   Cursor windows use `agent --force --approve-mcps --trust` so ~/.cursor/mcp.json
 #   (browser-use) is loaded; Task subagents still often lack MCP — the dispatcher
 #   prompt tells the window to run MCP browser tests itself.
-#   Codex CLI has no subagent/Task tool, so a codex window applies the change
-#   directly (its tmux window/session is the isolation boundary). It launches as
-#   `codex --dangerously-bypass-approvals-and-sandbox` so it never stalls on a
-#   prompt while unattended.
+#   Codex CLI has no reliable spawn-by-name for custom agents, so a codex window
+#   applies the change directly. It launches as
+#   `codex --dangerously-bypass-approvals-and-sandbox`.
+#   OpenCode windows launch as `opencode --auto --prompt …` and can Task/ @mention
+#   the ops-applier subagent.
 #
 # Inside tmux the window goes in the caller's session. Codex (and some
 # sandboxes) strip $TMUX from the child environment; opsx-window.sh recovers
@@ -172,26 +183,58 @@ tag_window() {
   tmux set-window-option -t "$1" allow-rename off >/dev/null 2>&1
 }
 
+this_script() {
+  printf '%s/%s' "$(cd -- "$(dirname -- "$0")" && pwd)" "$(basename -- "$0")"
+}
+
+# Seconds of pane silence before a busy window falls back to idle.
+idle_silence_secs() {
+  local n=${OPSX_IDLE_SILENCE:-40}
+  case "$n" in
+    ''|*[!0-9]*) n=40 ;;
+  esac
+  [ "$n" -ge 10 ] || n=10
+  printf '%s' "$n"
+}
+
+# Watch pane silence while busy so a finished agent that forgot `mark done`
+# does not stay yellow. Does nothing unless @opsx_status is still busy.
+arm_busy_silence_watch() {
+  local win=$1 change=$2
+  local script secs hook
+  script=$(this_script)
+  secs=$(idle_silence_secs)
+  hook=$(printf 'run-shell -b %q mark %q idle --if-busy' "$script" "$change")
+  tmux set-option -w -t "$win" silence-action none >/dev/null 2>&1 || true
+  tmux set-window-option -t "$win" visual-silence off >/dev/null 2>&1 || true
+  tmux set-window-option -t "$win" monitor-silence "$secs" >/dev/null 2>&1 || true
+  tmux set-hook -uw -t "$win" alert-silence >/dev/null 2>&1 || true
+  tmux set-hook -w -t "$win" alert-silence "$hook" >/dev/null 2>&1 || true
+}
+
+disarm_busy_silence_watch() {
+  local win=$1
+  tmux set-window-option -t "$win" monitor-silence 0 >/dev/null 2>&1 || true
+  tmux set-hook -uw -t "$win" alert-silence >/dev/null 2>&1 || true
+}
+
 # Apply a status badge to the window title and a status-bar color.
-# Statuses: idle (plain name) | busy (…name, yellow) | done (✓name, green) | fail (✗name, red)
+# Statuses: idle (·name, cyan) | busy (…name, yellow) | fail (✗name, red).
+# `done` / ok / pass / success map to idle — the window stays reusable.
 apply_window_status() {
   local win=$1 change=$2 status=$3
   local title style
   case "$status" in
-    idle|"")
-      title=$change
-      style="default"
+    idle|""|done|ok|pass|success)
+      title="·${change}"
+      # Distinct from tmux default so opsx windows stay visible at rest.
+      style="fg=black,bg=cyan,bold"
       status=idle
       ;;
     busy|working|running)
       title="…${change}"
       style="fg=black,bg=yellow,bold"
       status=busy
-      ;;
-    done|ok|pass|success)
-      title="✓${change}"
-      style="fg=black,bg=green,bold"
-      status=done
       ;;
     fail|failed|error)
       title="✗${change}"
@@ -210,6 +253,11 @@ apply_window_status() {
   # Keep rename locked so the agent CLI process cannot overwrite the badge.
   tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1
   tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1
+  if [ "$status" = busy ]; then
+    arm_busy_silence_watch "$win" "$change"
+  else
+    disarm_busy_silence_watch "$win"
+  fi
 }
 
 # Window id of the pane we are running in, empty when outside tmux.
@@ -236,9 +284,10 @@ send_prompt() {
 # Normalize user-facing CLI names to the binary we exec.
 normalize_agent_cli() {
   case "$1" in
-    cursor)        printf '%s' agent ;;
-    codex-cli|oai) printf '%s' codex ;;
-    *)             printf '%s' "$1" ;;
+    cursor)              printf '%s' agent ;;
+    codex-cli|oai)       printf '%s' codex ;;
+    open-code|oc)        printf '%s' opencode ;;
+    *)                   printf '%s' "$1" ;;
   esac
 }
 
@@ -324,8 +373,34 @@ running_under_codex() {
   return 1
 }
 
+# True when running under OpenCode CLI.
+running_under_opencode() {
+  [ -n "${OPENCODE_SERVER_PASSWORD:-}" ] && return 0
+  [ -n "${OPENCODE_SERVER_USERNAME:-}" ] && return 0
+  [ -n "${OPENCODE_CONFIG:-}" ] && return 0
+  [ -d "${OPENCODE_CONFIG_DIR:-}" ] && return 0
+
+  local pid=$$ i=0 args comm
+  while [ "$pid" -gt 1 ] && [ "$i" -lt 25 ]; do
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || break
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$args" in
+      *opencode\ *|*/opencode|*open-code*)
+        return 0 ;;
+    esac
+    case "$comm" in
+      opencode|OpenCode)
+        return 0 ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -z "$pid" ] && break
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Pick which agent CLI launches new windows. Precedence: flag > $OPSX_AGENT_CLI >
-# host detection (Cursor vs Claude) > claude on PATH > agent on PATH > error.
+# host detection > first of claude/agent/codex/opencode on PATH > error.
 resolve_agent_cli() {
   local explicit=${1:-}
   local cli=""
@@ -339,14 +414,18 @@ resolve_agent_cli() {
     cli=claude
   elif running_under_codex && command -v codex >/dev/null 2>&1; then
     cli=codex
+  elif running_under_opencode && command -v opencode >/dev/null 2>&1; then
+    cli=opencode
   elif command -v claude >/dev/null 2>&1; then
     cli=claude
   elif command -v agent >/dev/null 2>&1; then
     cli=agent
   elif command -v codex >/dev/null 2>&1; then
     cli=codex
+  elif command -v opencode >/dev/null 2>&1; then
+    cli=opencode
   else
-    die "no agent CLI found — install claude (Claude Code), agent (Cursor CLI), or codex (Codex CLI), or pass --agent-cli <cmd>."
+    die "no agent CLI found — install claude, agent, codex, or opencode, or pass --agent-cli <cmd>."
   fi
   command -v "$cli" >/dev/null 2>&1 \
     || die "agent CLI '$cli' is not on PATH — install it or pass --agent-cli <cmd>."
@@ -354,13 +433,18 @@ resolve_agent_cli() {
 }
 
 # Read a dotted JSON string field (python3, else jq). Empty on miss.
+# Also accepts JSONC (strips // and /* */ comments) for OpenCode configs.
 json_str() {
   local file=$1 path=$2 val=""
   [ -f "$file" ] || return 0
   if command -v python3 >/dev/null 2>&1; then
     val=$(python3 -c '
-import json, sys
-obj = json.load(open(sys.argv[1]))
+import json, re, sys
+raw = open(sys.argv[1], encoding="utf-8").read()
+# Strip // line comments and /* */ block comments (JSONC / opencode.jsonc).
+raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+raw = re.sub(r"(?m)//.*?$", "", raw)
+obj = json.loads(raw)
 for k in sys.argv[2].split("."):
     obj = obj.get(k) if isinstance(obj, dict) else None
     if obj is None:
@@ -406,7 +490,7 @@ model_is_default() {
 
 # Precedence: flag > $OPSX_MODEL > host session default.
 resolve_model() {
-  local explicit=${1:-} model=""
+  local explicit=${1:-} model="" oc_cfg=""
   if [ -n "$explicit" ]; then
     model=$explicit
   elif [ -n "${OPSX_MODEL:-}" ]; then
@@ -420,6 +504,11 @@ resolve_model() {
     model=$(json_str "$HOME/.claude/settings.json" model)
   elif running_under_codex; then
     model=$(toml_str "${CODEX_HOME:-$HOME/.codex}/config.toml" model)
+  elif running_under_opencode; then
+    oc_cfg="${OPENCODE_CONFIG:-}"
+    [ -n "$oc_cfg" ] || oc_cfg="$HOME/.config/opencode/opencode.jsonc"
+    [ -f "$oc_cfg" ] || oc_cfg="$HOME/.config/opencode/opencode.json"
+    model=$(json_str "$oc_cfg" model)
   fi
   if model_is_default "$model"; then
     printf '%s' ""
@@ -430,7 +519,7 @@ resolve_model() {
 
 # Shell command that reads the prompt inside the new window's cwd.
 build_launch_cmd() {
-  local prompt_file=$1 cli=$2 model=${3:-} model_flag=""
+  local prompt_file=$1 cli=$2 model=${3:-} model_flag="" codex_model_flag="" oc_model_flag=""
   if [ -n "$model" ]; then
     model_flag=$(printf ' --model %q' "$model")
   fi
@@ -445,13 +534,18 @@ build_launch_cmd() {
       printf 'agent --force --approve-mcps --trust%s "$(cat %q)"' "$model_flag" "$prompt_file"
       ;;
     codex)
-      # No subagent tool — the window applies the change itself. Bypass all
-      # approval/sandbox prompts so it runs unattended (the tmux window is the
-      # isolation boundary). Codex takes the model with -m, not --model.
-      local codex_model_flag=""
+      # No reliable spawn-by-name for custom agents — the window applies the
+      # change itself. Bypass all approval/sandbox prompts so it runs unattended.
+      # Codex takes the model with -m, not --model.
       [ -n "$model" ] && codex_model_flag=$(printf ' -m %q' "$model")
       printf 'codex --dangerously-bypass-approvals-and-sandbox%s "$(cat %q)"' \
         "$codex_model_flag" "$prompt_file"
+      ;;
+    opencode)
+      # --auto: approve permissions that are not denied. --prompt: seed the TUI
+      # with the dispatcher text. Model is provider/model via -m.
+      [ -n "$model" ] && oc_model_flag=$(printf ' -m %q' "$model")
+      printf 'opencode --auto%s --prompt "$(cat %q)"' "$oc_model_flag" "$prompt_file"
       ;;
     *)
       printf '%s%s "$(cat %q)"' "$cli" "$model_flag" "$prompt_file"
@@ -460,35 +554,36 @@ build_launch_cmd() {
 }
 
 # Cursor CLI only loads *project* subagents from <cwd>/.cursor/agents/ — not
-# ~/.cursor/agents/. Symlink (or copy) ops-applier into the project so Task can
-# take subagent_type: "ops-applier" when the window's agent starts.
+# ~/.cursor/agents/. Symlink (or copy) ops-applier and ops-qa into the project
+# so Task can take subagent_type: "ops-applier" / "ops-qa".
 ensure_cursor_project_agent() {
   local cwd=$1
+  local file=${2:-opsx-applier.md}
+  local name=${3:-ops-applier}
+  local desc=${4:-Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree}
   local dir="$cwd/.cursor/agents"
-  local dest="$dir/opsx-applier.md"
-  local src=""
+  local dest="$dir/$file"
+  local src="" claude="$HOME/.claude/agents/$file"
 
-  if [ -f "$HOME/.cursor/agents/opsx-applier.md" ]; then
-    src="$HOME/.cursor/agents/opsx-applier.md"
-  elif [ -f "$HOME/.claude/agents/opsx-applier.md" ]; then
-    # Last resort: install a Cursor-shaped copy from the Claude agent body.
+  if [ -f "$HOME/.cursor/agents/$file" ]; then
+    src="$HOME/.cursor/agents/$file"
+  elif [ -f "$claude" ]; then
     mkdir -p "$HOME/.cursor/agents"
     {
       printf '%s\n' '---'
-      printf 'name: ops-applier\n'
-      printf 'description: Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree\n'
+      printf 'name: %s\n' "$name"
+      printf 'description: %s\n' "$desc"
       printf '%s\n' '---'
-      awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$HOME/.claude/agents/opsx-applier.md"
-    } > "$HOME/.cursor/agents/opsx-applier.md"
-    src="$HOME/.cursor/agents/opsx-applier.md"
+      awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$claude"
+    } > "$HOME/.cursor/agents/$file"
+    src="$HOME/.cursor/agents/$file"
   else
-    printf '# warning: no ops-applier agent found under ~/.cursor/agents or ~/.claude/agents — run ./install.sh\n' >&2
+    printf '# warning: no %s agent found under ~/.cursor/agents or ~/.claude/agents — run ./install.sh\n' "$name" >&2
     return 1
   fi
 
   mkdir -p "$dir" || die "cannot create $dir"
   if [ -e "$dest" ] && [ ! -L "$dest" ]; then
-    # Project owns a real file — leave it alone (may be a committed override).
     printf '# cursor project agent: %s (existing file)\n' "$dest"
     return 0
   fi
@@ -498,6 +593,74 @@ ensure_cursor_project_agent() {
     cp "$src" "$dest" || die "cannot install $dest"
     printf '# cursor project agent: %s (copied)\n' "$dest"
   fi
+}
+
+ensure_cursor_project_agents() {
+  local cwd=$1
+  ensure_cursor_project_agent "$cwd" opsx-applier.md ops-applier \
+    "Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree" || true
+  ensure_cursor_project_agent "$cwd" opsx-qa.md ops-qa \
+    "Run after ops-applier to validate UI/UX and catch visual regressions. Do not implement fixes." || true
+}
+
+# OpenCode loads agents from ~/.config/opencode/agents/ and <cwd>/.opencode/agents/.
+ensure_opencode_project_agent() {
+  local cwd=$1
+  local oc_file=${2:-ops-applier.md}
+  local claude_file=${3:-opsx-applier.md}
+  local desc=${4:-Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree}
+  local dir="$cwd/.opencode/agents"
+  local dest="$dir/$oc_file"
+  local src="" oc="$HOME/.config/opencode/agents/$oc_file" claude="$HOME/.claude/agents/$claude_file"
+
+  if [ -f "$oc" ]; then
+    src="$oc"
+  elif [ -f "$claude" ]; then
+    mkdir -p "$HOME/.config/opencode/agents"
+    {
+      printf '%s\n' '---'
+      printf 'description: %s\n' "$desc"
+      printf 'mode: subagent\n'
+      printf 'permission:\n'
+      printf '  edit: allow\n'
+      printf '  bash: allow\n'
+      printf '  read: allow\n'
+      printf '  glob: allow\n'
+      printf '  grep: allow\n'
+      printf '  task: allow\n'
+      printf '  skill: allow\n'
+      printf '  webfetch: allow\n'
+      printf '  websearch: allow\n'
+      printf '  todowrite: allow\n'
+      printf '  external_directory: allow\n'
+      printf '%s\n' '---'
+      awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$claude"
+    } > "$oc"
+    src="$oc"
+  else
+    printf '# warning: no %s agent found under ~/.config/opencode/agents — run ./install.sh\n' "$oc_file" >&2
+    return 1
+  fi
+
+  mkdir -p "$dir" || die "cannot create $dir"
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    printf '# opencode project agent: %s (existing file)\n' "$dest"
+    return 0
+  fi
+  if ln -sfn "$src" "$dest" 2>/dev/null; then
+    printf '# opencode project agent: %s -> %s\n' "$dest" "$src"
+  else
+    cp "$src" "$dest" || die "cannot install $dest"
+    printf '# opencode project agent: %s (copied)\n' "$dest"
+  fi
+}
+
+ensure_opencode_project_agents() {
+  local cwd=$1
+  ensure_opencode_project_agent "$cwd" ops-applier.md opsx-applier.md \
+    "Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree" || true
+  ensure_opencode_project_agent "$cwd" ops-qa.md opsx-qa.md \
+    "Run after ops-applier to validate UI/UX and catch visual regressions. Do not implement fixes." || true
 }
 
 cmd_ensure() {
@@ -523,7 +686,10 @@ cmd_ensure() {
   cli=$(resolve_agent_cli "$agent_cli")
   model=$(resolve_model "$model")
   if [ "$cli" = agent ]; then
-    ensure_cursor_project_agent "$cwd" || true
+    ensure_cursor_project_agents "$cwd"
+  fi
+  if [ "$cli" = opencode ]; then
+    ensure_opencode_project_agents "$cwd"
   fi
   launch=$(build_launch_cmd "$prompt_file" "$cli" "$model")
 
@@ -727,9 +893,21 @@ cmd_detect_model() {
 }
 
 cmd_mark() {
-  local change=${1:-} status=${2:-}
-  [ -n "$change" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle>"
-  [ -n "$status" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle>"
+  local change="" status="" if_busy=0 current=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --if-busy) if_busy=1; shift ;;
+      -*) die "unknown option: $1" ;;
+      *)
+        if [ -z "$change" ]; then change=$1
+        elif [ -z "$status" ]; then status=$1
+        else die "usage: opsx-window.sh mark <change> <busy|done|fail|idle> [--if-busy]"
+        fi
+        shift ;;
+    esac
+  done
+  [ -n "$change" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle> [--if-busy]"
+  [ -n "$status" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle> [--if-busy]"
 
   require_tmux
   local sess win
@@ -738,6 +916,13 @@ cmd_mark() {
   [ -n "$win" ] || die "no window for change '$change' in session '$sess'."
   # Ensure the tag exists even on older windows found by name only.
   tmux set-option -w -t "$win" @opsx_change "$change" >/dev/null 2>&1
+  if [ "$if_busy" -eq 1 ]; then
+    current=$(tmux show-options -wv -t "$win" @opsx_status 2>/dev/null || true)
+    if [ "$current" != busy ]; then
+      printf 'skipped %s %s:%s status=%s (not busy)\n' "$win" "$sess" "$change" "${current:-unset}"
+      return 0
+    fi
+  fi
   apply_window_status "$win" "$change" "$status"
   printf 'marked %s %s:%s status=%s\n' "$win" "$sess" "$change" \
     "$(tmux show-options -wv -t "$win" @opsx_status 2>/dev/null || echo "$status")"
@@ -749,7 +934,7 @@ cmd_list() {
   sess=$(lookup_session) || exit 1
   printf '# session %s\n' "$sess"
   # The opsx column marks windows this script created (see tag_window).
-  # status comes from @opsx_status (busy|done|fail|idle).
+  # status comes from @opsx_status (busy|fail|idle; done is stored as idle).
   tmux list-windows -t "$sess" \
     -F '#{window_id}	#{?@opsx_change,opsx,-}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
 }
