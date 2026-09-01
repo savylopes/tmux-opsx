@@ -17,27 +17,29 @@
 #   opsx-window.sh mark   <change> <busy|done|fail|idle>   # title badge + status color
 #   opsx-window.sh list
 #
-# Window status badges (title + status-bar color). Lookups use @opsx_change, so
-# renaming for the badge does not break ensure/send/close.
-#   idle  ·change  cyan   (waiting / reusable — not tmux default)
-#   busy  …change  yellow (work in flight)
-#   fail  ✗change  red
+# Window status (distinct `ox` title + dark pane + muted bar colors).
+# Lookups use @opsx_change, so renaming does not break ensure/send/close.
+#   idle  ox ·change   mint on dark teal
+#   busy  ox …change   amber on dark olive
+#   fail  ox ✗change   rose on dark wine
 # `done` is an alias of idle: a finished window is still reusable.
 # Busy windows enable monitor-silence; after $OPSX_IDLE_SILENCE seconds with no
 # pane output (default 40) they fall back to idle unless already fail.
 # Agent CLI selection (ensure only):
 #   --agent-cli <name>   Launch with this command (claude, agent, cursor, codex,
-#                         opencode, or a path)
+#                         opencode, gemini, or a path)
 #   $OPSX_AGENT_CLI      Same, as a default for every call
 #   Auto-detect           Cursor when $CURSOR_AGENT is set, else Codex when running
 #                         under codex, else OpenCode when under opencode, else
-#                         claude if on PATH, else agent, else codex, else opencode
-#   --model <id>         Model for new windows (claude/agent/codex/opencode --model)
+#                         Gemini when under gemini, else claude if on PATH, else
+#                         agent, else codex, else opencode, else gemini
+#   --model <id>         Model for new windows (claude/agent/codex/opencode/gemini)
 #   $OPSX_MODEL          Same, as a default for every call
 #   Auto-detect           Cursor ~/.cursor/cli-config.json selectedModel,
 #                         else $ANTHROPIC_MODEL, else Claude settings.json model,
 #                         else Codex ~/.codex/config.toml model,
-#                         else OpenCode ~/.config/opencode/opencode.json{,c} model
+#                         else OpenCode ~/.config/opencode/opencode.json{,c} model,
+#                         else Gemini ~/.gemini/settings.json model / $GEMINI_MODEL
 #   When launching `agent`, ensure also links ops-applier and ops-qa into
 #   <cwd>/.cursor/agents/ so Cursor Task can use those subagent_types.
 #   When launching `opencode`, ensure also links ops-applier and ops-qa into
@@ -50,6 +52,9 @@
 #   `codex --dangerously-bypass-approvals-and-sandbox`.
 #   OpenCode windows launch as `opencode --auto --prompt …` and can Task/ @mention
 #   the ops-applier subagent.
+#   Gemini CLI windows launch as `gemini --approval-mode=yolo --skip-trust -i …`
+#   and apply in the window (like Codex). Agents are installed under
+#   ~/.gemini/agents/; ensure also links them into <cwd>/.gemini/agents/.
 #
 # Inside tmux the window goes in the caller's session. Codex (and some
 # sandboxes) strip $TMUX from the child environment; opsx-window.sh recovers
@@ -218,27 +223,28 @@ disarm_busy_silence_watch() {
   tmux set-hook -uw -t "$win" alert-silence >/dev/null 2>&1 || true
 }
 
-# Apply a status badge to the window title and a status-bar color.
-# Statuses: idle (·name, cyan) | busy (…name, yellow) | fail (✗name, red).
-# `done` / ok / pass / success map to idle — the window stays reusable.
+# Apply a distinctive `ox` title, dark pane, and muted status-bar colors.
+# Word (fg) color carries status; backgrounds stay dark so they sit next to
+# other windows without neon blocks. `done` / ok / pass / success → idle.
 apply_window_status() {
   local win=$1 change=$2 status=$3
-  local title style
+  local title style pane pane_active
+  pane="fg=#b4b4b4,bg=#141414"
+  pane_active="fg=#d0d0d0,bg=#171717"
   case "$status" in
     idle|""|done|ok|pass|success)
-      title="·${change}"
-      # Distinct from tmux default so opsx windows stay visible at rest.
-      style="fg=black,bg=cyan,bold"
+      title="ox ·${change}"
+      style="fg=#8fbfb8,bg=#1a2422,nobold,noitalics"
       status=idle
       ;;
     busy|working|running)
-      title="…${change}"
-      style="fg=black,bg=yellow,bold"
+      title="ox …${change}"
+      style="fg=#cbb27a,bg=#242018,nobold,noitalics"
       status=busy
       ;;
     fail|failed|error)
-      title="✗${change}"
-      style="fg=white,bg=red,bold"
+      title="ox ✗${change}"
+      style="fg=#c98a8a,bg=#241818,nobold,noitalics"
       status=fail
       ;;
     *)
@@ -250,6 +256,8 @@ apply_window_status() {
     || die "failed to rename window $win to $title"
   tmux set-window-option -t "$win" window-status-style "$style" >/dev/null 2>&1 || true
   tmux set-window-option -t "$win" window-status-current-style "$style" >/dev/null 2>&1 || true
+  tmux set-window-option -t "$win" window-style "$pane" >/dev/null 2>&1 || true
+  tmux set-window-option -t "$win" window-active-style "$pane_active" >/dev/null 2>&1 || true
   # Keep rename locked so the agent CLI process cannot overwrite the badge.
   tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1
   tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1
@@ -287,6 +295,7 @@ normalize_agent_cli() {
     cursor)              printf '%s' agent ;;
     codex-cli|oai)       printf '%s' codex ;;
     open-code|oc)        printf '%s' opencode ;;
+    gemini-cli|google-gemini) printf '%s' gemini ;;
     *)                   printf '%s' "$1" ;;
   esac
 }
@@ -399,8 +408,31 @@ running_under_opencode() {
   return 1
 }
 
+# True when running under Gemini CLI.
+running_under_gemini() {
+  [ -n "${GEMINI_CLI:-}" ] && return 0
+
+  local pid=$$ i=0 args comm
+  while [ "$pid" -gt 1 ] && [ "$i" -lt 25 ]; do
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || break
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$args" in
+      */gemini\ *|*/gemini|*gemini-cli*)
+        return 0 ;;
+    esac
+    case "$comm" in
+      gemini|Gemini)
+        return 0 ;;
+    esac
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -z "$pid" ] && break
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Pick which agent CLI launches new windows. Precedence: flag > $OPSX_AGENT_CLI >
-# host detection > first of claude/agent/codex/opencode on PATH > error.
+# host detection > first of claude/agent/codex/opencode/gemini on PATH > error.
 resolve_agent_cli() {
   local explicit=${1:-}
   local cli=""
@@ -416,6 +448,8 @@ resolve_agent_cli() {
     cli=codex
   elif running_under_opencode && command -v opencode >/dev/null 2>&1; then
     cli=opencode
+  elif running_under_gemini && command -v gemini >/dev/null 2>&1; then
+    cli=gemini
   elif command -v claude >/dev/null 2>&1; then
     cli=claude
   elif command -v agent >/dev/null 2>&1; then
@@ -424,8 +458,10 @@ resolve_agent_cli() {
     cli=codex
   elif command -v opencode >/dev/null 2>&1; then
     cli=opencode
+  elif command -v gemini >/dev/null 2>&1; then
+    cli=gemini
   else
-    die "no agent CLI found — install claude, agent, codex, or opencode, or pass --agent-cli <cmd>."
+    die "no agent CLI found — install claude, agent, codex, opencode, or gemini, or pass --agent-cli <cmd>."
   fi
   command -v "$cli" >/dev/null 2>&1 \
     || die "agent CLI '$cli' is not on PATH — install it or pass --agent-cli <cmd>."
@@ -509,6 +545,9 @@ resolve_model() {
     [ -n "$oc_cfg" ] || oc_cfg="$HOME/.config/opencode/opencode.jsonc"
     [ -f "$oc_cfg" ] || oc_cfg="$HOME/.config/opencode/opencode.json"
     model=$(json_str "$oc_cfg" model)
+  elif running_under_gemini; then
+    [ -n "${GEMINI_MODEL:-}" ] && model=$GEMINI_MODEL
+    [ -n "$model" ] || model=$(json_str "${GEMINI_DIR:-$HOME/.gemini}/settings.json" model)
   fi
   if model_is_default "$model"; then
     printf '%s' ""
@@ -519,7 +558,7 @@ resolve_model() {
 
 # Shell command that reads the prompt inside the new window's cwd.
 build_launch_cmd() {
-  local prompt_file=$1 cli=$2 model=${3:-} model_flag="" codex_model_flag="" oc_model_flag=""
+  local prompt_file=$1 cli=$2 model=${3:-} model_flag="" codex_model_flag="" oc_model_flag="" gemini_model_flag=""
   if [ -n "$model" ]; then
     model_flag=$(printf ' --model %q' "$model")
   fi
@@ -546,6 +585,13 @@ build_launch_cmd() {
       # with the dispatcher text. Model is provider/model via -m.
       [ -n "$model" ] && oc_model_flag=$(printf ' -m %q' "$model")
       printf 'opencode --auto%s --prompt "$(cat %q)"' "$oc_model_flag" "$prompt_file"
+      ;;
+    gemini)
+      # Keep an interactive TUI (-i) like the other CLIs. YOLO + skip-trust so
+      # the unattended window does not stall on tool or folder prompts.
+      [ -n "$model" ] && gemini_model_flag=$(printf ' -m %q' "$model")
+      printf 'gemini --approval-mode=yolo --skip-trust%s -i "$(cat %q)"' \
+        "$gemini_model_flag" "$prompt_file"
       ;;
     *)
       printf '%s%s "$(cat %q)"' "$cli" "$model_flag" "$prompt_file"
@@ -601,6 +647,10 @@ ensure_cursor_project_agents() {
     "Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree" || true
   ensure_cursor_project_agent "$cwd" opsx-qa.md ops-qa \
     "Run after ops-applier to validate UI/UX and catch visual regressions. Do not implement fixes." || true
+  ensure_cursor_project_agent "$cwd" opsx-reviewer.md ops-reviewer \
+    "Run after ops-applier to review implementation: spec fidelity, logic, tests, and maintainability. Do not implement fixes." || true
+  ensure_cursor_project_agent "$cwd" opsx-security.md ops-security \
+    "Run after ops-applier to review security: auth, injection, secrets, unsafe defaults. Do not implement fixes." || true
 }
 
 # OpenCode loads agents from ~/.config/opencode/agents/ and <cwd>/.opencode/agents/.
@@ -661,6 +711,49 @@ ensure_opencode_project_agents() {
     "Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree" || true
   ensure_opencode_project_agent "$cwd" ops-qa.md opsx-qa.md \
     "Run after ops-applier to validate UI/UX and catch visual regressions. Do not implement fixes." || true
+  ensure_opencode_project_agent "$cwd" ops-reviewer.md opsx-reviewer.md \
+    "Run after ops-applier to review implementation: spec fidelity, logic, tests, and maintainability. Do not implement fixes." || true
+  ensure_opencode_project_agent "$cwd" ops-security.md opsx-security.md \
+    "Run after ops-applier to review security: auth, injection, secrets, unsafe defaults. Do not implement fixes." || true
+}
+
+# Gemini CLI loads agents from ~/.gemini/agents/ and project .gemini/agents/.
+ensure_gemini_project_agent() {
+  local cwd=$1
+  local file=${2:-opsx-applier.md}
+  local dir="$cwd/.gemini/agents"
+  local dest="$dir/$file"
+  local src="$HOME/.gemini/agents/$file"
+  local claude="$HOME/.claude/agents/$file"
+
+  if [ ! -f "$src" ] && [ -f "$claude" ]; then
+    mkdir -p "$HOME/.gemini/agents"
+    cp "$claude" "$src" || true
+  fi
+  if [ ! -f "$src" ]; then
+    printf '# warning: no %s agent found under ~/.gemini/agents — run ./install.sh\n' "$file" >&2
+    return 1
+  fi
+
+  mkdir -p "$dir" || die "cannot create $dir"
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    printf '# gemini project agent: %s (existing file)\n' "$dest"
+    return 0
+  fi
+  if ln -sfn "$src" "$dest" 2>/dev/null; then
+    printf '# gemini project agent: %s -> %s\n' "$dest" "$src"
+  else
+    cp "$src" "$dest" || die "cannot install $dest"
+    printf '# gemini project agent: %s (copied)\n' "$dest"
+  fi
+}
+
+ensure_gemini_project_agents() {
+  local cwd=$1
+  ensure_gemini_project_agent "$cwd" opsx-applier.md || true
+  ensure_gemini_project_agent "$cwd" opsx-qa.md || true
+  ensure_gemini_project_agent "$cwd" opsx-reviewer.md || true
+  ensure_gemini_project_agent "$cwd" opsx-security.md || true
 }
 
 cmd_ensure() {
@@ -690,6 +783,9 @@ cmd_ensure() {
   fi
   if [ "$cli" = opencode ]; then
     ensure_opencode_project_agents "$cwd"
+  fi
+  if [ "$cli" = gemini ]; then
+    ensure_gemini_project_agents "$cwd"
   fi
   launch=$(build_launch_cmd "$prompt_file" "$cli" "$model")
 

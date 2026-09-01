@@ -3,29 +3,36 @@
 #
 # Installs:
 #   1. the OpenSpec CLI            (npm -g @fission-ai/openspec)
-#   2. OpenSpec skills + /opsx:*   -> global dirs for Claude / Cursor / Codex / OpenCode
+#   2. OpenSpec skills + /opsx:*   -> global dirs for Claude / Cursor / Codex / OpenCode / Gemini
 #      (openspec-propose, openspec-apply-change, … plus slash commands)
-#   3. Graphify CLI + /graphify    -> global dirs for Claude / Cursor / Codex / OpenCode
+#   3. Graphify CLI + /graphify    -> global dirs for Claude / Cursor / Codex / OpenCode / Gemini
 #                                   -> ~/.agents/skills/graphify/
-#   4. ops-applier + ops-qa        -> ~/.claude/agents/opsx-{applier,qa}.md
-#                                   -> ~/.cursor/agents/opsx-{applier,qa}.md
-#                                   -> ~/.codex/agents/ops-{applier,qa}.toml
-#                                   -> ~/.config/opencode/agents/ops-{applier,qa}.md
+#   4. ops-applier + ops-qa + ops-reviewer + ops-security
+#                                   -> ~/.claude/agents/opsx-{applier,qa,reviewer,security}.md
+#                                   -> ~/.cursor/agents/opsx-{applier,qa,reviewer,security}.md
+#                                   -> ~/.codex/agents/ops-{applier,qa,reviewer,security}.toml
+#                                   -> ~/.config/opencode/agents/ops-{applier,qa,reviewer,security}.md
+#                                   -> ~/.gemini/agents/opsx-{applier,qa,reviewer,security}.md
 #   5. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
 #                                   -> ~/.cursor/skills/opsx-run/
 #                                   -> ~/.agents/skills/opsx-run/   (Codex / Agent Skills)
 #                                   -> ~/.codex/skills/opsx-run/    (Codex home)
 #                                   -> ~/.config/opencode/skills/opsx-run/  (OpenCode)
+#                                   -> ~/.gemini/skills/opsx-run/  (Gemini CLI)
 #      (opsx-window.sh + opsx-merge.sh + opsx-land.sh)
+#   6. browser-use MCP             -> ~/.gemini/settings.json
+#                                   -> ~/.codex/config.toml
+#                                   -> ~/.config/opencode/opencode.json{,c}
 #
-# Window CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex), and
-# OpenCode (opencode). At least one must be on PATH.
+# Window CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex),
+# OpenCode (opencode), and Gemini CLI (gemini). At least one must be on PATH.
 #
 # Usage: ./install.sh [options]
 #   --prefix <dir>     Claude config dir (default: ~/.claude, or $CLAUDE_CONFIG_DIR)
 #   --skip-openspec    Don't install/upgrade the OpenSpec CLI
 #   --skip-graphify    Don't verify/install Graphify or copy its global skill
 #   --skip-commands    Don't install global OpenSpec skills / /opsx:* commands
+#   --skip-mcp         Don't install the browser-use MCP server
 #   --no-backup        Overwrite existing files without keeping a .bak copy
 #   --uninstall        Remove everything this script installs (except the CLI)
 #   -h, --help         Show this help
@@ -40,6 +47,7 @@ EXPLICIT_PREFIX=0
 SKIP_OPENSPEC=0
 SKIP_GRAPHIFY=0
 SKIP_COMMANDS=0
+SKIP_MCP=0
 BACKUP=1
 UNINSTALL=0
 NPM_PKG="@fission-ai/openspec"
@@ -65,6 +73,7 @@ while [ $# -gt 0 ]; do
     --skip-openspec) SKIP_OPENSPEC=1; shift ;;
     --skip-graphify) SKIP_GRAPHIFY=1; shift ;;
     --skip-commands) SKIP_COMMANDS=1; shift ;;
+    --skip-mcp)      SKIP_MCP=1; shift ;;
     --no-backup)     BACKUP=0; shift ;;
     --uninstall)     UNINSTALL=1; shift ;;
     -h|--help)       usage ;;
@@ -241,7 +250,7 @@ install_graphify_skills() {
   local p
   [ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ "$PREFIX" = "$HOME/.claude" ] || export CLAUDE_CONFIG_DIR=$PREFIX
 
-  for p in claude codex opencode agents; do
+  for p in claude codex opencode agents gemini; do
     if graphify install --platform "$p" >/dev/null 2>&1; then
       ok "graphify install --platform $p"
     else
@@ -291,6 +300,18 @@ OPENCODE_AGENTS_DIR=$OPENCODE_CONFIG_DIR/agents
 OPENCODE_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/opsx-run
 OPENCODE_OPENSPEC_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills
 OPENCODE_COMMANDS_DIR=$OPENCODE_CONFIG_DIR/commands
+GEMINI_HOME_DIR=${GEMINI_HOME:-$HOME/.gemini}
+GEMINI_AGENTS_DIR=$GEMINI_HOME_DIR/agents
+GEMINI_SKILLS_DIR=$GEMINI_HOME_DIR/skills/opsx-run
+GEMINI_OPENSPEC_SKILLS_DIR=$GEMINI_HOME_DIR/skills
+GEMINI_COMMANDS_DIR=$GEMINI_HOME_DIR/commands
+GEMINI_SETTINGS=$GEMINI_HOME_DIR/settings.json
+CODEX_CONFIG=$CODEX_HOME_DIR/config.toml
+if [ -f "$OPENCODE_CONFIG_DIR/opencode.jsonc" ]; then
+  OPENCODE_CONFIG=$OPENCODE_CONFIG_DIR/opencode.jsonc
+else
+  OPENCODE_CONFIG=$OPENCODE_CONFIG_DIR/opencode.json
+fi
 
 # Copy every openspec-* skill folder from a generated tree into a global skills dir.
 install_openspec_skills() {
@@ -489,6 +510,159 @@ install_opencode_agent() {
   rm -f "$tmp"
 }
 
+# browser-use MCP (stdio via uvx). Same command Cursor already uses.
+mcp_uvx() {
+  if have uvx; then
+    command -v uvx
+  elif [ -x "$HOME/.local/bin/uvx" ]; then
+    printf '%s' "$HOME/.local/bin/uvx"
+  else
+    return 1
+  fi
+}
+
+mcp_env_lines() {
+  printf 'BROWSER_USE_HEADLESS=false\n'
+  local k
+  for k in DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR XAUTHORITY DBUS_SESSION_BUS_ADDRESS; do
+    eval "v=\${$k:-}"
+    [ -n "$v" ] && printf '%s=%s\n' "$k" "$v"
+  done
+}
+
+# Upsert browser-use into a JSON/JSONC config. kind=gemini|opencode
+upsert_json_mcp() {
+  local kind=$1 dest=$2 uvx=$3
+  have python3 || return 1
+  mkdir -p "$(dirname "$dest")" || return 1
+  if [ -e "$dest" ] && [ "$BACKUP" -eq 1 ]; then
+    cp "$dest" "$dest.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  fi
+  MCP_KIND=$kind MCP_DEST=$dest MCP_UVX=$uvx python3 <<'PY'
+import json, os, re, sys
+
+dest = os.environ["MCP_DEST"]
+kind = os.environ["MCP_KIND"]
+uvx = os.environ["MCP_UVX"]
+args = ["--from", "browser-use[cli]", "browser-use", "--mcp"]
+env = {}
+for line in os.environ.get("MCP_ENV", "").splitlines():
+    if not line or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    env[k] = v
+
+raw = ""
+if os.path.isfile(dest):
+    raw = open(dest, encoding="utf-8").read()
+    raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+    raw = re.sub(r"(?m)^\s*//.*?$", "", raw)
+obj = json.loads(raw) if raw.strip() else {}
+if not isinstance(obj, dict):
+    obj = {}
+
+if kind == "gemini":
+    servers = obj.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        servers = {}
+        obj["mcpServers"] = servers
+    servers["browser-use"] = {
+        "command": uvx,
+        "args": args,
+        "env": env,
+        "trust": True,
+    }
+elif kind == "opencode":
+    mcp = obj.setdefault("mcp", {})
+    if not isinstance(mcp, dict):
+        mcp = {}
+        obj["mcp"] = mcp
+    entry = {
+        "type": "local",
+        "command": [uvx, *args],
+        "enabled": True,
+        "environment": env,
+    }
+    if isinstance(mcp.get("servers"), dict):
+        v2 = {
+            "type": "local",
+            "command": [uvx, *args],
+            "environment": env,
+        }
+        mcp["servers"]["browser-use"] = v2
+    else:
+        mcp["browser-use"] = entry
+else:
+    raise SystemExit("unknown kind")
+
+tmp = dest + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+os.replace(tmp, dest)
+PY
+}
+
+# Replace [mcp_servers.browser-use] (+ nested .env) then append a fresh table.
+upsert_codex_mcp() {
+  local dest=$1 uvx=$2 tmp env_block=""
+  mkdir -p "$(dirname "$dest")" || return 1
+  if [ -e "$dest" ] && [ "$BACKUP" -eq 1 ]; then
+    cp "$dest" "$dest.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  fi
+  [ -f "$dest" ] || : > "$dest"
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || return 1
+  awk '
+    BEGIN { skip=0 }
+    /^\[mcp_servers\.browser-use\]/ { skip=1; next }
+    /^\[mcp_servers\.browser-use\./ { skip=1; next }
+    /^\[/ { skip=0 }
+    skip==0 { print }
+  ' "$dest" > "$tmp"
+  {
+    cat "$tmp"
+    printf '\n[mcp_servers.browser-use]\n'
+    printf 'command = %s\n' "$(toml_basic_string "$uvx")"
+    printf 'args = ["--from", "browser-use[cli]", "browser-use", "--mcp"]\n'
+    printf '\n[mcp_servers.browser-use.env]\n'
+    mcp_env_lines | while IFS='=' read -r k v; do
+      printf '%s = %s\n' "$k" "$(toml_basic_string "$v")"
+    done
+  } > "$dest"
+  rm -f "$tmp"
+}
+
+install_browser_use_mcp() {
+  local uvx env_export
+  uvx=$(mcp_uvx) || {
+    warn "uvx not on PATH — skipping browser-use MCP (install: uv tool install uv)"
+    note "or: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    return 0
+  }
+  ok "uvx $uvx"
+  export MCP_ENV
+  MCP_ENV=$(mcp_env_lines)
+
+  if upsert_json_mcp gemini "$GEMINI_SETTINGS" "$uvx"; then
+    ok "browser-use MCP -> $GEMINI_SETTINGS (Gemini CLI)"
+  else
+    warn "could not write $GEMINI_SETTINGS"
+  fi
+
+  if upsert_codex_mcp "$CODEX_CONFIG" "$uvx"; then
+    ok "browser-use MCP -> $CODEX_CONFIG (Codex CLI)"
+  else
+    warn "could not write $CODEX_CONFIG"
+  fi
+
+  if upsert_json_mcp opencode "$OPENCODE_CONFIG" "$uvx"; then
+    ok "browser-use MCP -> $OPENCODE_CONFIG (OpenCode)"
+  else
+    warn "could not write $OPENCODE_CONFIG"
+  fi
+  note "restart Gemini / Codex / OpenCode so they load browser-use"
+}
+
 # ---------- uninstall ----------
 if [ "$UNINSTALL" -eq 1 ]; then
   step "Uninstalling tmux-opsx from $PREFIX"
@@ -497,6 +671,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -rf "$AGENTS_SKILLS_DIR" && ok "removed ~/.agents/skills/opsx-run (Codex)"
   rm -rf "$CODEX_SKILLS_DIR" && ok "removed $CODEX_SKILLS_DIR (Codex home)"
   rm -rf "$OPENCODE_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/opsx-run (OpenCode)"
+  rm -rf "$GEMINI_SKILLS_DIR" && ok "removed ~/.gemini/skills/opsx-run (Gemini CLI)"
   rm -f  "$PREFIX/agents/opsx-applier.md" && ok "removed agents/opsx-applier.md (Claude Code)"
   rm -f  "$PREFIX/agents/opsx-qa.md" && ok "removed agents/opsx-qa.md (Claude Code)"
   rm -f  "$CURSOR_AGENTS_DIR/opsx-applier.md" && ok "removed ~/.cursor/agents/opsx-applier.md (Cursor)"
@@ -505,24 +680,40 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -f  "$CODEX_AGENTS_DIR/ops-qa.toml" && ok "removed ~/.codex/agents/ops-qa.toml (Codex)"
   rm -f  "$OPENCODE_AGENTS_DIR/ops-applier.md" && ok "removed ~/.config/opencode/agents/ops-applier.md (OpenCode)"
   rm -f  "$OPENCODE_AGENTS_DIR/ops-qa.md" && ok "removed ~/.config/opencode/agents/ops-qa.md (OpenCode)"
+  rm -f  "$GEMINI_AGENTS_DIR/opsx-applier.md" && ok "removed ~/.gemini/agents/opsx-applier.md (Gemini CLI)"
+  rm -f  "$GEMINI_AGENTS_DIR/opsx-qa.md" && ok "removed ~/.gemini/agents/opsx-qa.md (Gemini CLI)"
+  rm -f  "$PREFIX/agents/opsx-reviewer.md" && ok "removed agents/opsx-reviewer.md (Claude Code)"
+  rm -f  "$PREFIX/agents/opsx-security.md" && ok "removed agents/opsx-security.md (Claude Code)"
+  rm -f  "$CURSOR_AGENTS_DIR/opsx-reviewer.md" && ok "removed ~/.cursor/agents/opsx-reviewer.md (Cursor)"
+  rm -f  "$CURSOR_AGENTS_DIR/opsx-security.md" && ok "removed ~/.cursor/agents/opsx-security.md (Cursor)"
+  rm -f  "$CODEX_AGENTS_DIR/ops-reviewer.toml" && ok "removed ~/.codex/agents/ops-reviewer.toml (Codex)"
+  rm -f  "$CODEX_AGENTS_DIR/ops-security.toml" && ok "removed ~/.codex/agents/ops-security.toml (Codex)"
+  rm -f  "$OPENCODE_AGENTS_DIR/ops-reviewer.md" && ok "removed ~/.config/opencode/agents/ops-reviewer.md (OpenCode)"
+  rm -f  "$OPENCODE_AGENTS_DIR/ops-security.md" && ok "removed ~/.config/opencode/agents/ops-security.md (OpenCode)"
+  rm -f  "$GEMINI_AGENTS_DIR/opsx-reviewer.md" && ok "removed ~/.gemini/agents/opsx-reviewer.md (Gemini CLI)"
+  rm -f  "$GEMINI_AGENTS_DIR/opsx-security.md" && ok "removed ~/.gemini/agents/opsx-security.md (Gemini CLI)"
   remove_openspec_skills "$PREFIX/skills" "Claude Code"
   remove_openspec_skills "$HOME/.cursor/skills" "Cursor CLI"
   remove_openspec_skills "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
   remove_openspec_skills "$CODEX_OPENSPEC_SKILLS_DIR" "Codex"
   remove_openspec_skills "$OPENCODE_OPENSPEC_SKILLS_DIR" "OpenCode"
+  remove_openspec_skills "$GEMINI_OPENSPEC_SKILLS_DIR" "Gemini CLI"
   remove_openspec_commands "$PREFIX/commands" "Claude Code"
   remove_openspec_commands "$CURSOR_COMMANDS_DIR" "Cursor CLI"
   remove_openspec_commands "$OPENCODE_COMMANDS_DIR" "OpenCode"
+  remove_openspec_commands "$GEMINI_COMMANDS_DIR" "Gemini CLI"
   remove_graphify_skill "$PREFIX/skills/graphify" "Claude Code"
   remove_graphify_skill "$HOME/.cursor/skills/graphify" "Cursor CLI"
   remove_graphify_skill "$HOME/.agents/skills/graphify" "Agent Skills"
   remove_graphify_skill "$CODEX_HOME_DIR/skills/graphify" "Codex"
   remove_graphify_skill "$OPENCODE_CONFIG_DIR/skills/graphify" "OpenCode"
+  remove_graphify_skill "$GEMINI_HOME_DIR/skills/graphify" "Gemini CLI"
   info ""
   info "The OpenSpec CLI was left installed. Remove it with:"
   info "  npm uninstall -g $NPM_PKG"
   info "The Graphify CLI was left installed. Remove it with:"
   info "  uv tool uninstall graphifyy"
+  info "browser-use MCP entries in Gemini / Codex / OpenCode config were left in place."
   exit 0
 fi
 
@@ -594,8 +785,29 @@ else
   note "install: https://opencode.ai"
 fi
 
-if ! have claude && ! have agent && ! have codex && ! have opencode; then
-  warn "none of claude, agent, codex or opencode is on PATH — required, each tmux window runs one of them"
+if have gemini; then
+  ok "gemini $(gemini --version 2>/dev/null | head -1)"
+else
+  warn "gemini CLI not found — optional if you use another agent CLI"
+  note "install: https://github.com/google-gemini/gemini-cli"
+fi
+
+if [ "$SKIP_MCP" -eq 0 ]; then
+  if mcp_uvx >/dev/null; then
+    ok "uvx $(mcp_uvx)"
+  else
+    warn "uvx not on PATH — browser-use MCP will be skipped"
+    note "install: curl -LsSf https://astral.sh/uv/install.sh | sh"
+  fi
+  if have python3; then
+    ok "python3 $(python3 --version 2>/dev/null | awk '{print $2}')"
+  else
+    warn "python3 not found — needed to write Gemini/OpenCode MCP config"
+  fi
+fi
+
+if ! have claude && ! have agent && ! have codex && ! have opencode && ! have gemini; then
+  warn "none of claude, agent, codex, opencode or gemini is on PATH — required, each tmux window runs one of them"
   MISSING=1
 fi
 
@@ -645,7 +857,7 @@ else
     # tool's *global* config dir (not a project checkout).
     TMPD=$(mktemp -d 2>/dev/null || mktemp -d -t tmuxopsx)
     [ -n "$TMPD" ] && [ -d "$TMPD" ] || die "could not create a temp directory"
-    if (cd "$TMPD" && openspec init --tools claude,cursor,codex,opencode . >/dev/null 2>&1); then
+    if (cd "$TMPD" && openspec init --tools claude,cursor,codex,opencode,gemini . >/dev/null 2>&1); then
       install_openspec_skills "$TMPD/.claude/skills" "$PREFIX/skills" "Claude Code"
       install_openspec_skills "$TMPD/.cursor/skills" "$HOME/.cursor/skills" "Cursor CLI"
       install_openspec_skills "$TMPD/.codex/skills" "$CODEX_OPENSPEC_SKILLS_DIR" "Codex"
@@ -653,16 +865,18 @@ else
         install_openspec_skills "$TMPD/.codex/skills" "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
       fi
       install_openspec_skills "$TMPD/.opencode/skills" "$OPENCODE_OPENSPEC_SKILLS_DIR" "OpenCode"
+      install_openspec_skills "$TMPD/.gemini/skills" "$GEMINI_OPENSPEC_SKILLS_DIR" "Gemini CLI"
 
       install_openspec_commands "$TMPD/.claude/commands" "$PREFIX/commands" "Claude Code"
       install_openspec_commands "$TMPD/.cursor/commands" "$CURSOR_COMMANDS_DIR" "Cursor CLI"
       install_openspec_commands "$TMPD/.opencode/commands" "$OPENCODE_COMMANDS_DIR" "OpenCode"
+      install_openspec_commands "$TMPD/.gemini/commands" "$GEMINI_COMMANDS_DIR" "Gemini CLI"
       note "available globally: /opsx:propose /opsx:apply /opsx:archive /opsx:explore"
       note "and skills: openspec-propose, openspec-apply-change, openspec-archive-change, openspec-explore"
-      note "a project's own .claude/.cursor/.opencode copies still take precedence when present"
+      note "a project's own .claude/.cursor/.opencode/.gemini copies still take precedence when present"
     else
       warn "'openspec init' did not produce skills/commands — skipping"
-      note "you can copy them from any OpenSpec project after: openspec init --tools claude,cursor,codex,opencode"
+      note "you can copy them from any OpenSpec project after: openspec init --tools claude,cursor,codex,opencode,gemini"
     fi
     rm -rf "$TMPD"
   fi
@@ -681,10 +895,12 @@ else
 fi
 info ""
 
-# ---------- 4. ops-applier + ops-qa subagents ----------
-step "Installing the ops-applier and ops-qa subagents"
+# ---------- 4. ops-applier + ops-qa + ops-reviewer + ops-security subagents ----------
+step "Installing the ops-applier, ops-qa, ops-reviewer, and ops-security subagents"
 [ -f "$SRC/agents/opsx-applier.md" ] || die "missing $SRC/agents/opsx-applier.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-qa.md" ] || die "missing $SRC/agents/opsx-qa.md — run this script from the repo checkout"
+[ -f "$SRC/agents/opsx-reviewer.md" ] || die "missing $SRC/agents/opsx-reviewer.md — run this script from the repo checkout"
+[ -f "$SRC/agents/opsx-security.md" ] || die "missing $SRC/agents/opsx-security.md — run this script from the repo checkout"
 install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
 ok "ops-applier -> $PREFIX/agents/opsx-applier.md (Claude Code)"
 install_cursor_agent "$SRC/agents/opsx-applier.md" "$CURSOR_AGENTS_DIR/opsx-applier.md"
@@ -701,7 +917,31 @@ install_codex_agent "$SRC/agents/opsx-qa.md" "$CODEX_AGENTS_DIR/ops-qa.toml"
 ok "ops-qa -> $CODEX_AGENTS_DIR/ops-qa.toml (Codex CLI)"
 install_opencode_agent "$SRC/agents/opsx-qa.md" "$OPENCODE_AGENTS_DIR/ops-qa.md"
 ok "ops-qa -> $OPENCODE_AGENTS_DIR/ops-qa.md (OpenCode)"
-note "applier implements in opsx/<change>; qa verifies UI/UX after each apply round"
+install_file "$SRC/agents/opsx-applier.md" "$GEMINI_AGENTS_DIR/opsx-applier.md"
+ok "ops-applier -> $GEMINI_AGENTS_DIR/opsx-applier.md (Gemini CLI)"
+install_file "$SRC/agents/opsx-qa.md" "$GEMINI_AGENTS_DIR/opsx-qa.md"
+ok "ops-qa -> $GEMINI_AGENTS_DIR/opsx-qa.md (Gemini CLI)"
+install_file "$SRC/agents/opsx-reviewer.md" "$PREFIX/agents/opsx-reviewer.md"
+ok "ops-reviewer -> $PREFIX/agents/opsx-reviewer.md (Claude Code)"
+install_cursor_agent "$SRC/agents/opsx-reviewer.md" "$CURSOR_AGENTS_DIR/opsx-reviewer.md"
+ok "ops-reviewer -> $CURSOR_AGENTS_DIR/opsx-reviewer.md (Cursor CLI)"
+install_codex_agent "$SRC/agents/opsx-reviewer.md" "$CODEX_AGENTS_DIR/ops-reviewer.toml"
+ok "ops-reviewer -> $CODEX_AGENTS_DIR/ops-reviewer.toml (Codex CLI)"
+install_opencode_agent "$SRC/agents/opsx-reviewer.md" "$OPENCODE_AGENTS_DIR/ops-reviewer.md"
+ok "ops-reviewer -> $OPENCODE_AGENTS_DIR/ops-reviewer.md (OpenCode)"
+install_file "$SRC/agents/opsx-reviewer.md" "$GEMINI_AGENTS_DIR/opsx-reviewer.md"
+ok "ops-reviewer -> $GEMINI_AGENTS_DIR/opsx-reviewer.md (Gemini CLI)"
+install_file "$SRC/agents/opsx-security.md" "$PREFIX/agents/opsx-security.md"
+ok "ops-security -> $PREFIX/agents/opsx-security.md (Claude Code)"
+install_cursor_agent "$SRC/agents/opsx-security.md" "$CURSOR_AGENTS_DIR/opsx-security.md"
+ok "ops-security -> $CURSOR_AGENTS_DIR/opsx-security.md (Cursor CLI)"
+install_codex_agent "$SRC/agents/opsx-security.md" "$CODEX_AGENTS_DIR/ops-security.toml"
+ok "ops-security -> $CODEX_AGENTS_DIR/ops-security.toml (Codex CLI)"
+install_opencode_agent "$SRC/agents/opsx-security.md" "$OPENCODE_AGENTS_DIR/ops-security.md"
+ok "ops-security -> $OPENCODE_AGENTS_DIR/ops-security.md (OpenCode)"
+install_file "$SRC/agents/opsx-security.md" "$GEMINI_AGENTS_DIR/opsx-security.md"
+ok "ops-security -> $GEMINI_AGENTS_DIR/opsx-security.md (Gemini CLI)"
+note "applier implements in opsx/<change>; reviewer/security/qa verify after apply"
 info ""
 
 # ---------- 5. /opsx-run skill ----------
@@ -714,6 +954,16 @@ if [ "$CODEX_SKILLS_DIR" != "$AGENTS_SKILLS_DIR" ]; then
   install_opsx_run_skill "$CODEX_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
 fi
 install_opsx_run_skill "$OPENCODE_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
+install_opsx_run_skill "$GEMINI_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
+info ""
+
+# ---------- 6. browser-use MCP ----------
+if [ "$SKIP_MCP" -eq 1 ]; then
+  step "Skipping browser-use MCP (--skip-mcp)"
+else
+  step "Configuring browser-use MCP for Gemini, Codex, and OpenCode"
+  install_browser_use_mcp
+fi
 info ""
 
 # ---------- verify ----------
@@ -732,14 +982,28 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$CODEX_SKILLS_DIR/SKILL.md" \
          "$OPENCODE_SKILLS_DIR/SKILL.md" \
          "$OPENCODE_SKILLS_DIR/opsx-window.sh" \
+         "$GEMINI_SKILLS_DIR/SKILL.md" \
+         "$GEMINI_SKILLS_DIR/opsx-window.sh" \
          "$PREFIX/agents/opsx-applier.md" \
          "$CURSOR_AGENTS_DIR/opsx-applier.md" \
          "$CODEX_AGENTS_DIR/ops-applier.toml" \
          "$OPENCODE_AGENTS_DIR/ops-applier.md" \
+         "$GEMINI_AGENTS_DIR/opsx-applier.md" \
          "$PREFIX/agents/opsx-qa.md" \
          "$CURSOR_AGENTS_DIR/opsx-qa.md" \
          "$CODEX_AGENTS_DIR/ops-qa.toml" \
-         "$OPENCODE_AGENTS_DIR/ops-qa.md"; do
+         "$OPENCODE_AGENTS_DIR/ops-qa.md" \
+         "$GEMINI_AGENTS_DIR/opsx-qa.md" \
+         "$PREFIX/agents/opsx-reviewer.md" \
+         "$CURSOR_AGENTS_DIR/opsx-reviewer.md" \
+         "$CODEX_AGENTS_DIR/ops-reviewer.toml" \
+         "$OPENCODE_AGENTS_DIR/ops-reviewer.md" \
+         "$GEMINI_AGENTS_DIR/opsx-reviewer.md" \
+         "$PREFIX/agents/opsx-security.md" \
+         "$CURSOR_AGENTS_DIR/opsx-security.md" \
+         "$CODEX_AGENTS_DIR/ops-security.toml" \
+         "$OPENCODE_AGENTS_DIR/ops-security.md" \
+         "$GEMINI_AGENTS_DIR/opsx-security.md"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
 if [ "$SKIP_GRAPHIFY" -eq 0 ]; then
@@ -747,7 +1011,8 @@ if [ "$SKIP_GRAPHIFY" -eq 0 ]; then
            "$HOME/.cursor/skills/graphify/SKILL.md" \
            "$HOME/.agents/skills/graphify/SKILL.md" \
            "$CODEX_HOME_DIR/skills/graphify/SKILL.md" \
-           "$OPENCODE_CONFIG_DIR/skills/graphify/SKILL.md"; do
+           "$OPENCODE_CONFIG_DIR/skills/graphify/SKILL.md" \
+           "$GEMINI_HOME_DIR/skills/graphify/SKILL.md"; do
     if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
   done
   if have graphify; then
@@ -762,12 +1027,22 @@ for sh in opsx-window.sh opsx-merge.sh opsx-land.sh; do
   [ -x "$AGENTS_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex ~/.agents)"; FAIL=1; }
   [ -x "$CODEX_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex home)"; FAIL=1; }
   [ -x "$OPENCODE_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (OpenCode)"; FAIL=1; }
+  [ -x "$GEMINI_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Gemini CLI)"; FAIL=1; }
   if bash -n "$PREFIX/skills/opsx-run/$sh" 2>/dev/null; then
     ok "$sh parses"
   else
     warn "$sh failed to parse"; FAIL=1
   fi
 done
+if [ "$SKIP_MCP" -eq 0 ]; then
+  for f in "$GEMINI_SETTINGS" "$CODEX_CONFIG" "$OPENCODE_CONFIG"; do
+    if [ -f "$f" ] && grep -q 'browser-use' "$f" 2>/dev/null; then
+      ok "browser-use MCP in $(printf '%s' "$f" | sed "s|$HOME|~|")"
+    else
+      warn "browser-use MCP missing in $f"
+    fi
+  done
+fi
 [ "$FAIL" -eq 0 ] || die "installation finished with problems — see above."
 info ""
 
@@ -776,7 +1051,7 @@ info ""
 info "${B}Next steps${N}"
 info "  1. In a project:   ${B}openspec init --tools claude${N}  (Claude Code)"
 info "                     ${B}openspec init --tools cursor${N}  (Cursor CLI / IDE)"
-info "  2. Restart your agent CLI (Claude, Cursor, Codex, or OpenCode) so it picks up the skill"
+info "  2. Restart your agent CLI (Claude, Cursor, Codex, OpenCode, or Gemini) so it picks up the skill"
 info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
 info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
 info ""
