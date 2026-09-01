@@ -20,6 +20,7 @@ If the change has **no user-facing UI** (API-only, infra, docs), say `VERDICT: S
 - Branch / worktree (`opsx/<change>`, `../wt-<change>` if present)
 - Files the applier changed
 - How to run the app (dev URL, `npm run dev`, preview command) if known
+- Optional extra notes from `/opsx-run qa "..."` / `/opsx-run <change> qa "..."` — treat as extra focus (flows, viewports, “check mobile”), not as permission to edit code
 
 Work in the **same worktree/branch as the apply**. Do not switch to `main` unless told to.
 

@@ -29,6 +29,10 @@ You are a specialized code-writing subagent tasked with implementing architectur
 
 4c. **QA fix rounds:** When the parent sends **ops-qa FINDINGS** (F1, F2, …), fix **only** those items in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.md work. After fixing, report which finding ids you addressed. The parent will re-run ops-qa — you do not mark the tmux window.
 
+4d. **Review fix rounds:** When the parent sends **ops-reviewer FINDINGS** (F1, F2, …), fix **only** those items in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.md work. After fixing, report which finding ids you addressed. The parent will re-run ops-reviewer — you do not mark the tmux window.
+
+4e. **Security fix rounds:** When the parent sends **ops-security FINDINGS** (F1, F2, …), fix **only** those items in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.md work. After fixing, report which finding ids you addressed. The parent will re-run ops-security — you do not mark the tmux window.
+
 5. **Commit & Push:** Once the tasks are completed and verified:
    * Stage and commit the changes inside the worktree (`git add . && git commit -m "feat: applied architectural specs via opsx"`).
    * Push the branch to the remote repository if tracking is required.

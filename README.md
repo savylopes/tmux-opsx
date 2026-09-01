@@ -1,8 +1,8 @@
 # tmux-opsx
 
-Run [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in Claude Code, Cursor CLI, Codex CLI, or OpenCode without blocking your session.
+Run [OpenSpec](https://github.com/Fission-AI/OpenSpec) changes in Claude Code, Cursor CLI, Codex CLI, OpenCode, or Gemini CLI without blocking your session.
 
-**One change = one tmux window, named after the change.** `/opsx-run add-auth` opens a window called `add-auth` running an agent session (Claude Code, Cursor CLI — the `agent` command on Linux —, Codex CLI, or OpenCode). On Claude/Cursor/OpenCode it hands the implementation to the **ops-applier** subagent; a Codex window applies the change itself in an isolated git worktree. You keep your prompt. Every later instruction about that change goes back into the same window, so each change keeps one long-lived conversation you can jump into at any time.
+**One change = one tmux window, named after the change.** `/opsx-run add-auth` opens a window called `add-auth` running an agent session (Claude Code, Cursor CLI — the `agent` command on Linux —, Codex CLI, OpenCode, or Gemini CLI). On Claude/Cursor/OpenCode it hands the implementation to the **ops-applier** subagent; a Codex or Gemini window applies the change itself in an isolated git worktree. You keep your prompt. Every later instruction about that change goes back into the same window, so each change keeps one long-lived conversation you can jump into at any time.
 
 Not in tmux? It starts a session named after the project folder for you.
 
@@ -10,13 +10,17 @@ Not in tmux? It starts a session named after the project folder for you.
 ┌ tmux session ─────────────────────────────────────────────┐
 │ 0:agent*   1:add-auth  2:rate-limiting  3:fix-webhooks    │
 │    claude/agent/opencode ─> Task/Agent(ops-applier) ─> worktree │
-│    codex ─────────────────> (applies directly) ──────> worktree │
+│    codex/gemini ──────────> (applies directly) ──────> worktree │
 └───────────────────────────────────────────────────────────┘
 
   /opsx-run add-auth ......... window opens, work starts
   /opsx-run add-auth verify .. gates run in your session
-  /opsx-run add-auth apply --validate .. apply + QA; this session /goal until PASS
+  /opsx-run add-auth apply --validate .. apply + review + security + qa; change window /goal until PASS
+  /opsx-run add-auth review .... one-shot implementation review
+  /opsx-run add-auth security .. one-shot security review
   /opsx-run add-auth qa ...... one-shot UI/UX QA
+  /opsx-run add-auth qa "..." extra notes for ops-qa
+  /opsx-run qa "..." ......... same, pick the change if omitted
   /opsx-run add-auth merge ... merge into main (branch/window stay)
   /opsx-run add-auth land .... merge + archive + cleanup, window closes
 ```
@@ -27,14 +31,16 @@ Not in tmux? It starts a session named after the project folder for you.
 
 | Piece | Installs to | What it does |
 |---|---|---|
-| `/opsx-run` skill | `~/.claude/skills/opsx-run/` · `~/.cursor/skills/opsx-run/` · `~/.agents/skills/opsx-run/` · `$CODEX_HOME/skills/opsx-run/` · `~/.config/opencode/skills/opsx-run/` | The lifecycle: apply, verify, archive, land, close — one window per change |
+| `/opsx-run` skill | `~/.claude/skills/opsx-run/` · `~/.cursor/skills/opsx-run/` · `~/.agents/skills/opsx-run/` · `$CODEX_HOME/skills/opsx-run/` · `~/.config/opencode/skills/opsx-run/` · `~/.gemini/skills/opsx-run/` | The lifecycle: apply, verify, archive, land, close — one window per change |
 | `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
 | `opsx-merge.sh` | `~/.claude/skills/opsx-run/` | Merge the change branch into a target (default `main`) — no archive or cleanup |
 | `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — OpenSpec gates, then `opsx-merge.sh`, archive, branch/worktree cleanup |
-| `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` · `~/.cursor/agents/opsx-applier.md` · `~/.codex/agents/ops-applier.toml` · `~/.config/opencode/agents/ops-applier.md` | Implements the change in an isolated worktree on `opsx/<change>` |
-| `ops-qa` subagent | `~/.claude/agents/opsx-qa.md` · `~/.cursor/agents/opsx-qa.md` · `~/.codex/agents/ops-qa.toml` · `~/.config/opencode/agents/ops-qa.md` | UI/UX gate. Runs on `apply --validate` (caller `/goal`) or `/opsx-run <change> qa` |
-| `/opsx:*` commands + OpenSpec skills | global Claude / Cursor / Codex / OpenCode dirs | OpenSpec propose/apply/archive/explore — installed globally by `./install.sh` |
-| `/graphify` skill | `~/.claude/skills/graphify/` · `~/.cursor/skills/graphify/` · `~/.agents/skills/graphify/` · `~/.codex/skills/graphify/` · `~/.config/opencode/skills/graphify/` | Graphify knowledge-graph skill — installed globally after the CLI is verified |
+| `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` · `~/.cursor/agents/opsx-applier.md` · `~/.codex/agents/ops-applier.toml` · `~/.config/opencode/agents/ops-applier.md` · `~/.gemini/agents/opsx-applier.md` | Implements the change in an isolated worktree on `opsx/<change>` |
+| `ops-reviewer` subagent | `~/.claude/agents/opsx-reviewer.md` · `~/.cursor/agents/opsx-reviewer.md` · `~/.codex/agents/ops-reviewer.toml` · `~/.config/opencode/agents/ops-reviewer.md` · `~/.gemini/agents/opsx-reviewer.md` | Implementation review gate. Runs on `apply --validate` or `/opsx-run <change> review` |
+| `ops-security` subagent | `~/.claude/agents/opsx-security.md` · `~/.cursor/agents/opsx-security.md` · `~/.codex/agents/ops-security.toml` · `~/.config/opencode/agents/ops-security.md` · `~/.gemini/agents/opsx-security.md` | Security review gate. Runs on `apply --validate` or `/opsx-run <change> security` |
+| `ops-qa` subagent | `~/.claude/agents/opsx-qa.md` · `~/.cursor/agents/opsx-qa.md` · `~/.codex/agents/ops-qa.toml` · `~/.config/opencode/agents/ops-qa.md` · `~/.gemini/agents/opsx-qa.md` | UI/UX gate. Runs on `apply --validate` (dispatcher window `/goal`) or `/opsx-run <change> qa` / `/opsx-run qa "..."` |
+| `/opsx:*` commands + OpenSpec skills | global Claude / Cursor / Codex / OpenCode / Gemini dirs | OpenSpec propose/apply/archive/explore — installed globally by `./install.sh` |
+| `/graphify` skill | `~/.claude/skills/graphify/` · `~/.cursor/skills/graphify/` · `~/.agents/skills/graphify/` · `~/.codex/skills/graphify/` · `~/.config/opencode/skills/graphify/` · `~/.gemini/skills/graphify/` | Graphify knowledge-graph skill — installed globally after the CLI is verified |
 | OpenSpec CLI | npm global | `openspec` — the spec/change engine everything is built on |
 | Graphify CLI | uv tool / pipx | `graphify` — required for `/graphify` |
 
@@ -46,7 +52,8 @@ Not in tmux? It starts a session named after the project folder for you.
 - **git** — the ops-applier agent works in worktrees
 - **Node.js + npm** — to install the OpenSpec CLI
 - **Graphify** (`graphify`) — verified on install; installed with `uv tool install graphifyy` if missing
-- **Claude Code** (`claude`), **Cursor CLI** (`agent` on Linux), **Codex CLI** (`codex`), **or OpenCode** (`opencode`) — each window runs one of these (at least one must be on PATH)
+- **Claude Code** (`claude`), **Cursor CLI** (`agent` on Linux), **Codex CLI** (`codex`), **OpenCode** (`opencode`), **or Gemini CLI** (`gemini`) — each window runs one of these (at least one must be on PATH)
+- **uv** (`uvx`) — used to run the **browser-use** MCP server for Gemini, Codex, and OpenCode (optional; skip with `--skip-mcp`)
 - macOS or Linux
 
 ---
@@ -59,18 +66,19 @@ cd tmux-opsx
 ./install.sh
 ```
 
-The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec **skills and `/opsx:*` commands globally** for Claude Code, Cursor, Codex, and OpenCode, verifies **Graphify** and copies `/graphify` into those same global skill dirs, and installs the tmux-opsx subagent and `/opsx-run` skill.
+The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec **skills and `/opsx:*` commands globally** for Claude Code, Cursor, Codex, OpenCode, and Gemini, verifies **Graphify** and copies `/graphify` into those same global skill dirs, installs the tmux-opsx subagent and `/opsx-run` skill, and registers the **browser-use** MCP server for Gemini, Codex, and OpenCode.
 
 ```
 ./install.sh --prefix <dir>     # Claude config dir (default ~/.claude, or $CLAUDE_CONFIG_DIR)
 ./install.sh --skip-openspec    # leave the OpenSpec CLI alone
 ./install.sh --skip-graphify    # don't verify/install Graphify or copy /graphify
 ./install.sh --skip-commands    # don't install global OpenSpec skills / /opsx:* commands
+./install.sh --skip-mcp         # don't install the browser-use MCP server
 ./install.sh --no-backup        # overwrite without keeping .bak copies
 ./install.sh --uninstall        # remove everything except the OpenSpec and Graphify CLIs
 ```
 
-**Restart your agent CLI afterwards** (Claude Code, Cursor, Codex, or OpenCode) so it picks up the new skill, subagent, and commands.
+**Restart your agent CLI afterwards** (Claude Code, Cursor, Codex, OpenCode, or Gemini) so it picks up the new skill, subagent, and commands.
 
 ### Manual install
 
@@ -80,11 +88,12 @@ If you would rather not run the script:
 npm install -g @fission-ai/openspec                      # 1. the CLI
 
 tmp=$(mktemp -d)                                         # 2. global OpenSpec skills + commands
-(cd "$tmp" && openspec init --tools claude,cursor,codex,opencode .)
+(cd "$tmp" && openspec init --tools claude,cursor,codex,opencode,gemini .)
 mkdir -p ~/.claude/skills ~/.claude/commands \
          ~/.cursor/skills ~/.cursor/commands \
          ~/.codex/skills ~/.agents/skills \
-         ~/.config/opencode/skills ~/.config/opencode/commands
+         ~/.config/opencode/skills ~/.config/opencode/commands \
+         ~/.gemini/skills ~/.gemini/commands
 cp -R "$tmp"/.claude/skills/openspec-* ~/.claude/skills/
 cp -R "$tmp"/.claude/commands/opsx ~/.claude/commands/
 cp -R "$tmp"/.cursor/skills/openspec-* ~/.cursor/skills/
@@ -93,25 +102,34 @@ cp -R "$tmp"/.codex/skills/openspec-* ~/.codex/skills/
 cp -R "$tmp"/.codex/skills/openspec-* ~/.agents/skills/
 cp -R "$tmp"/.opencode/skills/openspec-* ~/.config/opencode/skills/
 cp "$tmp"/.opencode/commands/opsx-*.md ~/.config/opencode/commands/
+cp -R "$tmp"/.gemini/skills/openspec-* ~/.gemini/skills/ 2>/dev/null || true
 rm -rf "$tmp"
 
-graphify install --platform claude,codex,opencode,agents   # 2b. global /graphify
+graphify install --platform claude,codex,opencode,agents,gemini   # 2b. global /graphify
 mkdir -p ~/.cursor/skills/graphify
 cp -R ~/.claude/skills/graphify/. ~/.cursor/skills/graphify/
 
 mkdir -p ~/.claude/skills ~/.claude/agents ~/.cursor/agents ~/.cursor/skills \
          ~/.agents/skills ~/.codex/skills ~/.codex/agents \
-         ~/.config/opencode/skills ~/.config/opencode/agents   # 3. tmux-opsx skill + subagents
+         ~/.config/opencode/skills ~/.config/opencode/agents \
+         ~/.gemini/skills ~/.gemini/agents   # 3. tmux-opsx skill + subagents
 cp -r skills/opsx-run ~/.claude/skills/
 cp -r skills/opsx-run ~/.cursor/skills/
 cp -r skills/opsx-run ~/.agents/skills/
 cp -r skills/opsx-run ~/.codex/skills/
 cp -r skills/opsx-run ~/.config/opencode/skills/
+cp -r skills/opsx-run ~/.gemini/skills/
 chmod +x ~/.claude/skills/opsx-run/*.sh ~/.cursor/skills/opsx-run/*.sh \
          ~/.agents/skills/opsx-run/*.sh ~/.codex/skills/opsx-run/*.sh \
-         ~/.config/opencode/skills/opsx-run/*.sh
+         ~/.config/opencode/skills/opsx-run/*.sh ~/.gemini/skills/opsx-run/*.sh
 cp agents/opsx-applier.md ~/.claude/agents/
 cp agents/opsx-qa.md ~/.claude/agents/
+cp agents/opsx-applier.md ~/.gemini/agents/
+cp agents/opsx-qa.md ~/.gemini/agents/
+cp agents/opsx-reviewer.md ~/.claude/agents/
+cp agents/opsx-reviewer.md ~/.gemini/agents/
+cp agents/opsx-security.md ~/.claude/agents/
+cp agents/opsx-security.md ~/.gemini/agents/
 # Cursor CLI subagent (name + description frontmatter only):
 awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' agents/opsx-applier.md \
   | { printf '%s\n' '---' 'name: ops-applier' \
@@ -174,10 +192,19 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> apply --agent-cli claude` | Same, but launches with Claude Code |
 | `/opsx-run <change> apply --agent-cli codex` | Same, but launches with Codex CLI (applies directly — no subagent) |
 | `/opsx-run <change> apply --agent-cli opencode` | Same, but launches with OpenCode (Task / `@ops-applier`) |
+| `/opsx-run <change> apply --agent-cli gemini` | Same, but launches with Gemini CLI (applies directly — no subagent) |
 | `/opsx-run <change> apply --model sonnet-4` | Same, but pins the apply window's model (default: the session that ran `/opsx-run`) |
-| `/opsx-run <change> apply --validate` | Apply, then **this session** `/goal`: run ops-qa; on FAIL send findings to ops-applier until PASS |
+| `/opsx-run <change> apply --validate` | Fire-and-forget: change window `/goal` runs apply → review → security → qa → fixes until all PASS/SKIP. Caller is not blocked |
 | `/opsx-run <change> verify` | Runs `openspec validate --strict` + `status` **inline** and reports; only bothers the window if it fails |
+| `/opsx-run <change> review` | One-shot **ops-reviewer** in the change window (creates it if needed). No auto-fix |
+| `/opsx-run <change> review "..."` | Same, plus extra notes passed through to ops-reviewer |
+| `/opsx-run review "..."` | Same as `review` with extra notes; pick the change if it was omitted |
+| `/opsx-run <change> security` | One-shot **ops-security** in the change window (creates it if needed). No auto-fix |
+| `/opsx-run <change> security "..."` | Same, plus extra notes passed through to ops-security |
+| `/opsx-run security "..."` | Same as `security` with extra notes; pick the change if it was omitted |
 | `/opsx-run <change> qa` | One-shot **ops-qa** in the change window (creates it if needed). No auto-fix |
+| `/opsx-run <change> qa "..."` | Same, plus extra notes passed through to ops-qa |
+| `/opsx-run qa "..."` | Same as `qa` with extra notes; pick the change if it was omitted (`qa` is the action, not a change name) |
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
 | `/opsx-run <change> status` | Snapshot of what that window is doing right now |
 | `/opsx-run <change> "<text>"` | Sends any instruction to that change's window (creates the window if it was closed) |
@@ -199,8 +226,12 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 /opsx-run add-rate-limiting status                    # peek without leaving your session
 /opsx-run add-rate-limiting "also cover the admin routes"   # steer it, same window
 /opsx-run add-rate-limiting verify                    # validate --strict + status, inline
-/opsx-run add-rate-limiting apply --validate          # apply + ops-qa; this session /goal until PASS
+/opsx-run add-rate-limiting apply --validate          # apply + review + security + qa; change window /goal until PASS
+/opsx-run add-rate-limiting review                    # one-shot implementation review
+/opsx-run add-rate-limiting security                  # one-shot security review
 /opsx-run add-rate-limiting qa                        # one-shot UI/UX QA
+/opsx-run add-rate-limiting qa "check the checkout on mobile"
+/opsx-run qa "check the checkout on mobile"           # pick the change, then ops-qa
 /opsx-run add-rate-limiting land                      # merge, archive, delete branch, close window
 git push origin main                                  # you push, never the tool
 ```
@@ -228,7 +259,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 
 `opsx-window.sh` prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, `sent @7 2:add-auth`, or `marked @7 2:add-auth status=idle`. Called from outside tmux, `ensure` appends `session=created` when it had to start the session, plus an `# attach with: …` hint.
 
-Windows show work state in the **title and status-bar color**: `·change` (idle/done, cyan — reusable, not tmux default), `…change` (busy, yellow), `✗change` (fail, red). `mark done` is treated as idle so follow-ups reuse the same window. If a busy window goes silent for ~40s (`$OPSX_IDLE_SILENCE`) without `mark done`/`fail`, it falls back to idle so it does not stay yellow. Lookups use the `@opsx_change` tag, so badges do not break later commands.
+Windows opened by this tool use a distinct **`ox` title**, a **dark pane**, and muted status-bar colors (the **word color** is the status): `ox ·change` (idle/done, mint), `ox …change` (busy, amber), `ox ✗change` (fail, rose). `mark done` is treated as idle so follow-ups reuse the same window. If a busy window goes silent for ~40s (`$OPSX_IDLE_SILENCE`) without `mark done`/`fail`, it falls back to idle. Lookups use the `@opsx_change` tag, so titles do not break later commands.
 
 Session names come from the project folder with `.`, `:` and whitespace folded to `-`, since tmux treats `.` and `:` as target separators — `~/code/my.app` becomes the session `my-app`.
 
@@ -238,9 +269,9 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 
 1. **Preconditions.** The skill refuses to guess a change name — if it is missing or ambiguous it lists the active changes and asks.
 2. **Session.** Inside tmux, the window goes in your current session. Outside tmux, it creates (or reuses) a **session named after the project folder** and tells you how to attach.
-3. **Window.** `opsx-window.sh` finds a window by `@opsx_change` (or creates one with `tmux new-window -n <change> -c <project>`) running the detected agent CLI (`claude --permission-mode bypassPermissions`, `agent --force --approve-mcps --trust` for Cursor, `codex --dangerously-bypass-approvals-and-sandbox` for Codex, or `opencode --auto --prompt …` for OpenCode) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor|codex|opencode` to override, or set `$OPSX_AGENT_CLI`. Pass `--model <id>` (or `$OPSX_MODEL`) to pin the model; the default is this session's model (Cursor `selectedModel`, else `$ANTHROPIC_MODEL` / Claude settings / Codex `~/.codex/config.toml` / OpenCode `~/.config/opencode/opencode.json{,c}`). From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`; from a Codex session, to `codex`; from OpenCode, to `opencode`. New work marks the window **busy** (`…change`, yellow). When the agent finishes it marks **done** (shown as idle: `·change`, cyan — reusable) or **fail** (`✗change`, red). Idle waiting is cyan, not tmux default. If the agent never marks, busy falls back to idle after ~40s of pane silence. `automatic-rename` / `allow-rename` stay off so the badge is not overwritten by the process name.
-4. **Dispatch.** On Claude/Cursor/OpenCode the window delegates to **ops-applier** (apply) or **ops-qa** (qa). Cursor CLI only loads project agents from `.cursor/agents/` — `ensure` symlinks both agents into the project. OpenCode `ensure` links them into `.opencode/agents/`. Codex usually does the work in the window. **`apply --validate`:** the **calling** session uses `/goal` — after apply it runs ops-qa and sends FAIL findings back to ops-applier until PASS. Plain apply does not run QA.
-5. **Apply.** The applier implements in a git worktree on **`opsx/<change>`**, then build/commit/report. QA only runs on `apply --validate` or `/opsx-run <change> qa`. Parallel workers are opt-in.
+3. **Window.** `opsx-window.sh` finds a window by `@opsx_change` (or creates one with `tmux new-window -n <change> -c <project>`) running the detected agent CLI (`claude --permission-mode bypassPermissions`, `agent --force --approve-mcps --trust` for Cursor, `codex --dangerously-bypass-approvals-and-sandbox` for Codex, `opencode --auto --prompt …` for OpenCode, or `gemini --approval-mode=yolo --skip-trust -i …` for Gemini) with a dispatcher prompt. Pass `--agent-cli claude|agent|cursor|codex|opencode|gemini` to override, or set `$OPSX_AGENT_CLI`. Pass `--model <id>` (or `$OPSX_MODEL`) to pin the model; the default is this session's model (Cursor `selectedModel`, else `$ANTHROPIC_MODEL` / Claude settings / Codex `~/.codex/config.toml` / OpenCode `~/.config/opencode/opencode.json{,c}` / Gemini `$GEMINI_MODEL` or `~/.gemini/settings.json`). From a Cursor CLI session (`$CURSOR_AGENT` set), new windows default to `agent`; from a Codex session, to `codex`; from OpenCode, to `opencode`; from Gemini, to `gemini`. New work marks the window **busy** (`ox …change`, amber on dark). When the agent finishes it marks **done** (idle: `ox ·change`, mint on dark) or **fail** (`ox ✗change`, rose on dark). The pane stays dark; word color is the status. If the agent never marks, busy falls back to idle after ~40s of pane silence. `automatic-rename` / `allow-rename` stay off so the badge is not overwritten by the process name.
+4. **Dispatch.** On Claude/Cursor/OpenCode the window delegates to **ops-applier** (apply), **ops-reviewer** (review), **ops-security** (security), or **ops-qa** (qa). Cursor CLI only loads project agents from `.cursor/agents/` — `ensure` symlinks all agents into the project. OpenCode `ensure` links them into `.opencode/agents/`. Gemini `ensure` links them into `.gemini/agents/`. Codex and Gemini usually do the work in the window. **`apply --validate`:** the **change window** uses `/goal` and loops apply → review → security → qa → fix per gate until all PASS/SKIP. The calling session only starts that window and returns. Plain apply does not run review, security, or QA.
+5. **Apply.** The applier implements in a git worktree on **`opsx/<change>`**, then build/commit/report. Reviewer/security/qa only run on `apply --validate` or their standalone actions. Parallel workers are opt-in.
 6. **Reuse.** Later instructions are typed into the same window with `tmux send-keys -l` (literal, so `;`, `Enter` and control-sequences in your text stay text) and submitted.
 
 Windows are targeted by tmux **window id** (`@7`), never by index or name, so renames and reordering can't misdirect a send. Each one is also stamped with an `@opsx_change` tmux option, which is how `close --all` finds exactly the windows tmux-opsx created.
@@ -254,7 +285,7 @@ Merge the applied branch into `main` (or another target) without finishing the O
 /opsx-run add-auth merge --into develop  # into another branch
 ```
 
-**clean tree → find `opsx/<change>` (or its worktree) → merge `--no-ff`.** The change branch, worktree and tmux window stay. `land` uses this same script (`opsx-merge.sh --stay`) before it archives.
+**clean tree → find `opsx/<change>` (or its worktree) → merge `--no-ff`.** The change branch, worktree and tmux window stay. `land` uses this same script (`opsx-merge.sh --stay`) before it archives. Review and security PASS are **not** required for merge or land.
 
 If the change is checked out in a worktree with uncommitted files, merge refuses until those are committed.
 
@@ -279,6 +310,8 @@ Nothing happens unless every gate passes:
 | Clean working tree | Land auto-stashes dirty WIP (incl. untracked), then restores it after. A dirty **change worktree** still blocks merge until those files are committed |
 | Branch found | Discovery must pick the change branch |
 | Branch ahead of the target | If it is **already merged**, land stops with `ALREADY_MERGED` (exit 2) and asks whether to `--skip-merge` and still archive + clean up |
+
+**Not gated on land:** ops-reviewer or ops-security PASS — you can land without ever running review or security.
 
 Run it with `--dry-run` first to see exactly what it would do. Other flags: `--branch <name>` when discovery guesses wrong, `--skip-specs` for tooling/doc changes, `--force-tasks` to land with unchecked boxes still in `tasks.md`, `--skip-merge` when the branch is already in the target, `--no-close`, `--keep-branch`, `--keep-worktree`.
 
@@ -315,7 +348,7 @@ Closing kills the agent session in that window along with anything it still had 
 
 **The window is named `claude` instead of the change** — something re-enabled tmux's automatic rename. The script disables it per window at creation; check `tmux show-window-options -t <win> automatic-rename`.
 
-**`/opsx:*` commands or OpenSpec skills don't appear** — restart the agent CLI. `./install.sh` copies them into global dirs (`~/.claude/skills/openspec-*`, `~/.cursor/skills/openspec-*`, …). A project's own `.claude/` / `.cursor/` / `.opencode/` copies still take precedence when present.
+**`/opsx:*` commands or OpenSpec skills don't appear** — restart the agent CLI. `./install.sh` copies them into global dirs (`~/.claude/skills/openspec-*`, `~/.cursor/skills/openspec-*`, `~/.gemini/skills/openspec-*`, …). A project's own `.claude/` / `.cursor/` / `.opencode/` / `.gemini/` copies still take precedence when present.
 
 **Window ran but nothing happened** — attach to it and look. The dispatcher session is a normal Claude session; it may be asking a question. `/opsx-run <change> status` prints its recent output without leaving your session.
 
@@ -335,7 +368,7 @@ Closing kills the agent session in that window along with anything it still had 
 
 ## Notes and limits
 
-- Windows launch with permission bypass (`claude --permission-mode bypassPermissions`, `agent --force --approve-mcps --trust`, `codex --dangerously-bypass-approvals-and-sandbox`, or `opencode --auto --prompt …`) so they never stall on a prompt while unattended. `--approve-mcps` loads `~/.cursor/mcp.json` (browser-use) into the Cursor tmux window; OpenCode uses `--auto`. Cursor Task subagents often still lack MCP — the dispatcher then runs browser-use MCP itself. A Codex window applies the change itself. Everything they do happens in git worktrees, and the agent reports its branch back.
+- Windows launch with permission bypass (`claude --permission-mode bypassPermissions`, `agent --force --approve-mcps --trust`, `codex --dangerously-bypass-approvals-and-sandbox`, `opencode --auto --prompt …`, or `gemini --approval-mode=yolo --skip-trust -i …`) so they never stall on a prompt while unattended. `--approve-mcps` loads `~/.cursor/mcp.json` (browser-use) into the Cursor tmux window; OpenCode uses `--auto`; Gemini uses YOLO. `./install.sh` also writes browser-use into `~/.gemini/settings.json`, `~/.codex/config.toml`, and `~/.config/opencode/opencode.json{,c}` (`uvx --from browser-use[cli] browser-use --mcp`). Cursor Task subagents often still lack MCP — the dispatcher then runs browser-use MCP itself. A Codex or Gemini window applies the change itself. Everything they do happens in git worktrees, and the agent reports its branch back.
 - Landing never pushes, and it is the only command that writes to your git history. Everything else is confined to tmux and the OpenSpec files.
 - The `ops-applier` agent has no `Skill` tool, so it drives the `openspec` CLI directly (`openspec instructions apply --change <c> --json`) instead of calling `/opsx:apply`. That is the same work the command describes. Add `Skill` to its `tools:` list in `agents/opsx-applier.md` if you want it to use the command instead.
 - Back-to-back sends to the same window are spaced slightly, because the Claude TUI can concatenate two prompts into one input box otherwise.
