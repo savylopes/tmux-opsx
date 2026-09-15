@@ -23,6 +23,16 @@
 #   6. browser-use MCP             -> ~/.gemini/settings.json
 #                                   -> ~/.codex/config.toml
 #                                   -> ~/.config/opencode/opencode.json{,c}
+#   7. the memory skill + store    -> ~/.claude/skills/memory/
+#                                   -> ~/.cursor/skills/memory/
+#                                   -> ~/.agents/skills/memory/
+#                                   -> ~/.codex/skills/memory/
+#                                   -> ~/.config/opencode/skills/memory/
+#                                   -> ~/.gemini/skills/memory/
+#                                   -> ~/.agents/memory/ (shared store, created once)
+#                                   -> marked block in CLAUDE.md / ~/.codex/AGENTS.md /
+#                                      ~/.config/opencode/AGENTS.md / ~/.gemini/GEMINI.md
+#                                   -> one-time import of existing Claude Code memories
 #
 # Window CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex),
 # OpenCode (opencode), and Gemini CLI (gemini). At least one must be on PATH.
@@ -33,6 +43,7 @@
 #   --skip-graphify    Don't verify/install Graphify or copy its global skill
 #   --skip-commands    Don't install global OpenSpec skills / /opsx:* commands
 #   --skip-mcp         Don't install the browser-use MCP server
+#   --skip-memory      Don't install the memory skill, instruction blocks, store, or import
 #   --no-backup        Overwrite existing files without keeping a .bak copy
 #   --uninstall        Remove everything this script installs (except the CLI)
 #   -h, --help         Show this help
@@ -48,6 +59,7 @@ SKIP_OPENSPEC=0
 SKIP_GRAPHIFY=0
 SKIP_COMMANDS=0
 SKIP_MCP=0
+SKIP_MEMORY=0
 BACKUP=1
 UNINSTALL=0
 NPM_PKG="@fission-ai/openspec"
@@ -74,6 +86,7 @@ while [ $# -gt 0 ]; do
     --skip-graphify) SKIP_GRAPHIFY=1; shift ;;
     --skip-commands) SKIP_COMMANDS=1; shift ;;
     --skip-mcp)      SKIP_MCP=1; shift ;;
+    --skip-memory)   SKIP_MEMORY=1; shift ;;
     --no-backup)     BACKUP=0; shift ;;
     --uninstall)     UNINSTALL=1; shift ;;
     -h|--help)       usage ;;
@@ -307,6 +320,15 @@ GEMINI_OPENSPEC_SKILLS_DIR=$GEMINI_HOME_DIR/skills
 GEMINI_COMMANDS_DIR=$GEMINI_HOME_DIR/commands
 GEMINI_SETTINGS=$GEMINI_HOME_DIR/settings.json
 CODEX_CONFIG=$CODEX_HOME_DIR/config.toml
+CURSOR_MEMORY_SKILLS_DIR=$HOME/.cursor/skills/memory
+CODEX_MEMORY_SKILLS_DIR=$CODEX_HOME_DIR/skills/memory
+AGENTS_MEMORY_SKILLS_DIR=$HOME/.agents/skills/memory
+OPENCODE_MEMORY_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/memory
+GEMINI_MEMORY_SKILLS_DIR=$GEMINI_HOME_DIR/skills/memory
+MEMORY_STORE_DIR=$HOME/.agents/memory
+CODEX_AGENTS_MD=$CODEX_HOME_DIR/AGENTS.md
+OPENCODE_AGENTS_MD=$OPENCODE_CONFIG_DIR/AGENTS.md
+GEMINI_MD=$GEMINI_HOME_DIR/GEMINI.md
 if [ -f "$OPENCODE_CONFIG_DIR/opencode.jsonc" ]; then
   OPENCODE_CONFIG=$OPENCODE_CONFIG_DIR/opencode.jsonc
 else
@@ -404,6 +426,101 @@ install_opsx_run_skill() {
   chmod +x "$dest/opsx-merge.sh"  || die "cannot chmod +x $dest/opsx-merge.sh"
   chmod +x "$dest/opsx-land.sh"   || die "cannot chmod +x $dest/opsx-land.sh"
   ok "/opsx-run -> $dest ($label)"
+}
+
+# Install the memory skill (SKILL.md + templates + import script) into one dest dir.
+install_memory_skill() {
+  local dest=$1 label=$2
+  install_file "$SRC/skills/memory/SKILL.md" "$dest/SKILL.md"
+  mkdir -p "$dest/templates" || die "cannot create $dest/templates"
+  install_file "$SRC/skills/memory/templates/memory.md"  "$dest/templates/memory.md"
+  install_file "$SRC/skills/memory/templates/MEMORY.md"  "$dest/templates/MEMORY.md"
+  install_file "$SRC/skills/memory/import-claude-memory.sh" "$dest/import-claude-memory.sh"
+  chmod +x "$dest/import-claude-memory.sh" || die "cannot chmod +x $dest/import-claude-memory.sh"
+  ok "memory -> $dest ($label)"
+}
+
+MEMORY_BLOCK_START='<!-- tmux-opsx:memory:start -->'
+MEMORY_BLOCK_END='<!-- tmux-opsx:memory:end -->'
+
+memory_instruction_block() {
+  printf '%s\n' "$MEMORY_BLOCK_START"
+  printf '%s\n' '## Memory'
+  printf '%s\n' 'Personal memory shared by all coding agents lives in `~/.agents/memory/`.'
+  printf '%s\n' '- When past preferences or project context may matter, read `~/.agents/memory/MEMORY.md` and open only entries marked `global` or tagged with the current project.'
+  printf '%s\n' '- After each user turn, check whether it contained something worth remembering (explicit request, correction, confirmed choice, lasting fact). If so, save it following the `memory` skill.'
+  printf '%s\n' '- Use this store instead of any built-in or tool-specific memory.'
+  printf '%s\n' "$MEMORY_BLOCK_END"
+}
+
+# Create, replace-between-markers, or append the memory instruction block in
+# an instructions file. Keeps a .bak.<timestamp> when the file actually changes.
+upsert_marked_block() {
+  local dest=$1 tmp blockfile
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  blockfile=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  memory_instruction_block > "$blockfile"
+
+  if [ ! -f "$dest" ]; then
+    cp "$blockfile" "$tmp"
+  elif grep -qF "$MEMORY_BLOCK_START" "$dest" 2>/dev/null; then
+    awk -v start="$MEMORY_BLOCK_START" -v end="$MEMORY_BLOCK_END" -v blockfile="$blockfile" '
+      $0 == start { while ((getline line < blockfile) > 0) print line; close(blockfile); skip=1; next }
+      $0 == end { skip=0; next }
+      skip==1 { next }
+      { print }
+    ' "$dest" > "$tmp"
+  else
+    cat "$dest" > "$tmp"
+    [ -s "$tmp" ] && printf '\n' >> "$tmp"
+    cat "$blockfile" >> "$tmp"
+  fi
+  rm -f "$blockfile"
+
+  if [ -f "$dest" ] && cmp -s "$dest" "$tmp"; then
+    rm -f "$tmp"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$dest")" || die "cannot create $(dirname "$dest")"
+  if [ -f "$dest" ] && [ "$BACKUP" -eq 1 ]; then
+    local bak
+    bak="$dest.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$dest" "$bak" || die "cannot back up $dest"
+    note "backed up existing $(basename "$dest") -> $(basename "$bak")"
+  fi
+  mv "$tmp" "$dest" || die "cannot write $dest"
+}
+
+# Remove the marked memory block (markers included) from an instructions file,
+# leaving the rest of the file untouched.
+remove_marked_block() {
+  local dest=$1 tmp
+  [ -f "$dest" ] || return 0
+  grep -qF "$MEMORY_BLOCK_START" "$dest" 2>/dev/null || return 0
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  awk -v start="$MEMORY_BLOCK_START" -v end="$MEMORY_BLOCK_END" '
+    $0 == start { skip=1; next }
+    $0 == end { skip=0; next }
+    skip==1 { next }
+    { print }
+  ' "$dest" > "$tmp"
+  if [ "$BACKUP" -eq 1 ]; then
+    cp "$dest" "$dest.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  fi
+  mv "$tmp" "$dest" || die "cannot write $dest"
+  ok "removed memory block from $(printf '%s' "$dest" | sed "s|$HOME|~|")"
+}
+
+# Create the store skeleton (type folders + MEMORY.md) without touching
+# anything that already exists.
+create_memory_store_skeleton() {
+  local dest=$1
+  mkdir -p "$dest/user" "$dest/feedback" "$dest/project" "$dest/reference" \
+    || die "cannot create $dest"
+  if [ ! -f "$dest/MEMORY.md" ]; then
+    cp "$SRC/skills/memory/templates/MEMORY.md" "$dest/MEMORY.md" || die "cannot create $dest/MEMORY.md"
+  fi
 }
 
 # Cursor subagents use a simpler frontmatter (name + description only). Reuse the
@@ -708,12 +825,23 @@ if [ "$UNINSTALL" -eq 1 ]; then
   remove_graphify_skill "$CODEX_HOME_DIR/skills/graphify" "Codex"
   remove_graphify_skill "$OPENCODE_CONFIG_DIR/skills/graphify" "OpenCode"
   remove_graphify_skill "$GEMINI_HOME_DIR/skills/graphify" "Gemini CLI"
+  rm -rf "$PREFIX/skills/memory" && ok "removed skills/memory (Claude Code)"
+  rm -rf "$CURSOR_MEMORY_SKILLS_DIR" && ok "removed ~/.cursor/skills/memory (Cursor CLI)"
+  rm -rf "$AGENTS_MEMORY_SKILLS_DIR" && ok "removed ~/.agents/skills/memory (Agent Skills)"
+  rm -rf "$CODEX_MEMORY_SKILLS_DIR" && ok "removed $CODEX_MEMORY_SKILLS_DIR (Codex)"
+  rm -rf "$OPENCODE_MEMORY_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/memory (OpenCode)"
+  rm -rf "$GEMINI_MEMORY_SKILLS_DIR" && ok "removed ~/.gemini/skills/memory (Gemini CLI)"
+  remove_marked_block "$PREFIX/CLAUDE.md"
+  remove_marked_block "$CODEX_AGENTS_MD"
+  remove_marked_block "$OPENCODE_AGENTS_MD"
+  remove_marked_block "$GEMINI_MD"
   info ""
   info "The OpenSpec CLI was left installed. Remove it with:"
   info "  npm uninstall -g $NPM_PKG"
   info "The Graphify CLI was left installed. Remove it with:"
   info "  uv tool uninstall graphifyy"
   info "browser-use MCP entries in Gemini / Codex / OpenCode config were left in place."
+  info "$MEMORY_STORE_DIR was left in place — your memories are never deleted."
   exit 0
 fi
 
@@ -966,6 +1094,49 @@ else
 fi
 info ""
 
+# ---------- 7. memory skill + shared store ----------
+if [ "$SKIP_MEMORY" -eq 1 ]; then
+  step "Skipping memory (--skip-memory)"
+else
+  step "Installing the memory skill"
+  [ -f "$SRC/skills/memory/SKILL.md" ] || die "missing $SRC/skills/memory/SKILL.md — run this script from the repo checkout"
+  install_memory_skill "$PREFIX/skills/memory" "Claude Code"
+  install_memory_skill "$CURSOR_MEMORY_SKILLS_DIR" "Cursor CLI"
+  install_memory_skill "$AGENTS_MEMORY_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
+  if [ "$CODEX_MEMORY_SKILLS_DIR" != "$AGENTS_MEMORY_SKILLS_DIR" ]; then
+    install_memory_skill "$CODEX_MEMORY_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
+  fi
+  install_memory_skill "$OPENCODE_MEMORY_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
+  install_memory_skill "$GEMINI_MEMORY_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
+  info ""
+
+  step "Writing the memory instruction block"
+  upsert_marked_block "$PREFIX/CLAUDE.md"
+  ok "memory block -> $(printf '%s' "$PREFIX/CLAUDE.md" | sed "s|$HOME|~|") (Claude Code)"
+  upsert_marked_block "$CODEX_AGENTS_MD"
+  ok "memory block -> $(printf '%s' "$CODEX_AGENTS_MD" | sed "s|$HOME|~|") (Codex CLI)"
+  upsert_marked_block "$OPENCODE_AGENTS_MD"
+  ok "memory block -> $(printf '%s' "$OPENCODE_AGENTS_MD" | sed "s|$HOME|~|") (OpenCode)"
+  upsert_marked_block "$GEMINI_MD"
+  ok "memory block -> $(printf '%s' "$GEMINI_MD" | sed "s|$HOME|~|") (Gemini CLI)"
+  info ""
+
+  step "Creating the shared memory store"
+  create_memory_store_skeleton "$MEMORY_STORE_DIR"
+  ok "$(printf '%s' "$MEMORY_STORE_DIR" | sed "s|$HOME|~|") (user/, feedback/, project/, reference/, MEMORY.md)"
+  info ""
+
+  step "Importing existing Claude Code memories"
+  bash "$SRC/skills/memory/import-claude-memory.sh" "$MEMORY_STORE_DIR"
+  info ""
+
+  step "Cursor: add the memory block manually"
+  note "Cursor has no known global instructions file — paste this into Cursor Settings -> Rules -> User Rules:"
+  info ""
+  memory_instruction_block
+fi
+info ""
+
 # ---------- verify ----------
 step "Verifying"
 FAIL=0
@@ -1020,6 +1191,27 @@ if [ "$SKIP_GRAPHIFY" -eq 0 ]; then
   else
     warn "graphify CLI not on PATH"; FAIL=1
   fi
+fi
+if [ "$SKIP_MEMORY" -eq 0 ]; then
+  for f in "$PREFIX/skills/memory/SKILL.md" \
+           "$CURSOR_MEMORY_SKILLS_DIR/SKILL.md" \
+           "$AGENTS_MEMORY_SKILLS_DIR/SKILL.md" \
+           "$CODEX_MEMORY_SKILLS_DIR/SKILL.md" \
+           "$OPENCODE_MEMORY_SKILLS_DIR/SKILL.md" \
+           "$GEMINI_MEMORY_SKILLS_DIR/SKILL.md" \
+           "$MEMORY_STORE_DIR/MEMORY.md"; do
+    if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
+  done
+  for d in user feedback project reference; do
+    [ -d "$MEMORY_STORE_DIR/$d" ] || { warn "missing: $MEMORY_STORE_DIR/$d"; FAIL=1; }
+  done
+  for f in "$PREFIX/CLAUDE.md" "$CODEX_AGENTS_MD" "$OPENCODE_AGENTS_MD" "$GEMINI_MD"; do
+    if [ -f "$f" ] && grep -qF "$MEMORY_BLOCK_START" "$f" 2>/dev/null; then
+      ok "memory block in $(printf '%s' "$f" | sed "s|$HOME|~|")"
+    else
+      warn "memory block missing in $f"; FAIL=1
+    fi
+  done
 fi
 for sh in opsx-window.sh opsx-merge.sh opsx-land.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
