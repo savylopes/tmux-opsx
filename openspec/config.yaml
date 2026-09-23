@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  Purpose: tmux-opsx is the user's personal development harness for agent CLIs.
+  The user is its only consumer; optimise for their workflow, not for a public audience.
+  It groups into: workflow (/opsx-run: change -> tmux window -> apply -> gates -> merge/land),
+  gates (ops-reviewer, ops-security, ops-qa), context (cross-agent memory),
+  and portability (one install.sh for every supported CLI).
+
+  Product surface (what a change actually ships):
+  - install.sh: installs/uninstalls everything, with --skip-* flags and .bak backups
+  - skills/*/: SKILL.md plus helper scripts (e.g. skills/opsx-run/opsx-window.sh, opsx-merge.sh, opsx-land.sh)
+  - agents/*.md: subagent definitions (ops-applier, ops-reviewer, ops-security, ops-qa),
+    converted by install.sh for each CLI
+  - tmux behaviour: one window per change, `ox` window prefix, @opsx_change tags, status colours
+  - README.md: the user-facing documentation; keep its component overview current
+
+  Supported CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex), OpenCode (opencode),
+  Gemini CLI (gemini). New features should work across all five; where a CLI lacks a capability
+  (subagents, MCP, global instructions file), degrade gracefully and document the gap.
+
+  Conventions:
+  - bash for all scripts; keep them shellcheck clean
+  - install.sh keeps .bak copies of anything it overwrites (unless --no-backup)
+  - never push to a remote; landing stays local and prints the push command
+  - never hand-roll `tmux send-keys`; go through opsx-window.sh (literal sends, window ids)
+  - do not rename the repo, install paths, skill names or the `ox` window prefix without a change
+  - a change that adds a component updates the README overview tree and, if relevant, this file
+
+  Tests: there is no unit test suite yet. Verify by running install.sh and scripts in a
+  scratch HOME and against a private tmux socket (tmux -L <name>), never the user's live session.
