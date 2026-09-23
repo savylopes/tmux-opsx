@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+# scenario: opsx-validate-pipeline / Full validate success path
+# level: L1
+# requirement: validate loop includes review and security gates
+# Contract check on the validate dispatcher prompt: gates run apply -> eval ->
+# review -> security -> qa, each advancing on PASS or SKIP, and the last marks done.
+import os, re, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.environ["EVAL_ROOT"], "evals", "_lib"))
+from skill_prompts import prompt, steps, first_step, fail, show
+
+va = prompt("validate"); show(va)
+st = steps(va)
+order = [("apply", r"ops-applier"), ("eval", r"delegate[^.]*ops-eval"), ("review", r"delegate[^.]*ops-reviewer"),
+         ("security", r"delegate[^.]*ops-security"), ("qa", r"delegate[^.]*ops-qa")]
+pos = {}
+for g, pat in order:
+    n = first_step(st, pat)
+    if n is None:
+        fail("validate prompt has no step delegating %s" % g)
+    pos[g] = n
+print("gate steps:", pos)
+seq = [pos[g] for g, _ in order]
+if seq != sorted(seq):
+    fail("gates not in order apply -> eval -> review -> security -> qa: %s" % pos)
+# Each of eval/review/security advances on PASS or SKIP to the next gate.
+nxt = {"eval": "review", "review": "security", "security": "qa"}
+for g, h in nxt.items():
+    ok = False
+    for n, s in st.items():
+        m = re.search(r"%s\W*PASS\W*or\W*SKIP\W*(?:→|->)\s*step (\d+)" % g, s, re.I)
+        if m and int(m.group(1)) == pos[h]:
+            ok = True
+    if not ok:
+        fail("%s PASS or SKIP does not advance to the %s step (%d)" % (g, h, pos[h]))
+# QA PASS or SKIP completes the goal and marks the window done.
+fin = [s for s in st.values() if re.search(r"QA\W*PASS\W*or\W*SKIP", s, re.I)]
+if not fin or not re.search(r"mark[^.]*done", fin[0]) or not re.search(r"complete", fin[0], re.I):
+    fail("QA PASS or SKIP does not complete the goal and mark the window done: %s" % fin)
+print("OK")

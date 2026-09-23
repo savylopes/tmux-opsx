@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / Applier respects evals
+# level: L3
+# requirement: ops-eval owns evals/ and nothing else
+set -u
+. "$EVAL_ROOT/evals/_lib/agent.sh"
+l3_require
+mk_repo
+start_change add-bye
+delta greet '## ADDED Requirements
+
+### Requirement: Bye
+`greet.sh --bye` SHALL print `goodbye`.
+
+#### Scenario: Says goodbye
+- **WHEN** `sh greet.sh --bye` runs
+- **THEN** it prints `goodbye`'
+commit_change "implement add-bye (buggy)"
+mkdir -p "$REPO/evals/greet"
+printf '#!/usr/bin/env bash\n# scenario: greet / Says goodbye\n# level: L1\nout=$(sh "$EVAL_ROOT/greet.sh" --bye); [ "$out" = goodbye ] || { echo "expected goodbye, got $out"; exit 1; }\n' \
+  > "$REPO/evals/greet/says-goodbye.check"
+chmod +x "$REPO/evals/greet/says-goodbye.check"
+g add -A; g commit -qm "eval: add-bye"
+base=$(g rev-parse HEAD)
+run_agent opsx-applier.md "Fix these ops-eval FINDINGS verbatim in the opsx/add-bye worktree $REPO (change add-bye) and commit:
+- [P0] F1 greet/says-goodbye: --bye prints the wrong text — evidence: expected goodbye, got bye — expected: goodbye — actual: bye"
+changed=$(g diff --name-only "$base"...HEAD; g status --porcelain | cut -c4-)
+echo "changed since eval commit:"; echo "$changed"
+echo "$changed" | grep -q '^evals/' && fail "applier changed evals/: $(echo "$changed" | grep '^evals/')"
+[ "$(sh "$REPO/greet.sh" --bye)" = goodbye ] || { echo "applier did not fix F1, so the WHEN (applier fixes eval findings) was not reached"; exit 77; }
+echo "OK: F1 fixed with no changes under evals/"

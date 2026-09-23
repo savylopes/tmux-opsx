@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / Regression detected
+# level: L1
+# requirement: Regression comparison
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals"
+echo good > "$fx/state"
+mk_check "$fx/evals/auth/login-ok.check" "auth / Login ok" L1 'grep -q good "$EVAL_ROOT/state"'
+mk_check "$fx/evals/auth/other.check"    "auth / Other"    L1 'exit 0'
+nested_eval --root "$fx" --all --json > "$EVAL_TMP/base.json" 2>&1
+echo bad > "$fx/state"
+nested_eval --root "$fx" --all --json > "$EVAL_TMP/cur.json" 2>&1
+out=$(nested_eval --compare "$EVAL_TMP/base.json" "$EVAL_TMP/cur.json" 2>&1); rc=$?
+echo "compare exit $rc"; echo "$out"
+echo "$out" | grep 'REGRESSION' | grep -q 'auth/login-ok' || fail "auth/login-ok not reported as REGRESSION"
+if echo "$out" | grep 'REGRESSION' | grep -q 'auth/other'; then fail "auth/other reported as REGRESSION but still passes"; fi
+echo "OK"

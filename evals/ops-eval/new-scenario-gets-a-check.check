@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / New scenario gets a check
+# level: L3
+# requirement: Checks are generated from spec scenarios
+set -u
+. "$EVAL_ROOT/evals/_lib/agent.sh"
+l3_require
+mk_repo
+start_change add-fork
+delta tmux-fork '## ADDED Requirements
+
+### Requirement: Fork directories
+Each `fork.sh` run SHALL create its own new directory under `forks/` and print its path.
+
+#### Scenario: Concurrent forks
+- **WHEN** two `sh fork.sh` runs start at the same time
+- **THEN** each prints a different directory and both directories exist'
+printf '#!/bin/sh\nmkdir -p forks\nd=$(mktemp -d forks/f.XXXXXX)\necho "$d"\n' > "$REPO/fork.sh"
+commit_change
+run_agent opsx-eval.md "$(eval_prompt)"
+f="$REPO/evals/tmux-fork/concurrent-forks.check"
+[ -f "$f" ] || fail "evals/tmux-fork/concurrent-forks.check not created; evals: $(cd "$REPO" && find evals -type f 2>/dev/null)"
+head -5 "$f"
+grep -qx '# scenario: tmux-fork / Concurrent forks' "$f" || fail "header '# scenario: tmux-fork / Concurrent forks' missing"
+echo "OK"

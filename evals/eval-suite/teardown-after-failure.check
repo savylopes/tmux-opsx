@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / Teardown after failure
+# level: L1
+# requirement: Per-repo configuration
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals"
+cat > "$fx/evals/setup.sh" <<S
+#!/bin/sh
+touch '$EVAL_TMP/setup-ran'
+S
+cat > "$fx/evals/teardown.sh" <<S
+#!/bin/sh
+touch '$EVAL_TMP/teardown-ran'
+S
+chmod +x "$fx/evals/setup.sh" "$fx/evals/teardown.sh"
+printf 'setup: ./evals/setup.sh\nteardown: ./evals/teardown.sh\n' > "$fx/evals/eval.yaml"
+mk_check "$fx/evals/cap/bad.check" "cap / Bad" L1 'echo failing on purpose; exit 1'
+out=$(nested_eval --root "$fx" --all 2>&1); rc=$?
+echo "runner exit $rc"; echo "$out"
+[ "$rc" -eq 1 ] || fail "expected runner exit 1 for a failing check, got $rc"
+[ -e "$EVAL_TMP/setup-ran" ] || fail "setup did not run (fixture sanity)"
+[ -e "$EVAL_TMP/teardown-ran" ] || fail "teardown did not run although a check failed"
+echo "OK: teardown ran before the runner exited"

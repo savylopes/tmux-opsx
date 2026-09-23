@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / L3 pass rate
+# level: L1
+# requirement: Levels
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals"
+printf 'agentic:\n  trials: 3\n  threshold: 5\n  cli: true\n' > "$fx/evals/eval.yaml"
+# Fails exactly one trial (the 3rd invocation) -> 4 of 5 pass.
+cnt="$EVAL_TMP/count"; : > "$cnt"
+mk_check "$fx/evals/cap/agent.check" "cap / Agent" L3 \
+  "echo x >> '$cnt'; n=\$(wc -l < '$cnt'); [ \"\$n\" -eq 3 ] && { echo trial \$n fails; exit 1; }; echo trial \$n ok; exit 0"
+out=$(nested_eval --root "$fx" --all --agentic --trials 5 2>&1); rc=$?
+echo "runner exit $rc"; echo "$out"
+echo "trials executed: $(wc -l < "$cnt")"
+[ "$(wc -l < "$cnt")" -eq 5 ] || fail "expected 5 trials, ran $(wc -l < "$cnt")"
+line=$(echo "$out" | grep -E 'cap/agent' | head -1)
+echo "$line" | grep -Eq '^FAIL ' || fail "expected FAIL for 4/5 with threshold 5, got: $line"
+echo "$out" | grep -q '4/5' || fail "scorecard does not show pass rate 4/5"
+[ "$rc" -eq 1 ] || fail "expected runner exit 1, got $rc"
+echo "OK"

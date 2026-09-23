@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / L3 skipped by default
+# level: L1
+# requirement: Levels
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals"
+mk_check "$fx/evals/cap/agent.check" "cap / Agent" L3 "touch '$EVAL_TMP/l3-executed'; exit 1"
+mk_check "$fx/evals/cap/plain.check" "cap / Plain" L1 'exit 0'
+out=$(nested_eval --root "$fx" --all --json 2>&1); rc=$?
+echo "runner exit $rc"; echo "$out"
+status=$(printf '%s' "$out" | jq -r '.results[] | select(.id=="cap/agent") | .status')
+case "$status" in "NOT RUN"|NOT_RUN) ;; *) false;; esac || fail "expected L3 check NOT RUN, got '$status'"
+[ ! -e "$EVAL_TMP/l3-executed" ] || fail "L3 check was executed without --agentic"
+[ "$rc" -eq 0 ] || fail "NOT RUN L3 check must not affect exit code; got $rc"
+nested_eval --root "$fx" --all | grep -E '^NOT RUN .*cap/agent' || fail "human scorecard has no NOT RUN line"
+echo "OK"

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / Dispute resolved by ops-eval
+# level: L3
+# requirement: ops-eval owns evals/ and nothing else
+set -u
+. "$EVAL_ROOT/evals/_lib/agent.sh"
+l3_require
+mk_repo
+start_change add-quiet
+delta greet '## ADDED Requirements
+
+### Requirement: Quiet
+`greet.sh --quiet` SHALL print nothing.
+
+#### Scenario: Quiet exit
+- **WHEN** `sh greet.sh --quiet` runs
+- **THEN** it prints nothing and exits 0'
+sed -i '2i [ "$1" = --quiet ] && exit 0' "$REPO/greet.sh"
+commit_change
+mkdir -p "$REPO/evals/greet"
+printf '#!/usr/bin/env bash\n# scenario: greet / Quiet exit\n# level: L1\nsh "$EVAL_ROOT/greet.sh" --quiet; rc=$?; [ $rc -eq 1 ] || { echo "expected exit 1, got $rc"; exit 1; }\n' \
+  > "$REPO/evals/greet/quiet-exit.check"
+chmod +x "$REPO/evals/greet/quiet-exit.check"; printf 'timeout: 30\n' > "$REPO/evals/eval.yaml"
+g add -A; g commit -qm "eval: add-quiet"
+base=$(g rev-parse HEAD)
+run_agent opsx-eval.md "$(eval_prompt 'DISPUTE F2: check expects exit 1 but spec says exit 0')"
+line=$(printf '%s\n' "$AGENT_OUT" | grep -E 'DISPUTE F2:' | tail -1)
+[ -n "$line" ] || fail "no 'DISPUTE F2:' resolution in the report"
+echo "resolution: $line"
+if echo "$line" | grep -qi 'accepted'; then
+  [ -n "$(g diff "$base" -- evals/greet/quiet-exit.check)" ] || fail "dispute accepted but the check was not changed"
+elif echo "$line" | grep -qi 'rejected'; then
+  [ "$(echo "$line" | sed 's/.*rejected//I' | tr -dc '[:alnum:]' | wc -c)" -ge 10 ] || fail "dispute rejected without a justification"
+else
+  fail "DISPUTE F2 neither accepted (with fix) nor rejected (with justification)"
+fi
+echo "OK"

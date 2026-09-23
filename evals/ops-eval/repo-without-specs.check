@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / Repo without specs
+# level: L3
+# requirement: SKIP rules
+set -u
+. "$EVAL_ROOT/evals/_lib/agent.sh"
+l3_require
+mk_repo
+g rm -rq openspec/specs; g commit -qm "no specs"
+start_change add-bye
+sed -i '2i [ "$1" = --shout ] && { echo HELLO; exit 0; }' "$REPO/greet.sh"
+commit_change
+[ ! -d "$REPO/openspec/specs" ] && [ ! -d "$REPO/openspec/changes/add-bye/specs" ] || fail "fixture sanity"
+run_agent opsx-eval.md "$(eval_prompt)"
+[ "$(verdict)" = SKIP ] || fail "expected VERDICT SKIP, got '$(verdict)'"
+echo "OK"

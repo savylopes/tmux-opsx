@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / Deterministic rerun
+# level: L1
+# requirement: Runner
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals"
+mk_check "$fx/evals/a/one.check"   "a / One"   L1 'echo one; exit 0'
+mk_check "$fx/evals/a/two.check"   "a / Two"   L1 'echo two >&2; exit 4'
+mk_check "$fx/evals/b/three.check" "b / Three" L1 'echo three; exit 77'
+norm='{totals, results: [.results[] | {id, scenario, level, status, exit, evidence}], missing}'
+r1=$(nested_eval --root "$fx" --all --json 2>&1); rc1=$?
+r2=$(nested_eval --root "$fx" --all --json 2>&1); rc2=$?
+n1=$(printf '%s' "$r1" | jq -S "$norm") || fail "run 1 not JSON: $r1"
+n2=$(printf '%s' "$r2" | jq -S "$norm") || fail "run 2 not JSON: $r2"
+echo "run1 exit $rc1, run2 exit $rc2"; echo "$n1"
+[ "$rc1" -eq "$rc2" ] || fail "exit codes differ: $rc1 vs $rc2"
+[ "$n1" = "$n2" ] || { diff <(echo "$n1") <(echo "$n2"); fail "results differ between runs"; }
+echo "OK: identical results"

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / Failing scenario reported
+# level: L3
+# requirement: Structured verdict
+set -u
+. "$EVAL_ROOT/evals/_lib/agent.sh"
+l3_require
+mk_repo
+start_change add-bye
+delta greet '## ADDED Requirements
+
+### Requirement: Farewell
+`greet.sh --farewell` SHALL print `farewell` and exit 0.
+
+#### Scenario: Says farewell
+- **WHEN** `sh greet.sh --farewell` runs
+- **THEN** it prints `farewell` and exits 0'
+sed -i '2i [ "$1" = --farewell ] && { echo farewel; exit 0; }' "$REPO/greet.sh"   # product defect
+commit_change
+run_agent opsx-eval.md "$(eval_prompt)"
+[ "$(verdict)" = FAIL ] || fail "expected VERDICT FAIL for a product defect, got '$(verdict)'"
+printf '%s\n' "$AGENT_OUT" | grep -E '^- \[P[01]\] F[0-9]+ greet/says-farewell' || fail "no P0/P1 finding naming greet/says-farewell"
+echo "OK"

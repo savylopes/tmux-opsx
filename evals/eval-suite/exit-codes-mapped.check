@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / Exit codes mapped
+# level: L1
+# requirement: Check contract
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals"
+mk_check "$fx/evals/cap/zero.check"   "cap / Zero"   L1 'echo zero; exit 0'
+mk_check "$fx/evals/cap/unver.check"  "cap / Unver"  L1 'echo seventy-seven; exit 77'
+mk_check "$fx/evals/cap/three.check"  "cap / Three"  L1 'echo three; exit 3'
+out=$(nested_eval --root "$fx" --all --json 2>&1); rc=$?
+echo "runner exit $rc"; echo "$out"
+st() { printf '%s' "$out" | jq -r --arg id "$1" '.results[] | select(.id==$id) | .status'; }
+[ "$(st cap/zero)" = PASS ]          || fail "exit 0 -> expected PASS, got '$(st cap/zero)'"
+[ "$(st cap/unver)" = UNVERIFIABLE ] || fail "exit 77 -> expected UNVERIFIABLE, got '$(st cap/unver)'"
+[ "$(st cap/three)" = FAIL ]         || fail "exit 3 -> expected FAIL, got '$(st cap/three)'"
+# Human scorecard shows the same mapping.
+human=$(nested_eval --root "$fx" --all 2>&1)
+echo "$human"
+echo "$human" | grep -E '^PASS .*cap/zero'          >/dev/null || fail "scorecard: no PASS line for cap/zero"
+echo "$human" | grep -E '^UNVERIFIABLE .*cap/unver' >/dev/null || fail "scorecard: no UNVERIFIABLE line for cap/unver"
+echo "$human" | grep -E '^FAIL .*cap/three'         >/dev/null || fail "scorecard: no FAIL line for cap/three"
+echo "OK: 0/77/3 -> PASS/UNVERIFIABLE/FAIL"

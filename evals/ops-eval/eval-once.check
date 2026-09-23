@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+# scenario: ops-eval / Eval once
+# level: L1
+# requirement: One-shot eval action
+# Contract check: `/opsx-run <change> eval` ensures the change window with the
+# eval prompt, which runs ops-eval once and never dispatches ops-applier.
+import os, re, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.environ["EVAL_ROOT"], "evals", "_lib"))
+from skill_prompts import prompt, action_row, fail, show
+
+row = action_row("eval")
+print(row)
+if "ensure" not in row:
+    fail("eval action does not ensure the change window")
+if not re.search(r"ops-eval", row) or not re.search(r"once|one-shot", row, re.I):
+    fail("eval action row does not say ops-eval runs once")
+if not re.search(r"(no|not|never)[^.|]*auto-?fix", row, re.I):
+    fail("eval action row does not rule out auto-fix")
+ev = prompt("eval")
+show(ev)
+body = " ".join(ev)
+if not re.search(r"ops-eval", body):
+    fail("eval prompt does not delegate to ops-eval")
+if not re.search(r"(do not|don't|never)[^.]*(spawn|delegate|dispatch|run)[^.]*ops-applier", body, re.I):
+    fail("eval prompt does not forbid dispatching ops-applier")
+for l in ev:
+    if re.search(r"delegate[^.]*ops-applier", l, re.I) and not re.search(r"(not|never)", l, re.I):
+        fail("eval prompt delegates to ops-applier: " + l)
+print("OK")

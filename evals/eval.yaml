@@ -12,7 +12,8 @@ setup: ./evals/setup.sh
 teardown: ./evals/teardown.sh
 env:
   NO_COLOR: "1"
-timeout: 60
+# 600: L3 checks drive a headless agent CLI (only with --agentic); L1/L2 finish in seconds.
+timeout: 600
 agentic:
   trials: 3
   cli: claude

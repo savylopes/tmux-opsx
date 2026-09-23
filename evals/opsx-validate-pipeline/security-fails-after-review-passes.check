@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+# scenario: opsx-validate-pipeline / Security fails after review passes
+# level: L1
+# requirement: validate loop retries failed gates via applier
+import os, re, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.environ["EVAL_ROOT"], "evals", "_lib"))
+from skill_prompts import prompt, steps, first_step, goto_targets, fail, show
+
+va = prompt("validate"); show(va)
+st = steps(va)
+r = first_step(st, r"delegate[^.]*ops-reviewer")
+sec = first_step(st, r"delegate[^.]*ops-security")
+f = first_step(st, r"security\W*FAIL")
+if None in (r, sec, f):
+    fail("validate prompt lacks review/security steps or a security-FAIL rule")
+s = st[f]; print("security FAIL rule (step %d): %s" % (f, s))
+if not re.search(r"ops-applier", s):
+    fail("security FAIL does not delegate ops-applier")
+if goto_targets(s) != [sec]:
+    fail("security FAIL does not re-run ops-security only (targets %s, security step %d, review step %d)"
+         % (goto_targets(s), sec, r))
+print("OK")
