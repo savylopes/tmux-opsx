@@ -70,24 +70,65 @@ Patterns (launch command per CLI, literal send-keys, CLI detection) are **copied
 | `result.md` | child (via `return`) | answer, evidence, open doubts |
 | `capture.txt` | `collect` fallback | last `capture-pane` of the child |
 
-Outside the repo, so nothing to gitignore and no clutter. Ids are small integers per tmux session (`1`, `2`, …), allocated with `mkdir` (atomic) to avoid races between two parents in the same session.
+Outside the repo, so nothing to gitignore and no clutter. Ids are small integers per tmux session (`1`, `2`, …), claimed atomically by creating `.ids/<n>` with bash `noclobber` (O_EXCL) to avoid races between two parents in the same session (`mkdir` was the original plan but is not reliably atomic with uutils coreutils; see Decision 4). `launch.sh` (the generated child launcher) also lives in the fork dir.
 
 ### 4. Read-only child launch
 
-| CLI | Launch |
-|---|---|
-| Claude | `claude --permission-mode plan "$(cat brief)"` |
-| Codex | `codex --sandbox read-only …` |
-| Gemini | read-only / default approval mode (flag to verify) |
-| Cursor `agent` | to verify; else no force flags + brief instruction |
-| OpenCode | to verify (plan agent/mode); else brief instruction |
+Verified in the task-1 spike (2026-09-22) from each CLI's `--help` plus short
+non-interactive probes (`claude -p`, `codex sandbox`, `opencode run`, `gemini -p`;
+Cursor `agent -p` hit an account usage limit, so Cursor is verified from `--help`
+only). Versions: Claude Code 2.1.280, Cursor agent (current), codex-cli 0.147.0,
+opencode 1.18.30, gemini 0.56.0.
 
-Where a CLI has no enforceable read-only mode, the child runs with its **normal interactive approvals** (never the bypass flags opsx-run uses) plus the brief's "do not modify files" instruction. Task 1 verifies each flag before the rest is built.
+| CLI | Launch (read-only) | Seeded prompt | `FORK_*` env reaches shell | `fork.sh return` works |
+|---|---|---|---|---|
+| Claude | `claude --permission-mode plan --allowedTools "Bash(<abs fork.sh> return:*)" --append-system-prompt "<carve-out>" "$(cat brief)"` | positional | yes (probe) | yes, **only** with the narrow `--allowedTools` rule + carve-out prompt; without them plan mode refuses or needs approval, and a `$FORK_SH`-style variable is rejected, so the brief uses the literal absolute path |
+| Codex | `codex --sandbox read-only --ask-for-approval on-request "$(cat brief)"` | positional `[PROMPT]` | yes (`codex sandbox` probe) | write is blocked by the read-only sandbox (`Read-only file system`); with `on-request` the model can ask the user to escalate that one command, else marker fallback |
+| Gemini | `gemini --approval-mode plan -i "$(cat brief)"` | `-i/--prompt-interactive` | not observed (shell refused in plan mode) | no — plan mode is enforced read-only and the model only proposes; marker fallback |
+| Cursor `agent` | `agent --mode ask "$(cat brief)"` | positional | assumed (normal child process env) | unverified at runtime; `ask` is documented as read-only Q&A, so expect marker fallback |
+| OpenCode | `opencode --agent plan --prompt "$(cat brief)"` | `--prompt` | yes (probe printed `FORK_ID`) | no — the built-in `plan` agent denies edits and the model refuses any mutating shell command even with a carve-out; marker fallback |
+
+None of the launches use bypass/force flags (`bypassPermissions`, `--force`,
+`--yolo`, `--auto`, `--dangerously-bypass-approvals-and-sandbox`, `--trust`,
+`--skip-trust`). Cursor and Gemini will show their normal workspace-trust prompt
+in an untrusted folder; that is left to the user. Every CLI has an enforceable
+read-only mode, so the "normal approvals + instruction" fallback is only used
+for CLIs this table does not cover (unknown CLIs are rejected by `fork.sh`).
+
+`fork.sh open` appends a generated "Fork protocol" section to every brief with
+the fork id, the read-only rule, the literal absolute `fork.sh return` command,
+and the marker-block fallback, so the return path does not depend on the parent
+agent remembering it.
+
+`return` finds its fork from `FORK_DIR`; if a CLI strips the variable it falls
+back to the parent process chain (`/proc/*/environ`) and then to the `@fork_dir`
+option stamped on the child pane.
 
 **Writing the result from a sandbox.** `fork.sh return` writes to `FORK_DIR`, outside the working tree, which a read-only sandbox may block. Order of fallbacks:
-1. `fork.sh return` succeeds → done.
-2. It fails → the skill tells the child to print the result between `<<<FORK-RESULT` / `FORK-RESULT>>>` markers; `collect` extracts that block from `capture-pane -S -` scrollback.
+1. `fork.sh return` succeeds → done (Claude; Codex after user approval).
+2. It fails → the skill tells the child to print the result between `<<<FORK-RESULT` / `FORK-RESULT>>>` markers; `collect` extracts that block from `capture-pane -J -S -` scrollback and saves it as `result.md` (Gemini, OpenCode, Cursor, Codex without approval). No notification is sent in this path, since nothing ran in the child.
 3. Neither → `collect` returns the raw capture tail, labelled as such.
+
+**Scripted end-to-end runs (private tmux socket, task 6.3/6.4):**
+- Claude (plan mode): answered, then `fork.sh return` ran without an approval
+  prompt thanks to the narrow allow rule; `result.md` written, badge `fork 1 ✓`
+  set on the parent, `collect` / `list` / `close` behaved as specified.
+- Gemini: in an untrusted folder Gemini drops to default approvals (plan mode
+  is not applied until the folder is trusted); it asked to approve the return
+  command, then did not write `result.md` and printed the marker block instead;
+  `collect` recovered it and saved it as `result.md`.
+- OpenCode: launched in the `Plan` agent, but the configured model was out of
+  quota, so only the raw-capture path was exercised.
+- Codex (not logged in) and Cursor (usage limit) could not be run end to end.
+
+**Id allocation.** `mkdir` turned out not to be atomic on this machine (uutils
+coreutils `mkdir` let several racing processes "create" the same directory), so
+ids are claimed with a bash `noclobber` (O_EXCL) file `.ids/<n>` and the fork
+directory is created afterwards (see Decision 3).
+
+Full-screen TUIs (OpenCode) have no tmux scrollback, so the marker block must
+still be on screen when collecting; the skill tells the user to collect before
+scrolling the child far away.
 
 ### 5. Notify, never push
 
@@ -116,5 +157,4 @@ Default `split-window -h -l 40%` targeting the parent pane. With more than one c
 
 ## Open Questions
 
-- Exact read-only flags for Gemini, Cursor `agent` and OpenCode (task 1).
-- Whether Cursor/Gemini/OpenCode pass the launch env vars through to their shell tool unchanged (task 1).
+- Resolved by the task-1 spike (see Decision 4). Still unverified at runtime: Cursor `agent --mode ask` (account usage limit during the spike) and whether Gemini plan mode exposes `FORK_*` to a shell tool (it refuses shell commands, so it does not matter for `return`).

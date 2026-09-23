@@ -46,6 +46,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `memory` skill | `~/.claude/skills/memory/` · `~/.cursor/skills/memory/` · `~/.agents/skills/memory/` · `~/.codex/skills/memory/` · `~/.config/opencode/skills/memory/` · `~/.gemini/skills/memory/` | Shared cross-agent memory protocol — read/save/update/forget, project tagging, safe concurrent writes |
 | Memory instruction block | `CLAUDE.md` (Claude config dir) · `~/.codex/AGENTS.md` · `~/.config/opencode/AGENTS.md` · `~/.gemini/GEMINI.md` | Marked block (`<!-- tmux-opsx:memory:start -->` … `:end -->`) telling each agent to use the shared store |
 | Memory store | `~/.agents/memory/` | Plain folder: `MEMORY.md` index + `user/` `feedback/` `project/` `reference/` — created once, never overwritten |
+| `/fork` skill + `fork.sh` | `~/.claude/skills/fork/` · `~/.cursor/skills/fork/` · `~/.agents/skills/fork/` · `$CODEX_HOME/skills/fork/` · `~/.config/opencode/skills/fork/` · `~/.gemini/skills/fork/` | Read-only side-question agent in a tmux pane, briefed with the current context; notify-then-pull results (see [Fork](#fork)) |
 
 ---
 
@@ -78,6 +79,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --skip-commands    # don't install global OpenSpec skills / /opsx:* commands
 ./install.sh --skip-mcp         # don't install the browser-use MCP server
 ./install.sh --skip-memory      # don't install the memory skill, instruction blocks, store, or import
+./install.sh --skip-fork        # don't install the /fork skill
 ./install.sh --no-backup        # overwrite without keeping .bak copies
 ./install.sh --uninstall        # remove everything except the OpenSpec and Graphify CLIs
 ```
@@ -178,6 +180,52 @@ Per CLI, the installer:
 ```
 
 `./install.sh --uninstall` removes the `memory` skill and the instruction blocks but **never deletes `~/.agents/memory/`** — your memories stay on disk.
+
+---
+
+## Fork
+
+`/fork` opens a **read-only child agent** beside the one you are talking to, already briefed with the current conversation, so you can ask side questions ("why did we pick X?", "where is Y handled?") without derailing the main thread. It is independent of OpenSpec and `/opsx-run`, and works from Claude Code, Cursor CLI, Codex CLI, OpenCode and Gemini CLI. It needs tmux.
+
+```
+┌ tmux window ───────────────────────────┬──────────────────────────┐
+│ parent agent (%3)                      │ fork 1 (read-only)       │
+│  /fork "where are retries handled?"    │  answers questions…      │
+│  … keeps working …                     │  /fork return            │
+│  [pane title: fork 1 ✓]  <── notify ───│   └ result.md saved      │
+│  /fork collect  ─── pulls result.md    │                          │
+└────────────────────────────────────────┴──────────────────────────┘
+```
+
+| Command | Where | What it does |
+|---|---|---|
+| `/fork ["question"]` | parent | writes a brief (question + 5–15 lines of context) and opens the child in a side-by-side pane (~40% width) |
+| `/fork --vertical …` / `/fork --window …` | parent | split top/bottom, or open a new window `fork-<id>` instead |
+| `/fork --cli <claude\|agent\|codex\|opencode\|gemini> …` | parent | child CLI (default: the parent's) |
+| `/fork return` | child | saves a short result (answer, evidence, unresolved) and notifies the parent |
+| `/fork collect [id]` | parent | reads the result into the parent (default: most recently returned) |
+| `/fork list` | parent | id, status, CLI, pane and question of every fork in this tmux session |
+| `/fork close <id>` / `--all` | parent | saves a capture if there is no result, kills the pane/window, keeps the state |
+
+With more than one child beside the parent, the window switches to `main-vertical` so the parent stays the large pane.
+
+**Notify, never push.** On return the parent pane gets a tmux message and a title badge (`fork 1 ✓`, also in the pane option `@fork_badge`). Nothing is ever typed into the parent; you decide when to `/fork collect`.
+
+**Read-only children.** Every child starts in its CLI's read-only / plan mode and never with bypass or force flags:
+
+| CLI | Launched as | How `return` gets back |
+|---|---|---|
+| Claude Code | `claude --permission-mode plan` + an allow rule for exactly `fork.sh return` | `result.md` written directly |
+| Codex CLI | `codex --sandbox read-only --ask-for-approval on-request` | sandbox blocks the write; approve that one command, or the marker fallback is used |
+| Gemini CLI | `gemini --approval-mode plan -i` | marker fallback (plan mode applies once the folder is trusted) |
+| Cursor CLI | `agent --mode ask` | marker fallback |
+| OpenCode | `opencode --agent plan --prompt` | marker fallback |
+
+*Marker fallback:* when a child cannot run `fork.sh return`, it prints the result between `<<<FORK-RESULT` and `FORK-RESULT>>>` lines, and `/fork collect` recovers it from the child pane's scrollback (saving it as `result.md`). If there is neither, `collect` returns the tail of the pane, clearly labelled as a raw capture. Full-screen TUIs keep little scrollback, so collect while the block is still on screen.
+
+**State** lives outside the repo, in `${XDG_STATE_HOME:-~/.local/state}/agent-forks/<tmux-session>/<id>/` (`brief.md`, `meta`, `launch.sh`, `result.md`, `capture.txt`). It is kept after `close` and on `--uninstall`; delete old forks by hand when you like.
+
+`bash tests/test-fork.sh` exercises `fork.sh` on a private tmux server with fake agent CLIs (open/return/collect/list/close, badges, layout, marker recovery, concurrent ids).
 
 ---
 
