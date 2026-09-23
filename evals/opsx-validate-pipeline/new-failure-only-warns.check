@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: opsx-validate-pipeline / New failure only warns
+# level: L2
+# requirement: land is not gated by review or security
+set -u
+. "$EVAL_ROOT/evals/_lib/land.sh"
+mk_repo
+add_check evals/auth/login-ok.check "auth / Login ok" 'grep -q ok "$EVAL_ROOT/login.txt"'
+g add -A; g commit -qm "add eval suite"
+# The change adds a check with no baseline on main that fails on the merged result.
+on_branch sh -c 'mkdir -p evals/auth && printf "#!/usr/bin/env bash\n# scenario: auth / Login locked\n# level: L1\necho not implemented; exit 1\n" > evals/auth/login-locked.check && chmod +x evals/auth/login-locked.check'
+out=$(run_land); rc=$?
+echo "land exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "land stopped (exit $rc) on a new failure with no baseline"
+# A warning = a non-blocking line naming the failing check (any wording/marker).
+echo "$out" | grep 'auth/login-locked' | grep -Eiq 'warn|fail|!' || fail "no warning naming the failing auth/login-locked check"
+[ -n "$(archived)" ] || fail "land did not continue to archive"
+echo "OK"

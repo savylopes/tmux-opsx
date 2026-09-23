@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / Uninstall removes eval agent
+# level: L2
+# requirement: ops-eval agent exists and is installable
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install); rc=$?
+[ "$rc" -eq 0 ] || { echo "$out" | tail -20; echo "install failed ($rc); cannot test uninstall"; exit 77; }
+before=$(eval_agent_files)
+echo "installed:"; echo "$before"
+[ -n "$before" ] || { echo "install put no ops-eval agent files; nothing to uninstall"; exit 77; }
+out=$(run_install --uninstall); rc=$?
+echo "uninstall exit $rc"; echo "$out" | tail -25
+[ "$rc" -eq 0 ] || fail "./install.sh --uninstall exited $rc"
+left=$(eval_agent_files)
+[ -z "$left" ] || fail "ops-eval agent files left after uninstall: $left"
+echo "OK: all ops-eval agent files removed"

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / Scoped to a change
+# level: L1
+# requirement: Runner
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals" "$fx/openspec/specs" "$fx/openspec/changes/add-auth/specs/auth"
+cat > "$fx/openspec/changes/add-auth/specs/auth/spec.md" <<'S'
+## ADDED Requirements
+
+### Requirement: Login
+Users SHALL log in.
+
+#### Scenario: Login ok
+- **WHEN** valid credentials are given
+- **THEN** login succeeds
+S
+mk_check "$fx/evals/auth/login-ok.check" "auth / Login ok" L1 "touch '$EVAL_TMP/ran-auth'; exit 0"
+mk_check "$fx/evals/billing/pay.check"   "billing / Pay"   L1 "touch '$EVAL_TMP/ran-billing'; exit 0"
+out=$(nested_eval --root "$fx" --change add-auth 2>&1); rc=$?
+echo "runner exit $rc"; echo "$out"
+[ -e "$EVAL_TMP/ran-auth" ] || fail "evals/auth/ check did not run"
+[ ! -e "$EVAL_TMP/ran-billing" ] || fail "evals/billing/ check ran although add-auth only touches auth"
+echo "OK: only evals/auth/ ran"

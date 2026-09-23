@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: opsx-validate-pipeline / Skip eval
+# level: L2
+# requirement: land is not gated by review or security
+set -u
+. "$EVAL_ROOT/evals/_lib/land.sh"
+mk_repo
+marker="$EVAL_TMP/eval-ran"
+# The check records every execution and would regress after the merge.
+add_check evals/auth/login-ok.check "auth / Login ok" "echo ran >> '$marker'; grep -qx ok \"\$EVAL_ROOT/login.txt\""
+g add -A; g commit -qm "add eval suite"
+on_branch sh -c 'echo broken > login.txt'
+out=$(run_land --skip-eval); rc=$?
+echo "land exit $rc"; echo "$out"
+[ ! -e "$marker" ] || fail "eval checks ran $(wc -l < "$marker") time(s) despite --skip-eval"
+[ "$rc" -eq 0 ] || fail "land --skip-eval did not proceed (exit $rc)"
+[ -n "$(archived)" ] || fail "change was not archived"
+echo "OK: no eval run, land proceeded"

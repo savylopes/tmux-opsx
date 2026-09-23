@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: opsx-validate-pipeline / Land without review
+# level: L2
+# requirement: land is not gated by review or security
+set -u
+. "$EVAL_ROOT/evals/_lib/land.sh"
+mk_repo
+on_branch sh -c 'echo "login ok" > login.txt'
+( cd "$REPO" && openspec validate add-auth --strict ) || { echo "fixture change does not validate"; exit 77; }
+[ ! -d "$REPO/evals" ] || fail "fixture sanity: evals/ must not exist"
+out=$(run_land); rc=$?
+echo "land exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "land did not proceed (exit $rc) with no review/security/eval run and no evals/"
+[ "$(g rev-parse --abbrev-ref HEAD)" = main ] || fail "not on main after land"
+grep -q "login ok" "$REPO/login.txt" || fail "change was not merged into main"
+[ -n "$(archived)" ] || fail "change was not archived"
+echo "OK: merged and archived as $(archived)"

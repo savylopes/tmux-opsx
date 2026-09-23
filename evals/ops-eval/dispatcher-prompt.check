@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+# scenario: ops-eval / Dispatcher prompt
+# level: L1
+# requirement: Blind generation
+# Contract check on the dispatcher prompts that hand work to ops-eval (the
+# one-shot `eval` prompt and the eval step of `validate`).
+import os, re, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.environ["EVAL_ROOT"], "evals", "_lib"))
+from skill_prompts import prompt, steps, first_step, fail, show
+
+ev = prompt("eval")
+va = prompt("validate")
+show(ev)
+st = steps(va)
+n = first_step(st, r"ops-eval")
+if n is None:
+    fail("validate prompt has no step delegating to ops-eval")
+print("validate step %d: %s" % (n, st[n]))
+for label, body in (("eval prompt", " ".join(ev)), ("validate eval step", st[n])):
+    if "<change>" not in body:
+        fail("%s: does not pass the change name" % label)
+    if not re.search(r"opsx/<change>|wt-<change>", body):
+        fail("%s: does not pass the branch/worktree" % label)
+    if "DISPUTE" not in body.upper():
+        fail("%s: does not pass disputes" % label)
+    if not re.search(r"(not|never)[^.]*pass[^.]*applier'?s (report|output)", body, re.I):
+        fail("%s: no instruction to withhold the applier's report" % label)
+    passline = re.search(r"pass only:([^\n]*)", body, re.I)
+    if passline and re.search(r"report", passline.group(1).split(".")[0], re.I):
+        fail("%s: 'Pass only' list includes a report: %s" % (label, passline.group(1)))
+print("OK")

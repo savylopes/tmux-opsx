@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: opsx-validate-pipeline / Eval regression blocks land
+# level: L2
+# requirement: land is not gated by review or security
+set -u
+. "$EVAL_ROOT/evals/_lib/land.sh"
+mk_repo
+add_check evals/auth/login-ok.check "auth / Login ok" 'grep -qx ok "$EVAL_ROOT/login.txt" || { echo "login.txt: $(cat "$EVAL_ROOT/login.txt")"; exit 1; }'
+g add -A; g commit -qm "add eval suite"
+on_branch sh -c 'echo broken > login.txt'
+before=$(g rev-parse main)
+out=$(run_land); rc=$?
+echo "land exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "land succeeded despite auth/login-ok regressing"
+echo "$out" | grep -i regress | grep -q 'auth/login-ok' || fail "land did not report auth/login-ok as a regression"
+[ "$(g rev-parse main)" = "$before" ] || fail "main moved: was $before, now $(g rev-parse main)"
+[ -z "$(archived)" ] || fail "change archived despite regression"
+[ -d "$REPO/openspec/changes/add-auth" ] || fail "change dir gone"
+[ -z "$(g status --porcelain --untracked-files=no)" ] || fail "target left dirty: $(g status --porcelain)"
+echo "OK: blocked, main unchanged at $before"

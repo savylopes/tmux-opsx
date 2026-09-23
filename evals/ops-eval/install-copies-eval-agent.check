@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / Install copies eval agent
+# level: L2
+# requirement: ops-eval agent exists and is installable
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install); rc=$?
+echo "install exit $rc"; echo "$out" | tail -25
+[ "$rc" -eq 0 ] || fail "./install.sh exited $rc"
+missing=0
+for d in $AGENT_DIRS; do
+  f=$(find "$d" -maxdepth 1 \( -name 'opsx-eval.*' -o -name 'ops-eval.*' \) 2>/dev/null | head -1)
+  if [ -n "$f" ] && grep -q 'ops-eval' "$f"; then echo "found: $f"
+  else echo "missing ops-eval agent in $d"; missing=1; fi
+done
+[ "$missing" -eq 0 ] || fail "ops-eval agent not installed in every CLI's agents dir"
+echo "OK"

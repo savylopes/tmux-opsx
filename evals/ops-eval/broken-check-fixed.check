@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / Broken check fixed
+# level: L3
+# requirement: Failures are judged
+set -u
+. "$EVAL_ROOT/evals/_lib/agent.sh"
+l3_require
+mk_repo
+start_change add-bye
+delta greet '## ADDED Requirements
+
+### Requirement: Bye
+`greet.sh --bye` SHALL print `bye`.
+
+#### Scenario: Says bye
+- **WHEN** `sh greet.sh --bye` runs
+- **THEN** it prints `bye`'
+commit_change
+# The existing check has a bug of its own: it runs a misspelled script.
+mkdir -p "$REPO/evals/greet"
+printf '#!/usr/bin/env bash\n# scenario: greet / Says bye\n# level: L1\nout=$(sh "$EVAL_ROOT/gret.sh" --bye); [ "$out" = bye ] || { echo "expected bye, got $out"; exit 1; }\n' \
+  > "$REPO/evals/greet/says-bye.check"
+chmod +x "$REPO/evals/greet/says-bye.check"; printf 'timeout: 30\n' > "$REPO/evals/eval.yaml"
+g add -A; g commit -qm "eval: add-bye"
+base=$(g rev-parse HEAD)
+run_agent opsx-eval.md "$(eval_prompt)"
+[ -n "$(g diff "$base" -- evals/greet/says-bye.check)" ] || fail "broken check evals/greet/says-bye.check was not fixed"
+printf '%s\n' "$AGENT_OUT" | grep -E '^CHECKS_CHANGED:' | grep -q 'says-bye' || fail "CHECKS_CHANGED does not list the fixed check"
+printf '%s\n' "$AGENT_OUT" | grep -E '^- \[P[01]\].*greet/says-bye' && fail "broken check reported as a product finding"
+[ "$(verdict)" = PASS ] || fail "expected VERDICT PASS (product is correct), got '$(verdict)'"
+echo "OK"

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / Timeout
+# level: L1
+# requirement: Check contract
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals"
+printf 'timeout: 2\n' > "$fx/evals/eval.yaml"
+mk_check "$fx/evals/cap/slow.check" "cap / Slow" L1 "sleep 30; touch '$EVAL_TMP/survived'; exit 0"
+start=$(date +%s)
+out=$(nested_eval --root "$fx" --all --json 2>&1); rc=$?
+el=$(( $(date +%s) - start ))
+echo "runner exit $rc after ${el}s"; echo "$out"
+status=$(printf '%s' "$out" | jq -r '.results[] | select(.id=="cap/slow") | .status')
+note=$(printf '%s' "$out" | jq -r '.results[] | select(.id=="cap/slow") | "\(.note) \(.evidence)"')
+[ "$status" = FAIL ] || fail "expected FAIL, got '$status'"
+printf '%s' "$note" | grep -qi timeout || fail "expected a timeout note, got '$note'"
+[ "$el" -lt 25 ] || fail "check was not killed at the 2s timeout (runner took ${el}s)"
+sleep 1; [ ! -e "$EVAL_TMP/survived" ] || fail "check process kept running after timeout"
+[ "$rc" -eq 1 ] || fail "runner exit expected 1 (a FAIL), got $rc"
+echo "OK: killed after ${el}s, FAIL with note '$note'"

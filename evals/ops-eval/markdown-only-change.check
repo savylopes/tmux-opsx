@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# scenario: ops-eval / Markdown-only change
+# level: L3
+# requirement: SKIP rules
+set -u
+. "$EVAL_ROOT/evals/_lib/agent.sh"
+l3_require
+mk_repo
+start_change doc-greet
+delta greet '## ADDED Requirements
+
+### Requirement: Documented
+The README SHALL describe `greet.sh`.
+
+#### Scenario: README mentions greet
+- **WHEN** a user opens README.md
+- **THEN** it mentions greet.sh'
+printf '# greet\n\nRun `sh greet.sh`.\n' > "$REPO/README.md"
+commit_change
+base=$(g rev-parse HEAD)
+run_agent opsx-eval.md "$(eval_prompt)"
+[ "$(verdict)" = SKIP ] || fail "expected VERDICT SKIP for a markdown-only change, got '$(verdict)'"
+[ ! -e "$REPO/evals" ] || fail "evals/ was created: $(cd "$REPO" && find evals)"
+[ -z "$(g diff --name-only "$base"...HEAD -- evals)" ] || fail "evals/ changed in a commit"
+echo "OK"

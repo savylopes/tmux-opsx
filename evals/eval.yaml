@@ -1,0 +1,19 @@
+# tmux-opsx eval suite config — read by skills/opsx-run/opsx-eval.sh.
+# Checks live in evals/<capability>/<scenario-slug>.check and are written by ops-eval.
+#
+# setup gives every run a scratch HOME (so install.sh / skills never touch the real
+# ~/.claude, ~/.cursor, …) and a private tmux server. Checks see:
+#   HOME, XDG_CONFIG_HOME, XDG_STATE_HOME, CLAUDE_CONFIG_DIR, CODEX_HOME  -> under $EVAL_SCRATCH/home
+#   TMUX_TMPDIR -> $EVAL_SCRATCH/tmux, so a bare `tmux` never reaches your session
+#   EVAL_TMUX_SOCKET (use `tmux -L "$EVAL_TMUX_SOCKET"`), EVAL_TMUX_SESSION
+#   TMUX / TMUX_PANE pointing at that private server (empty when tmux is missing:
+#   L2 tmux checks should then exit 77)
+setup: ./evals/setup.sh
+teardown: ./evals/teardown.sh
+env:
+  NO_COLOR: "1"
+# 600: L3 checks drive a headless agent CLI (only with --agentic); L1/L2 finish in seconds.
+timeout: 600
+agentic:
+  trials: 3
+  cli: claude

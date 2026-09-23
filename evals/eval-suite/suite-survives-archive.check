@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / Suite survives archive
+# level: L2
+# requirement: Suite layout
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+command -v openspec >/dev/null || { echo "openspec CLI not on PATH"; exit 77; }
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/openspec/specs" "$fx/openspec/changes/add-greet/specs/greet"
+cd "$fx"
+git init -q -b main . && git config user.email eval@example.invalid && git config user.name eval && git config commit.gpgsign false
+cat > openspec/changes/add-greet/proposal.md <<'S'
+## Why
+The tool needs a greeting so users know it started correctly and is ready.
+
+## What Changes
+- Add a greeting.
+S
+printf '## 1. Greet\n\n- [x] 1.1 Print hello\n' > openspec/changes/add-greet/tasks.md
+cat > openspec/changes/add-greet/specs/greet/spec.md <<'S'
+## ADDED Requirements
+
+### Requirement: Greeting
+The tool SHALL print hello when run.
+
+#### Scenario: Says hello
+- **WHEN** the tool runs
+- **THEN** it prints hello
+S
+echo 'echo hello' > greet.sh
+mk_check "$fx/evals/greet/says-hello.check" "greet / Says hello" L1 'sh "$EVAL_ROOT/greet.sh" | grep -q hello'
+git add -A && git commit -qm init
+arch=$(openspec archive add-greet -y 2>&1); arc=$?
+echo "openspec archive exit $arc"; echo "$arch"
+[ "$arc" -eq 0 ] || { echo "could not archive fixture change"; exit 77; }
+[ ! -d openspec/changes/add-greet ] || fail "fixture change still active after archive"
+[ -x evals/greet/says-hello.check ] || fail "check evals/greet/says-hello.check gone after archive"
+out=$(nested_eval --root "$fx" --all --json 2>&1); rc=$?
+echo "runner exit $rc"; echo "$out"
+[ "$(printf '%s' "$out" | jq -r '.results[] | select(.id=="greet/says-hello") | .status')" = PASS ] \
+  || fail "archived change's check did not run/pass with --all"
+echo "OK"

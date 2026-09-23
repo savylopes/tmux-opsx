@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+# scenario: opsx-validate-pipeline / Eval fails then passes
+# level: L1
+# requirement: validate loop retries failed gates via applier
+import os, re, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.environ["EVAL_ROOT"], "evals", "_lib"))
+from skill_prompts import prompt, steps, first_step, goto_targets, fail, show
+
+va = prompt("validate"); show(va)
+st = steps(va)
+e = first_step(st, r"delegate[^.]*ops-eval")
+r = first_step(st, r"delegate[^.]*ops-reviewer")
+f = first_step(st, r"eval\W*FAIL")
+if None in (e, r, f):
+    fail("validate prompt lacks eval step, review step or an eval-FAIL rule")
+s = st[f]
+print("eval FAIL rule (step %d): %s" % (f, s))
+if not re.search(r"ops-applier", s):
+    fail("eval FAIL does not delegate to ops-applier")
+if not re.search(r"F1, F2|verbatim", s):
+    fail("eval FAIL does not pass findings verbatim (F1, F2)")
+if not re.search(r"(without|not|never)[^.]*evals/", s, re.I):
+    fail("eval FAIL rule does not forbid the applier touching evals/")
+if e not in goto_targets(s):
+    fail("eval FAIL rule does not re-run ops-eval (go to step %d)" % e)
+if "DISPUTE" not in s.upper() or not re.search(r"DISPUTE", st[e]):
+    fail("applier's DISPUTE lines are not passed to the next ops-eval run")
+# Review is reached only through eval PASS or SKIP.
+if not any(re.search(r"eval\W*PASS\W*or\W*SKIP\W*(?:→|->)\s*step %d" % r, t, re.I) for t in st.values()):
+    fail("no rule that eval PASS or SKIP leads to review")
+print("OK")

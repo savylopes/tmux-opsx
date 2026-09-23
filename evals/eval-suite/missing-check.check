@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# scenario: eval-suite / Missing check
+# level: L1
+# requirement: Coverage report
+set -u
+. "$EVAL_ROOT/evals/_lib/runner.sh"
+fx="$EVAL_TMP/fx"; mkdir -p "$fx/evals" "$fx/openspec/specs" "$fx/openspec/changes/add-auth/specs/auth"
+cat > "$fx/openspec/changes/add-auth/specs/auth/spec.md" <<'S'
+## ADDED Requirements
+
+### Requirement: Login
+Users SHALL log in.
+
+#### Scenario: Login ok
+- **WHEN** valid credentials are given
+- **THEN** login succeeds
+
+#### Scenario: Account locked
+- **WHEN** five wrong passwords are given
+- **THEN** the account is locked
+S
+mk_check "$fx/evals/auth/login-ok.check" "auth / Login ok" L1 'exit 0'
+out=$(nested_eval --root "$fx" --change add-auth 2>&1); rc=$?
+echo "runner exit $rc"; echo "$out"
+echo "$out" | grep -E 'MISSING' | grep -q 'Account locked' || fail "scenario 'Account locked' (no check) not listed as MISSING"
+if echo "$out" | grep -E 'MISSING' | grep -q 'Login ok'; then fail "'Login ok' has a check but is listed MISSING"; fi
+echo "OK"
