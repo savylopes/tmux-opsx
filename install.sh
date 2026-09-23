@@ -33,6 +33,13 @@
 #                                   -> marked block in CLAUDE.md / ~/.codex/AGENTS.md /
 #                                      ~/.config/opencode/AGENTS.md / ~/.gemini/GEMINI.md
 #                                   -> one-time import of existing Claude Code memories
+#   8. the /fork skill             -> ~/.claude/skills/fork/
+#                                   -> ~/.cursor/skills/fork/
+#                                   -> ~/.agents/skills/fork/
+#                                   -> ~/.codex/skills/fork/
+#                                   -> ~/.config/opencode/skills/fork/
+#                                   -> ~/.gemini/skills/fork/
+#      (fork.sh; fork state lives in ~/.local/state/agent-forks/, never touched here)
 #
 # Window CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex),
 # OpenCode (opencode), and Gemini CLI (gemini). At least one must be on PATH.
@@ -44,6 +51,7 @@
 #   --skip-commands    Don't install global OpenSpec skills / /opsx:* commands
 #   --skip-mcp         Don't install the browser-use MCP server
 #   --skip-memory      Don't install the memory skill, instruction blocks, store, or import
+#   --skip-fork        Don't install the /fork skill
 #   --no-backup        Overwrite existing files without keeping a .bak copy
 #   --uninstall        Remove everything this script installs (except the CLI)
 #   -h, --help         Show this help
@@ -60,6 +68,7 @@ SKIP_GRAPHIFY=0
 SKIP_COMMANDS=0
 SKIP_MCP=0
 SKIP_MEMORY=0
+SKIP_FORK=0
 BACKUP=1
 UNINSTALL=0
 NPM_PKG="@fission-ai/openspec"
@@ -87,6 +96,7 @@ while [ $# -gt 0 ]; do
     --skip-commands) SKIP_COMMANDS=1; shift ;;
     --skip-mcp)      SKIP_MCP=1; shift ;;
     --skip-memory)   SKIP_MEMORY=1; shift ;;
+    --skip-fork)     SKIP_FORK=1; shift ;;
     --no-backup)     BACKUP=0; shift ;;
     --uninstall)     UNINSTALL=1; shift ;;
     -h|--help)       usage ;;
@@ -326,6 +336,11 @@ AGENTS_MEMORY_SKILLS_DIR=$HOME/.agents/skills/memory
 OPENCODE_MEMORY_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/memory
 GEMINI_MEMORY_SKILLS_DIR=$GEMINI_HOME_DIR/skills/memory
 MEMORY_STORE_DIR=$HOME/.agents/memory
+CURSOR_FORK_SKILLS_DIR=$HOME/.cursor/skills/fork
+CODEX_FORK_SKILLS_DIR=$CODEX_HOME_DIR/skills/fork
+AGENTS_FORK_SKILLS_DIR=$HOME/.agents/skills/fork
+OPENCODE_FORK_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/fork
+GEMINI_FORK_SKILLS_DIR=$GEMINI_HOME_DIR/skills/fork
 CODEX_AGENTS_MD=$CODEX_HOME_DIR/AGENTS.md
 OPENCODE_AGENTS_MD=$OPENCODE_CONFIG_DIR/AGENTS.md
 GEMINI_MD=$GEMINI_HOME_DIR/GEMINI.md
@@ -438,6 +453,15 @@ install_memory_skill() {
   install_file "$SRC/skills/memory/import-claude-memory.sh" "$dest/import-claude-memory.sh"
   chmod +x "$dest/import-claude-memory.sh" || die "cannot chmod +x $dest/import-claude-memory.sh"
   ok "memory -> $dest ($label)"
+}
+
+# Install the /fork skill (SKILL.md + fork.sh) into one dest dir.
+install_fork_skill() {
+  local dest=$1 label=$2
+  install_file "$SRC/skills/fork/SKILL.md" "$dest/SKILL.md"
+  install_file "$SRC/skills/fork/fork.sh"  "$dest/fork.sh"
+  chmod +x "$dest/fork.sh" || die "cannot chmod +x $dest/fork.sh"
+  ok "/fork -> $dest ($label)"
 }
 
 MEMORY_BLOCK_START='<!-- tmux-opsx:memory:start -->'
@@ -831,6 +855,12 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -rf "$CODEX_MEMORY_SKILLS_DIR" && ok "removed $CODEX_MEMORY_SKILLS_DIR (Codex)"
   rm -rf "$OPENCODE_MEMORY_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/memory (OpenCode)"
   rm -rf "$GEMINI_MEMORY_SKILLS_DIR" && ok "removed ~/.gemini/skills/memory (Gemini CLI)"
+  rm -rf "$PREFIX/skills/fork" && ok "removed skills/fork (Claude Code)"
+  rm -rf "$CURSOR_FORK_SKILLS_DIR" && ok "removed ~/.cursor/skills/fork (Cursor CLI)"
+  rm -rf "$AGENTS_FORK_SKILLS_DIR" && ok "removed ~/.agents/skills/fork (Agent Skills)"
+  rm -rf "$CODEX_FORK_SKILLS_DIR" && ok "removed $CODEX_FORK_SKILLS_DIR (Codex)"
+  rm -rf "$OPENCODE_FORK_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/fork (OpenCode)"
+  rm -rf "$GEMINI_FORK_SKILLS_DIR" && ok "removed ~/.gemini/skills/fork (Gemini CLI)"
   remove_marked_block "$PREFIX/CLAUDE.md"
   remove_marked_block "$CODEX_AGENTS_MD"
   remove_marked_block "$OPENCODE_AGENTS_MD"
@@ -842,6 +872,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   info "  uv tool uninstall graphifyy"
   info "browser-use MCP entries in Gemini / Codex / OpenCode config were left in place."
   info "$MEMORY_STORE_DIR was left in place — your memories are never deleted."
+  info "Fork state in \${XDG_STATE_HOME:-~/.local/state}/agent-forks/ was left in place."
   exit 0
 fi
 
@@ -1137,6 +1168,23 @@ else
 fi
 info ""
 
+# ---------- 8. /fork skill ----------
+if [ "$SKIP_FORK" -eq 1 ]; then
+  step "Skipping the /fork skill (--skip-fork)"
+else
+  step "Installing the /fork skill"
+  [ -f "$SRC/skills/fork/SKILL.md" ] || die "missing $SRC/skills/fork/SKILL.md — run this script from the repo checkout"
+  install_fork_skill "$PREFIX/skills/fork" "Claude Code"
+  install_fork_skill "$CURSOR_FORK_SKILLS_DIR" "Cursor CLI"
+  install_fork_skill "$AGENTS_FORK_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
+  if [ "$CODEX_FORK_SKILLS_DIR" != "$AGENTS_FORK_SKILLS_DIR" ]; then
+    install_fork_skill "$CODEX_FORK_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
+  fi
+  install_fork_skill "$OPENCODE_FORK_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
+  install_fork_skill "$GEMINI_FORK_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
+fi
+info ""
+
 # ---------- verify ----------
 step "Verifying"
 FAIL=0
@@ -1213,6 +1261,21 @@ if [ "$SKIP_MEMORY" -eq 0 ]; then
     fi
   done
 fi
+if [ "$SKIP_FORK" -eq 0 ]; then
+  for d in "$PREFIX/skills/fork" "$CURSOR_FORK_SKILLS_DIR" "$AGENTS_FORK_SKILLS_DIR" \
+           "$CODEX_FORK_SKILLS_DIR" "$OPENCODE_FORK_SKILLS_DIR" "$GEMINI_FORK_SKILLS_DIR"; do
+    if [ -f "$d/SKILL.md" ] && [ -x "$d/fork.sh" ]; then
+      ok "$(printf '%s' "$d" | sed "s|$HOME|~|")/{SKILL.md,fork.sh}"
+    else
+      warn "missing or not executable: $d/{SKILL.md,fork.sh}"; FAIL=1
+    fi
+  done
+  if bash -n "$PREFIX/skills/fork/fork.sh" 2>/dev/null; then
+    ok "fork.sh parses"
+  else
+    warn "fork.sh failed to parse"; FAIL=1
+  fi
+fi
 for sh in opsx-window.sh opsx-merge.sh opsx-land.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
@@ -1246,5 +1309,6 @@ info "                     ${B}openspec init --tools cursor${N}  (Cursor CLI / I
 info "  2. Restart your agent CLI (Claude, Cursor, Codex, OpenCode, or Gemini) so it picks up the skill"
 info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
 info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
+[ "$SKIP_FORK" -eq 1 ] || info "  5. Side questions in a read-only pane:  ${B}/fork \"where are retries handled?\"${N}"
 info ""
 [ -n "${TMUX:-}" ] || info "  ${Y}Note:${N} /opsx-run must be run from inside a tmux session."

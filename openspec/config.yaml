@@ -4,7 +4,7 @@ context: |
   Purpose: tmux-opsx is the user's personal development harness for agent CLIs.
   The user is its only consumer; optimise for their workflow, not for a public audience.
   It groups into: workflow (/opsx-run: change -> tmux window -> apply -> gates -> merge/land),
-  gates (ops-reviewer, ops-security, ops-qa), context (cross-agent memory),
+  gates (ops-reviewer, ops-security, ops-qa), context (cross-agent memory, /fork side-question agents),
   and portability (one install.sh for every supported CLI).
 
   Product surface (what a change actually ships):
@@ -27,5 +27,5 @@ context: |
   - do not rename the repo, install paths, skill names or the `ox` window prefix without a change
   - a change that adds a component updates the README overview tree and, if relevant, this file
 
-  Tests: there is no unit test suite yet. Verify by running install.sh and scripts in a
+  Tests: only tests/test-fork.sh (bash, private tmux server) so far. Otherwise verify by running install.sh and scripts in a
   scratch HOME and against a private tmux socket (tmux -L <name>), never the user's live session.
