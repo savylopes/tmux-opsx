@@ -46,7 +46,7 @@
 ## 7. This repo's suite (dogfood)
 
 - [x] 7.1 Add `evals/eval.yaml` for this repo: setup with scratch `HOME` and private tmux socket, teardown killing that tmux server
-- [ ] 7.2 Run ops-eval on this change itself to generate checks for the `eval-suite` scenarios (L1) and review them
+- [x] 7.2 Run ops-eval on this change itself to generate checks for the `eval-suite` scenarios (L1) and review them
 
 ## 8. Docs and verification
 
