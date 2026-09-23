@@ -12,6 +12,7 @@
 #                      (archive + cleanup still run). Land exits 2 without this
 #                      flag if there is nothing to merge, so the caller can ask.
 #   --force-tasks      Land even when tasks.md still has unchecked boxes
+#   --skip-eval        Don't run the eval regression gate (see below)
 #   --no-close         Leave the tmux window open
 #   --keep-branch      Don't delete the change branch
 #   --keep-worktree    Don't remove the change's worktree
@@ -22,6 +23,14 @@
 # window cannot close itself while it is still running the merge.
 #
 # Never pushes. The push command is printed for you to run.
+#
+# Eval regression gate: when the target or the change branch has an evals/
+# directory, land runs opsx-eval.sh (L1 + L2 only, never --agentic) on the
+# target before the merge (baseline) and on the merged result (current), each
+# in a temporary detached worktree. A check that PASSed on the baseline and
+# FAILs on the merged result blocks the land: the target is reset to its
+# pre-merge commit and nothing is archived. Other failures, UNVERIFIABLE and
+# MISSING results only warn. No evals/ anywhere -> the gate is skipped silently.
 #
 # If the working tree is dirty, land stashes it (including untracked files),
 # finishes the land, then restores the stash automatically — including on
@@ -36,6 +45,7 @@ BRANCH=""
 SKIP_SPECS=0
 SKIP_MERGE=0
 FORCE_TASKS=0
+SKIP_EVAL=0
 NO_CLOSE=0
 KEEP_BRANCH=0
 KEEP_WORKTREE=0
@@ -63,6 +73,7 @@ while [ $# -gt 0 ]; do
     --skip-specs)    SKIP_SPECS=1; shift ;;
     --skip-merge)    SKIP_MERGE=1; shift ;;
     --force-tasks)   FORCE_TASKS=1; shift ;;
+    --skip-eval)     SKIP_EVAL=1; shift ;;
     --no-close)      NO_CLOSE=1; shift ;;
     --keep-branch)   KEEP_BRANCH=1; shift ;;
     --keep-worktree) KEEP_WORKTREE=1; shift ;;
@@ -217,7 +228,72 @@ say "  from:    ${START_BRANCH:-(detached HEAD)}"
 [ "$DRY_RUN" -eq 1 ] && say "  ${D}(dry run — nothing will change)${N}"
 say ""
 
+# ---------------------------------------------------------------- eval gate
+# Runs the saved suite in a throwaway detached worktree so checks never touch
+# (or leave files in) the tree that archive later commits with `git add -A`.
+EVAL_SCRIPT="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-eval.sh"
+EVAL_DIR=""
+EVAL_GATE=0
+cleanup_eval() {
+  [ -n "$EVAL_DIR" ] || return 0
+  local w
+  for w in "$EVAL_DIR/base" "$EVAL_DIR/current"; do
+    [ -d "$w" ] && git worktree remove --force "$w" >/dev/null 2>&1
+  done
+  git worktree prune >/dev/null 2>&1
+  rm -rf "$EVAL_DIR"
+  EVAL_DIR=""
+}
+trap 'cleanup_eval; restore_stash' EXIT
+
+# eval_run <rev> <name>: suite at <rev> -> $EVAL_DIR/<name>.json; returns the runner's exit.
+eval_run() {
+  local rev=$1 name=$2 wt="$EVAL_DIR/$2" rc
+  git worktree add --detach "$wt" "$rev" >/dev/null 2>&1 || { warn "could not create a worktree for $rev"; return 2; }
+  local args=(--all --json --root "$wt")
+  [ -d "$wt/openspec/changes/$CHANGE" ] && args=(--all --change "$CHANGE" --json --root "$wt")
+  "$EVAL_SCRIPT" "${args[@]}" > "$EVAL_DIR/$name.json" 2> "$EVAL_DIR/$name.err"
+  rc=$?
+  git worktree remove --force "$wt" >/dev/null 2>&1
+  return "$rc"
+}
+
+json_total() {  # json_total <file> <key>
+  sed -n 's/.*"totals": *{[^}]*"'"$2"'":\([0-9]*\).*/\1/p' "$1" | head -1
+}
+
+if [ "$SKIP_EVAL" -eq 1 ]; then
+  step "Eval gate"; skip "eval skipped (--skip-eval)"
+elif ! git cat-file -e "$TARGET:evals" 2>/dev/null && ! git cat-file -e "$BRANCH:evals" 2>/dev/null; then
+  : # no evals/ on either side: skip silently
+elif [ "$SKIP_MERGE" -eq 1 ]; then
+  step "Eval gate"; skip "eval skipped (--skip-merge: no pre-merge baseline to compare against)"
+elif [ ! -x "$EVAL_SCRIPT" ]; then
+  step "Eval gate"; warn "opsx-eval.sh not found next to this script — eval gate skipped (re-run ./install.sh)"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  step "Eval gate"
+  printf '  %swould run:%s %s --all --json on %s (baseline) and on the merged result\n' "$D" "$N" "$EVAL_SCRIPT" "$TARGET"
+else
+  step "Eval gate (baseline on $TARGET)"
+  EVAL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/opsx-land-eval.XXXXXX") || die "cannot create a temp dir for eval"
+  EVAL_GATE=1
+  if git cat-file -e "$TARGET:evals" 2>/dev/null; then
+    eval_run "$TARGET" base; rc=$?
+    if [ "$rc" -ge 2 ]; then
+      sed 's/^/  /' "$EVAL_DIR/base.err"
+      warn "baseline eval errored (exit $rc) — no regression baseline; failures will only warn"
+      printf '{"results":[\n]}\n' > "$EVAL_DIR/base.json"
+    else
+      ok "baseline: $(json_total "$EVAL_DIR/base.json" pass) pass, $(json_total "$EVAL_DIR/base.json" fail) fail"
+    fi
+  else
+    printf '{"results":[\n]}\n' > "$EVAL_DIR/base.json"
+    skip "no evals/ on $TARGET — every result on the merged tree is new"
+  fi
+fi
+
 # ---------------------------------------------------------------- merge
+PRE_MERGE=$(git rev-parse "$TARGET" 2>/dev/null)
 ahead=$(git rev-list --count "$TARGET..$BRANCH" 2>/dev/null || echo 0)
 tip=$(git rev-parse --short "$BRANCH" 2>/dev/null || echo "?")
 
@@ -251,6 +327,7 @@ else
     rerun=(opsx-land.sh "$CHANGE" --skip-merge --into "$TARGET" --branch "$BRANCH")
     [ "$SKIP_SPECS" -eq 1 ] && rerun+=(--skip-specs)
     [ "$FORCE_TASKS" -eq 1 ] && rerun+=(--force-tasks)
+    [ "$SKIP_EVAL" -eq 1 ] && rerun+=(--skip-eval)
     [ "$NO_CLOSE" -eq 1 ] && rerun+=(--no-close)
     [ "$KEEP_BRANCH" -eq 1 ] && rerun+=(--keep-branch)
     [ "$KEEP_WORKTREE" -eq 1 ] && rerun+=(--keep-worktree)
@@ -265,6 +342,47 @@ else
   [ "$DRY_RUN" -eq 1 ] && merge_args+=(--dry-run)
   "$merge_script" "${merge_args[@]}" || exit $?
   MERGE_COMMIT=$([ "$DRY_RUN" -eq 1 ] && echo "(dry run)" || git rev-parse --short HEAD)
+fi
+
+if [ "$EVAL_GATE" -eq 1 ]; then
+  step "Eval gate (merged result)"
+  eval_run HEAD current; rc=$?
+  if [ "$rc" -ge 2 ]; then
+    sed 's/^/  /' "$EVAL_DIR/current.err"
+    warn "eval on the merged result errored (exit $rc) — cannot check for regressions; continuing"
+  else
+    regressions=$("$EVAL_SCRIPT" --compare "$EVAL_DIR/base.json" "$EVAL_DIR/current.json" 2>&1)
+    crc=$?
+    [ "$crc" -ge 2 ] && warn "eval compare errored: $regressions"
+    if [ "$crc" -eq 1 ]; then
+      printf '%s\n' "$regressions" | sed 's/^/  /'
+      step "Restoring $TARGET"
+      if git reset -q --hard "$PRE_MERGE" >/dev/null 2>&1; then
+        ok "$TARGET reset to its pre-merge commit $(git rev-parse --short HEAD)"
+      else
+        warn "could not reset $TARGET — undo the merge by hand: git reset --hard $PRE_MERGE"
+      fi
+      if [ -n "$START_BRANCH" ] && [ "$START_BRANCH" != "$TARGET" ]; then
+        git checkout -q "$START_BRANCH" >/dev/null 2>&1 && ok "back on $START_BRANCH"
+      fi
+      say ""
+      say "EVAL_REGRESSION $BRANCH -> $TARGET"
+      die "eval regression — checks that passed on $TARGET fail after merging $BRANCH. Nothing was archived; fix on $BRANCH (or pass --skip-eval)."
+    fi
+    ok "no regressions"
+    f=$(json_total "$EVAL_DIR/current.json" fail)
+    u=$(json_total "$EVAL_DIR/current.json" unverifiable)
+    m=$(json_total "$EVAL_DIR/current.json" missing)
+    p=$(json_total "$EVAL_DIR/current.json" pass)
+    say "  current: ${p:-0} pass, ${f:-0} fail, ${u:-0} unverifiable, ${m:-0} missing"
+    if [ "${f:-0}" -gt 0 ] || [ "${u:-0}" -gt 0 ] || [ "${m:-0}" -gt 0 ]; then
+      awk '/"status":"(FAIL|UNVERIFIABLE)"/ { if (match($0, /"id":"[^"]*"/)) id = substr($0, RSTART + 6, RLENGTH - 7)
+             s = ($0 ~ /"status":"FAIL"/) ? "FAIL" : "UNVERIFIABLE"; print s " " id }
+           /^ *\{"capability":/ { if (match($0, /"slug":"[^"]*"/)) print "MISSING " substr($0, RSTART + 8, RLENGTH - 9) }' \
+        "$EVAL_DIR/current.json" | while IFS= read -r l; do warn "$l (not a regression — continuing)"; done
+    fi
+  fi
+  cleanup_eval
 fi
 
 # ---------------------------------------------------------------- archive

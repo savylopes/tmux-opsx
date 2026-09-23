@@ -7,19 +7,19 @@
 #      (openspec-propose, openspec-apply-change, … plus slash commands)
 #   3. Graphify CLI + /graphify    -> global dirs for Claude / Cursor / Codex / OpenCode / Gemini
 #                                   -> ~/.agents/skills/graphify/
-#   4. ops-applier + ops-qa + ops-reviewer + ops-security
-#                                   -> ~/.claude/agents/opsx-{applier,qa,reviewer,security}.md
-#                                   -> ~/.cursor/agents/opsx-{applier,qa,reviewer,security}.md
-#                                   -> ~/.codex/agents/ops-{applier,qa,reviewer,security}.toml
-#                                   -> ~/.config/opencode/agents/ops-{applier,qa,reviewer,security}.md
-#                                   -> ~/.gemini/agents/opsx-{applier,qa,reviewer,security}.md
+#   4. ops-applier + ops-qa + ops-reviewer + ops-security + ops-eval
+#                                   -> ~/.claude/agents/opsx-{applier,qa,reviewer,security,eval}.md
+#                                   -> ~/.cursor/agents/opsx-{applier,qa,reviewer,security,eval}.md
+#                                   -> ~/.codex/agents/ops-{applier,qa,reviewer,security,eval}.toml
+#                                   -> ~/.config/opencode/agents/ops-{applier,qa,reviewer,security,eval}.md
+#                                   -> ~/.gemini/agents/opsx-{applier,qa,reviewer,security,eval}.md
 #   5. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
 #                                   -> ~/.cursor/skills/opsx-run/
 #                                   -> ~/.agents/skills/opsx-run/   (Codex / Agent Skills)
 #                                   -> ~/.codex/skills/opsx-run/    (Codex home)
 #                                   -> ~/.config/opencode/skills/opsx-run/  (OpenCode)
 #                                   -> ~/.gemini/skills/opsx-run/  (Gemini CLI)
-#      (opsx-window.sh + opsx-merge.sh + opsx-land.sh)
+#      (opsx-window.sh + opsx-merge.sh + opsx-land.sh + opsx-eval.sh)
 #   6. browser-use MCP             -> ~/.gemini/settings.json
 #                                   -> ~/.codex/config.toml
 #                                   -> ~/.config/opencode/opencode.json{,c}
@@ -437,9 +437,11 @@ install_opsx_run_skill() {
   install_file "$SRC/skills/opsx-run/opsx-window.sh" "$dest/opsx-window.sh"
   install_file "$SRC/skills/opsx-run/opsx-merge.sh"  "$dest/opsx-merge.sh"
   install_file "$SRC/skills/opsx-run/opsx-land.sh"   "$dest/opsx-land.sh"
+  install_file "$SRC/skills/opsx-run/opsx-eval.sh"   "$dest/opsx-eval.sh"
   chmod +x "$dest/opsx-window.sh" || die "cannot chmod +x $dest/opsx-window.sh"
   chmod +x "$dest/opsx-merge.sh"  || die "cannot chmod +x $dest/opsx-merge.sh"
   chmod +x "$dest/opsx-land.sh"   || die "cannot chmod +x $dest/opsx-land.sh"
+  chmod +x "$dest/opsx-eval.sh"   || die "cannot chmod +x $dest/opsx-eval.sh"
   ok "/opsx-run -> $dest ($label)"
 }
 
@@ -833,6 +835,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -f  "$OPENCODE_AGENTS_DIR/ops-security.md" && ok "removed ~/.config/opencode/agents/ops-security.md (OpenCode)"
   rm -f  "$GEMINI_AGENTS_DIR/opsx-reviewer.md" && ok "removed ~/.gemini/agents/opsx-reviewer.md (Gemini CLI)"
   rm -f  "$GEMINI_AGENTS_DIR/opsx-security.md" && ok "removed ~/.gemini/agents/opsx-security.md (Gemini CLI)"
+  rm -f  "$PREFIX/agents/opsx-eval.md" && ok "removed agents/opsx-eval.md (Claude Code)"
+  rm -f  "$CURSOR_AGENTS_DIR/opsx-eval.md" && ok "removed ~/.cursor/agents/opsx-eval.md (Cursor)"
+  rm -f  "$CODEX_AGENTS_DIR/ops-eval.toml" && ok "removed ~/.codex/agents/ops-eval.toml (Codex)"
+  rm -f  "$OPENCODE_AGENTS_DIR/ops-eval.md" && ok "removed ~/.config/opencode/agents/ops-eval.md (OpenCode)"
+  rm -f  "$GEMINI_AGENTS_DIR/opsx-eval.md" && ok "removed ~/.gemini/agents/opsx-eval.md (Gemini CLI)"
   remove_openspec_skills "$PREFIX/skills" "Claude Code"
   remove_openspec_skills "$HOME/.cursor/skills" "Cursor CLI"
   remove_openspec_skills "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
@@ -1054,12 +1061,14 @@ else
 fi
 info ""
 
-# ---------- 4. ops-applier + ops-qa + ops-reviewer + ops-security subagents ----------
-step "Installing the ops-applier, ops-qa, ops-reviewer, and ops-security subagents"
+# ---------- 4. ops-applier + ops-qa + ops-reviewer + ops-security + ops-eval subagents ----------
+step "Installing the ops-applier, ops-qa, ops-reviewer, ops-security, and ops-eval subagents"
 [ -f "$SRC/agents/opsx-applier.md" ] || die "missing $SRC/agents/opsx-applier.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-qa.md" ] || die "missing $SRC/agents/opsx-qa.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-reviewer.md" ] || die "missing $SRC/agents/opsx-reviewer.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-security.md" ] || die "missing $SRC/agents/opsx-security.md — run this script from the repo checkout"
+[ -f "$SRC/agents/opsx-eval.md" ] || die "missing $SRC/agents/opsx-eval.md — run this script from the repo checkout"
+[ -f "$SRC/skills/opsx-run/opsx-eval.sh" ] || die "missing $SRC/skills/opsx-run/opsx-eval.sh — run this script from the repo checkout"
 install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
 ok "ops-applier -> $PREFIX/agents/opsx-applier.md (Claude Code)"
 install_cursor_agent "$SRC/agents/opsx-applier.md" "$CURSOR_AGENTS_DIR/opsx-applier.md"
@@ -1100,7 +1109,17 @@ install_opencode_agent "$SRC/agents/opsx-security.md" "$OPENCODE_AGENTS_DIR/ops-
 ok "ops-security -> $OPENCODE_AGENTS_DIR/ops-security.md (OpenCode)"
 install_file "$SRC/agents/opsx-security.md" "$GEMINI_AGENTS_DIR/opsx-security.md"
 ok "ops-security -> $GEMINI_AGENTS_DIR/opsx-security.md (Gemini CLI)"
-note "applier implements in opsx/<change>; reviewer/security/qa verify after apply"
+install_file "$SRC/agents/opsx-eval.md" "$PREFIX/agents/opsx-eval.md"
+ok "ops-eval -> $PREFIX/agents/opsx-eval.md (Claude Code)"
+install_cursor_agent "$SRC/agents/opsx-eval.md" "$CURSOR_AGENTS_DIR/opsx-eval.md"
+ok "ops-eval -> $CURSOR_AGENTS_DIR/opsx-eval.md (Cursor CLI)"
+install_codex_agent "$SRC/agents/opsx-eval.md" "$CODEX_AGENTS_DIR/ops-eval.toml"
+ok "ops-eval -> $CODEX_AGENTS_DIR/ops-eval.toml (Codex CLI)"
+install_opencode_agent "$SRC/agents/opsx-eval.md" "$OPENCODE_AGENTS_DIR/ops-eval.md"
+ok "ops-eval -> $OPENCODE_AGENTS_DIR/ops-eval.md (OpenCode)"
+install_file "$SRC/agents/opsx-eval.md" "$GEMINI_AGENTS_DIR/opsx-eval.md"
+ok "ops-eval -> $GEMINI_AGENTS_DIR/opsx-eval.md (Gemini CLI)"
+note "applier implements in opsx/<change>; eval/reviewer/security/qa verify after apply (eval owns evals/)"
 info ""
 
 # ---------- 5. /opsx-run skill ----------
@@ -1192,10 +1211,12 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$PREFIX/skills/opsx-run/opsx-window.sh" \
          "$PREFIX/skills/opsx-run/opsx-merge.sh" \
          "$PREFIX/skills/opsx-run/opsx-land.sh" \
+         "$PREFIX/skills/opsx-run/opsx-eval.sh" \
          "$CURSOR_SKILLS_DIR/SKILL.md" \
          "$CURSOR_SKILLS_DIR/opsx-window.sh" \
          "$CURSOR_SKILLS_DIR/opsx-merge.sh" \
          "$CURSOR_SKILLS_DIR/opsx-land.sh" \
+         "$CURSOR_SKILLS_DIR/opsx-eval.sh" \
          "$AGENTS_SKILLS_DIR/SKILL.md" \
          "$AGENTS_SKILLS_DIR/opsx-window.sh" \
          "$CODEX_SKILLS_DIR/SKILL.md" \
@@ -1222,7 +1243,12 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$CURSOR_AGENTS_DIR/opsx-security.md" \
          "$CODEX_AGENTS_DIR/ops-security.toml" \
          "$OPENCODE_AGENTS_DIR/ops-security.md" \
-         "$GEMINI_AGENTS_DIR/opsx-security.md"; do
+         "$GEMINI_AGENTS_DIR/opsx-security.md" \
+         "$PREFIX/agents/opsx-eval.md" \
+         "$CURSOR_AGENTS_DIR/opsx-eval.md" \
+         "$CODEX_AGENTS_DIR/ops-eval.toml" \
+         "$OPENCODE_AGENTS_DIR/ops-eval.md" \
+         "$GEMINI_AGENTS_DIR/opsx-eval.md"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
 if [ "$SKIP_GRAPHIFY" -eq 0 ]; then
@@ -1276,7 +1302,7 @@ if [ "$SKIP_FORK" -eq 0 ]; then
     warn "fork.sh failed to parse"; FAIL=1
   fi
 fi
-for sh in opsx-window.sh opsx-merge.sh opsx-land.sh; do
+for sh in opsx-window.sh opsx-merge.sh opsx-land.sh opsx-eval.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
   [ -x "$AGENTS_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex ~/.agents)"; FAIL=1; }

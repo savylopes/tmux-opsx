@@ -4,13 +4,13 @@ context: |
   Purpose: tmux-opsx is the user's personal development harness for agent CLIs.
   The user is its only consumer; optimise for their workflow, not for a public audience.
   It groups into: workflow (/opsx-run: change -> tmux window -> apply -> gates -> merge/land),
-  gates (ops-reviewer, ops-security, ops-qa), context (cross-agent memory, /fork side-question agents),
+  gates (ops-eval, ops-reviewer, ops-security, ops-qa), context (cross-agent memory, /fork side-question agents),
   and portability (one install.sh for every supported CLI).
 
   Product surface (what a change actually ships):
   - install.sh: installs/uninstalls everything, with --skip-* flags and .bak backups
-  - skills/*/: SKILL.md plus helper scripts (e.g. skills/opsx-run/opsx-window.sh, opsx-merge.sh, opsx-land.sh)
-  - agents/*.md: subagent definitions (ops-applier, ops-reviewer, ops-security, ops-qa),
+  - skills/*/: SKILL.md plus helper scripts (e.g. skills/opsx-run/opsx-window.sh, opsx-merge.sh, opsx-land.sh, opsx-eval.sh)
+  - agents/*.md: subagent definitions (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa),
     converted by install.sh for each CLI
   - tmux behaviour: one window per change, `ox` window prefix, @opsx_change tags, status colours
   - README.md: the user-facing documentation; keep its component overview current
@@ -27,5 +27,11 @@ context: |
   - do not rename the repo, install paths, skill names or the `ox` window prefix without a change
   - a change that adds a component updates the README overview tree and, if relevant, this file
 
-  Tests: only tests/test-fork.sh (bash, private tmux server) so far. Otherwise verify by running install.sh and scripts in a
-  scratch HOME and against a private tmux socket (tmux -L <name>), never the user's live session.
+  Tests: tests/test-fork.sh (bash, private tmux server) and tests/test-eval.sh (runner fixtures + land gate in scratch repos).
+  Otherwise verify by running install.sh and scripts in a scratch HOME and against a private tmux socket (tmux -L <name>),
+  never the user's live session.
+
+  Evals: every `#### Scenario` should be checkable. ops-eval writes one executable check per scenario under
+  evals/<capability>/<scenario-slug>.check (exit 0 pass, 77 unverifiable, else fail) and is the only writer of evals/;
+  opsx-eval.sh runs them without an LLM. evals/eval.yaml gives checks a scratch HOME and a private tmux server, so write
+  scenarios with observable WHEN/THEN outcomes (exit codes, files, output, tmux state) rather than prose-only intent.

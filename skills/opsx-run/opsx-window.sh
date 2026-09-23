@@ -647,6 +647,8 @@ ensure_cursor_project_agents() {
     "Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree" || true
   ensure_cursor_project_agent "$cwd" opsx-qa.md ops-qa \
     "Run after ops-applier to validate UI/UX and catch visual regressions. Do not implement fixes." || true
+  ensure_cursor_project_agent "$cwd" opsx-eval.md ops-eval \
+    "Run after ops-applier to verify spec fidelity by execution: write and run one evals/ check per OpenSpec scenario. Never edits product code." || true
   ensure_cursor_project_agent "$cwd" opsx-reviewer.md ops-reviewer \
     "Run after ops-applier to review implementation: spec fidelity, logic, tests, and maintainability. Do not implement fixes." || true
   ensure_cursor_project_agent "$cwd" opsx-security.md ops-security \
@@ -711,6 +713,8 @@ ensure_opencode_project_agents() {
     "Run when asked to implement features, apply changes, or execute OpenSpec apply tasks using a git worktree" || true
   ensure_opencode_project_agent "$cwd" ops-qa.md opsx-qa.md \
     "Run after ops-applier to validate UI/UX and catch visual regressions. Do not implement fixes." || true
+  ensure_opencode_project_agent "$cwd" ops-eval.md opsx-eval.md \
+    "Run after ops-applier to verify spec fidelity by execution: write and run one evals/ check per OpenSpec scenario. Never edits product code." || true
   ensure_opencode_project_agent "$cwd" ops-reviewer.md opsx-reviewer.md \
     "Run after ops-applier to review implementation: spec fidelity, logic, tests, and maintainability. Do not implement fixes." || true
   ensure_opencode_project_agent "$cwd" ops-security.md opsx-security.md \
@@ -752,6 +756,7 @@ ensure_gemini_project_agents() {
   local cwd=$1
   ensure_gemini_project_agent "$cwd" opsx-applier.md || true
   ensure_gemini_project_agent "$cwd" opsx-qa.md || true
+  ensure_gemini_project_agent "$cwd" opsx-eval.md || true
   ensure_gemini_project_agent "$cwd" opsx-reviewer.md || true
   ensure_gemini_project_agent "$cwd" opsx-security.md || true
 }
