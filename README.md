@@ -95,6 +95,8 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --uninstall        # remove everything except the OpenSpec and Graphify CLIs
 ```
 
+Run it as the user who will use the agent CLIs; `sudo` is not needed. On a VPS where root is the login user, `./install.sh` as root is fine and installs under `/root`. If a normal user runs `sudo ./install.sh`, the files still go into that user's home, not `/root`.
+
 **Restart your agent CLI afterwards** (Claude Code, Cursor, Codex, OpenCode, or Gemini) so it picks up the new skill, subagent, and commands.
 
 ### Manual install

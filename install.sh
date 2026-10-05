@@ -58,7 +58,9 @@
 #
 # Run as your normal user — sudo is not needed. If openspec is already installed
 # under /usr/local but that prefix is not writable, the upgrade is skipped and
-# the skill files are still installed.
+# the skill files are still installed. Running as root is fine when root is the
+# login user (e.g. a VPS); files then go under /root. `sudo ./install.sh` from a
+# normal user installs into that user's home, not /root.
 
 set -uo pipefail
 
@@ -106,17 +108,26 @@ done
 
 # Skill files belong in the invoking user's home. sudo drops ~/.local/bin from
 # PATH and sets HOME=/root, which makes both the prefix and CLI checks wrong.
+# When a normal user ran `sudo ./install.sh`, install into that user's home.
+# When root is the real login (common on a VPS), /root is the right home.
 if [ "$(id -u)" -eq 0 ]; then
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-    REAL_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6-)
+    REAL_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
     REAL_HOME=${REAL_HOME:-/home/$SUDO_USER}
     export HOME="$REAL_HOME"
     for d in "$HOME/.local/bin" "$HOME/bin"; do
       [ -d "$d" ] && PATH="$d:$PATH"
     done
     export PATH
+    note "running under sudo — installing into $SUDO_USER's home ($HOME)"
   else
-    die "do not run this installer as root — run ./install.sh as your normal user (sudo is not needed)."
+    HOME=${HOME:-/root}
+    export HOME
+    for d in "$HOME/.local/bin" "$HOME/bin"; do
+      [ -d "$d" ] && case ":$PATH:" in *":$d:"*) ;; *) PATH="$d:$PATH" ;; esac
+    done
+    export PATH
+    note "running as root — installing into $HOME"
   fi
 fi
 
@@ -129,7 +140,7 @@ else
 fi
 
 run_as_owner() {
-  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
     sudo -u "$SUDO_USER" -H "$@"
   else
     "$@"
