@@ -7,6 +7,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  ├── workflow     /opsx-run: change → window → apply → gates → merge/land
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork
+ ├── sharing      /expose: local port → public https://<name>--<project>.<domain> (opt-in)
  └── portability  install.sh → Claude Code · Cursor CLI · Codex CLI · OpenCode · Gemini CLI
 ```
 
@@ -59,6 +60,8 @@ Not in tmux? It starts a session named after the project folder for you.
 | Memory instruction block | `CLAUDE.md` (Claude config dir) · `~/.codex/AGENTS.md` · `~/.config/opencode/AGENTS.md` · `~/.gemini/GEMINI.md` | Marked block (`<!-- tmux-opsx:memory:start -->` … `:end -->`) telling each agent to use the shared store |
 | Memory store | `~/.agents/memory/` | Plain folder: `MEMORY.md` index + `user/` `feedback/` `project/` `reference/` — created once, never overwritten |
 | `/fork` skill + `fork.sh` | `~/.claude/skills/fork/` · `~/.cursor/skills/fork/` · `~/.agents/skills/fork/` · `$CODEX_HOME/skills/fork/` · `~/.config/opencode/skills/fork/` · `~/.gemini/skills/fork/` | Read-only side-question agent in a tmux pane, briefed with the current context; notify-then-pull results (see [Fork](#fork)) |
+| `/expose` skill + `expose.sh` (opt-in, `--expose-domain`) | `~/.claude/skills/expose/` · `~/.cursor/skills/expose/` · `~/.agents/skills/expose/` · `$CODEX_HOME/skills/expose/` · `~/.config/opencode/skills/expose/` · `~/.gemini/skills/expose/` | Publish `127.0.0.1:<port>` at `https://<name>--<project>.<domain>` through Caddy; list/down/url (see [Expose](#expose)) |
+| Expose proxy (opt-in) | `~/.config/tmux-opsx/{expose.env,caddy.json,tmux-opsx-caddy.service}` · `~/.local/share/tmux-opsx/bin/caddy` | Caddy with `caddy-dns/cloudflare`: one wildcard cert via DNS-01, `:443` only, admin API on a user-only unix socket |
 
 ---
 
@@ -92,6 +95,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --skip-mcp         # don't install the browser-use MCP server
 ./install.sh --skip-memory      # don't install the memory skill, instruction blocks, store, or import
 ./install.sh --skip-fork        # don't install the /fork skill
+./install.sh --expose-domain dev.example.com  # also set up /expose (opt-in; see Expose)
 ./install.sh --no-backup        # overwrite without keeping .bak copies
 ./install.sh --uninstall        # remove everything except the OpenSpec and Graphify CLIs
 ```
@@ -489,6 +493,79 @@ With more than one child beside the parent, the window switches to `main-vertica
 
 ---
 
+## Sharing
+
+### Expose
+
+`/expose` turns a local port into a public HTTPS URL, so you can open an app running on the VPS from a phone or laptop, or share it, without SSH tunnels. `/expose 3000` publishes `127.0.0.1:3000` at `https://3000--<project>.<domain>`, where `<project>` is the repo's folder name (the same in every worktree). It is opt-in: without `--expose-domain`, the installer sets up nothing expose-related.
+
+```
+ browser ──https──> *.dev.example.com:443 ──> Caddy (wildcard cert, DNS-01)
+                                                 └─ route web--shop.dev.example.com ──> 127.0.0.1:3000
+ expose.sh up/down ──> Caddy admin API (unix socket, user-only) — routes added live, no reload
+```
+
+**Exposed URLs are public, with no authentication.** Anyone with the link can reach the app — debug pages, seeded admin accounts and real data included. `up` prints that warning every time.
+
+**Setup** (once per host):
+
+1. In Cloudflare, create an API token scoped to **`Zone:DNS:Edit`** for the one zone (it is used only for the ACME DNS-01 challenge).
+2. Add a wildcard DNS record `*.dev.example.com` pointing at the host's public IP, **DNS-only (grey cloud)**. The installer never creates or changes DNS records; it only checks that a random name under the domain resolves to this host, and warns otherwise.
+3. Open port **443** in the VPS provider's firewall. Port 80 is not needed (DNS-01 needs no inbound port).
+4. Run the installer with the domain. The token is read from `$CLOUDFLARE_API_TOKEN`, or from a hidden prompt when you run it in a terminal; it is never a command-line argument, never printed, and stored only in `~/.config/tmux-opsx/expose.env` (mode 600, in a mode-700 directory). A rerun without a token keeps the stored one.
+
+   ```bash
+   read -rs CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN   # paste the token, press Enter
+   ./install.sh --expose-domain dev.example.com
+   ```
+
+   It verifies the token with Cloudflare, downloads Caddy built with `caddy-dns/cloudflare` into `~/.local/share/tmux-opsx/bin/caddy` (or reuses it; `$OPSX_CADDY_BIN` points at your own build), writes the base config and a systemd unit.
+5. Run the **one privileged command** the installer prints (it never uses sudo itself; as root it runs this step for you):
+
+   ```bash
+   sudo install -m 644 ~/.config/tmux-opsx/tmux-opsx-caddy.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now tmux-opsx-caddy
+   ```
+
+   The unit runs Caddy as you, with only the capability to bind `:443`. On macOS no service is installed (a known gap); the installer prints the `caddy run --resume --config …` command to start it by hand.
+
+**Usage** — from the agent (`/expose 3000`, `/expose list`, …) or the script directly:
+
+```bash
+EXPOSE=~/.claude/skills/expose/expose.sh  # or the expose/ folder of another CLI's skills dir
+"$EXPOSE" up 3000                     # https://3000--<project>.dev.example.com
+"$EXPOSE" up 3000 --name web          # https://web--<project>.dev.example.com
+"$EXPOSE" up 3000 --name web --project shop   # https://web--shop.dev.example.com
+"$EXPOSE" list                        # NAME PROJECT PORT URL UP   (--json for scripts)
+"$EXPOSE" url web                     # print + copy the URL again
+"$EXPOSE" down web                    # remove by name (down 3000 removes every exposure of port 3000)
+```
+
+- Names and projects are lowercased and reduced to `[a-z0-9-]`; a hostname label over 63 characters gets its name part cut and a stable 6-hex hash appended. Re-running `up` with the same name moves it to the new port.
+- The URL is the last line of output. It is copied to your local clipboard with OSC 52 (through tmux when reachable, so it works from an agent's Bash tool too), and shown as a clickable OSC 8 link on a terminal. Nothing opens a browser.
+- Exit codes: `0` ok, `2` bad usage, `3` not configured (run `install.sh --expose-domain`), `4` proxy not running, `1` other.
+- Routes are recorded in `${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/expose/routes/`; every call puts back any route Caddy lost (e.g. after a restart without its autosave).
+- **Bind apps to `127.0.0.1`**, not `0.0.0.0`. A dev server listening on all interfaces is also reachable directly at `<server-ip>:<port>`, bypassing Caddy — unless a host firewall allows only 22 and 443.
+
+**tmux hint (OSC 8 links)** — tmux passes hyperlinks through only when the outer terminal is declared to support them. The installer does not edit your `tmux.conf`; add this yourself if you want clickable links inside tmux:
+
+```
+set -as terminal-features ',*:hyperlinks'
+```
+
+OSC 52 copying through tmux needs `set-clipboard` to be `on` or `external` (anything but `off`).
+
+**Removing expose** (there is no `--uninstall` for it yet):
+
+```bash
+sudo systemctl disable --now tmux-opsx-caddy && sudo rm /etc/systemd/system/tmux-opsx-caddy.service && sudo systemctl daemon-reload
+rm -rf ~/.config/tmux-opsx ~/.local/share/tmux-opsx ~/.local/state/tmux-opsx/expose
+rm -rf ~/.claude/skills/expose ~/.cursor/skills/expose ~/.agents/skills/expose ~/.codex/skills/expose ~/.config/opencode/skills/expose ~/.gemini/skills/expose
+```
+
+`bash tests/test-expose.sh` runs `expose.sh` and `install.sh --expose-domain` fully offline: a fake Caddy admin server (`tests/fake-caddy-admin.py`), a fake `caddy`, a fake Cloudflare endpoint, and a private tmux server, in scratch HOMEs.
+
+---
+
 ## Supported CLIs
 
 One `./install.sh` wires everything into all five CLIs; each change window runs one of them.
@@ -511,7 +588,7 @@ New windows default to the CLI of the calling session; override with `--agent-cl
 ./install.sh --uninstall
 ```
 
-Removes the `/opsx-run`, `memory`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/` nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`) is ever deleted.
+Removes the `/opsx-run`, `memory`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/` nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`) is ever deleted. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps.
 
 ---
 
