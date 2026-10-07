@@ -4,9 +4,15 @@
 # Installs:
 #   1. the OpenSpec CLI            (npm -g @fission-ai/openspec)
 #   2. OpenSpec skills + /opsx:*   -> global dirs for Claude / Cursor / Codex / OpenCode / Gemini
-#      (openspec-propose, openspec-apply-change, … plus slash commands)
+#      (openspec-propose, openspec-apply-change, … plus slash commands;
+#       Codex reads them from ~/.agents/skills and $CODEX_HOME/skills)
 #   3. Graphify CLI + /graphify    -> global dirs for Claude / Cursor / Codex / OpenCode / Gemini
 #                                   -> ~/.agents/skills/graphify/
+#      graphify's always-on wiring goes global too, never into the checkout:
+#                                   -> ~/.claude/CLAUDE.md (graphify writes this itself)
+#                                   -> marked block in ~/.gemini/GEMINI.md
+#                                   -> BeforeTool hook in ~/.gemini/settings.json
+#                                   -> ~/.config/opencode/plugins/graphify.js (auto-loaded)
 #   4. ops-applier + ops-qa + ops-reviewer + ops-security + ops-eval
 #                                   -> ~/.claude/agents/opsx-{applier,qa,reviewer,security,eval}.md
 #                                   -> ~/.cursor/agents/opsx-{applier,qa,reviewer,security,eval}.md
@@ -277,21 +283,156 @@ copy_graphify_skill_tree() {
   ok "/graphify -> $dest ($label)"
 }
 
+# Merge the Gemini BeforeTool hook graphify generated (in $src_settings) into
+# the global ~/.gemini/settings.json, replacing any earlier graphify hook.
+upsert_gemini_graphify_hook() {
+  local src_settings=$1 dest=$2
+  have python3 || return 1
+  [ -f "$src_settings" ] || return 1
+  mkdir -p "$(dirname "$dest")" || return 1
+  HOOK_SRC=$src_settings HOOK_DEST=$dest python3 <<'PYHOOK' || return 1
+import json, os, re
+
+src = os.environ["HOOK_SRC"]
+dest = os.environ["HOOK_DEST"]
+
+def load(path):
+    if not os.path.isfile(path):
+        return {}
+    raw = open(path, encoding="utf-8-sig").read()
+    raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+    raw = re.sub(r"(?m)^\s*//.*?$", "", raw)
+    obj = json.loads(raw) if raw.strip() else {}
+    return obj if isinstance(obj, dict) else {}
+
+src_hooks = load(src).get("hooks", {})
+new_hooks = [h for h in src_hooks.get("BeforeTool", []) if "graphify" in json.dumps(h)]
+if not new_hooks:
+    raise SystemExit("no graphify BeforeTool hook in " + src)
+
+obj = load(dest)
+hooks = obj.setdefault("hooks", {})
+if not isinstance(hooks, dict):
+    hooks = {}
+    obj["hooks"] = hooks
+before = hooks.get("BeforeTool", [])
+if not isinstance(before, list):
+    before = []
+hooks["BeforeTool"] = [h for h in before if "graphify" not in json.dumps(h)] + new_hooks
+
+with open(dest + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PYHOOK
+  replace_if_changed "$dest"
+}
+
+# Move $dest.tmp over $dest, keeping a timestamped backup, unless identical.
+replace_if_changed() {
+  local dest=$1
+  if [ -f "$dest" ] && cmp -s "$dest" "$dest.tmp"; then
+    rm -f "$dest.tmp"
+    return 0
+  fi
+  if [ -e "$dest" ] && [ "$BACKUP" -eq 1 ]; then
+    cp "$dest" "$dest.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  fi
+  mv "$dest.tmp" "$dest" || die "cannot write $dest"
+}
+
+# Drop graphify's BeforeTool hook from the global Gemini settings.
+remove_gemini_graphify_hook() {
+  local dest=$1
+  [ -f "$dest" ] || return 0
+  grep -q 'graphify' "$dest" 2>/dev/null || return 0
+  have python3 || return 1
+  HOOK_DEST=$dest python3 <<'PYHOOK' || return 1
+import json, os, re
+
+dest = os.environ["HOOK_DEST"]
+raw = open(dest, encoding="utf-8-sig").read()
+raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+raw = re.sub(r"(?m)^\s*//.*?$", "", raw)
+obj = json.loads(raw) if raw.strip() else {}
+hooks = obj.get("hooks")
+if isinstance(hooks, dict) and isinstance(hooks.get("BeforeTool"), list):
+    hooks["BeforeTool"] = [h for h in hooks["BeforeTool"] if "graphify" not in json.dumps(h)]
+    if not hooks["BeforeTool"]:
+        del hooks["BeforeTool"]
+    if not hooks:
+        del obj["hooks"]
+with open(dest + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PYHOOK
+  replace_if_changed "$dest"
+  ok "removed graphify hook from $(printf '%s' "$dest" | sed "s|$HOME|~|")"
+}
+
+# graphify's Gemini install writes its always-on section to ./GEMINI.md and its
+# hook to ./.gemini/settings.json — project files. Lift both out of the scratch
+# dir into the global Gemini config so every project gets them.
+install_graphify_gemini_globals() {
+  local scratch=$1 blockfile
+  if [ -f "$scratch/GEMINI.md" ]; then
+    blockfile=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+    {
+      printf '%s\n' "$GRAPHIFY_BLOCK_START"
+      cat "$scratch/GEMINI.md"
+      [ -n "$(tail -c1 "$scratch/GEMINI.md")" ] && printf '\n'
+      printf '%s\n' "$GRAPHIFY_BLOCK_END"
+    } > "$blockfile"
+    upsert_block_file "$GEMINI_MD" "$GRAPHIFY_BLOCK_START" "$GRAPHIFY_BLOCK_END" "$blockfile"
+    rm -f "$blockfile"
+    ok "graphify section -> $(printf '%s' "$GEMINI_MD" | sed "s|$HOME|~|") (Gemini CLI)"
+  else
+    warn "graphify did not generate a GEMINI.md section"
+  fi
+  if upsert_gemini_graphify_hook "$scratch/.gemini/settings.json" "$GEMINI_SETTINGS"; then
+    ok "graphify BeforeTool hook -> $(printf '%s' "$GEMINI_SETTINGS" | sed "s|$HOME|~|") (Gemini CLI)"
+  else
+    warn "could not add graphify's BeforeTool hook to $GEMINI_SETTINGS"
+  fi
+}
+
+# graphify's OpenCode install writes ./.opencode/plugins/graphify.js and
+# registers it in ./.opencode/opencode.json — project files. OpenCode auto-loads
+# ~/.config/opencode/plugins/*.js, so the global copy needs no config entry.
+install_graphify_opencode_globals() {
+  local scratch=$1
+  if [ -f "$scratch/.opencode/plugins/graphify.js" ]; then
+    install_file "$scratch/.opencode/plugins/graphify.js" "$OPENCODE_GRAPHIFY_PLUGIN"
+    ok "graphify plugin -> $(printf '%s' "$OPENCODE_GRAPHIFY_PLUGIN" | sed "s|$HOME|~|") (OpenCode, auto-loaded)"
+  else
+    warn "graphify did not generate an OpenCode plugin"
+  fi
+}
+
 # Install Graphify's packaged skill globally for Claude, Codex, OpenCode, Agent
-# Skills. Cursor has no global `graphify install --platform cursor` (that writes
-# a project rule), so copy the Claude skill tree into ~/.cursor/skills/graphify.
+# Skills and Gemini. The skill files already go to each CLI's global skills dir,
+# but graphify drops its Gemini/OpenCode always-on wiring into the *current
+# directory*, so run it from a scratch dir (nothing lands in the checkout) and
+# move that wiring into the global config dirs afterwards. Cursor has no global
+# `graphify install --platform cursor` (that writes a project rule), so copy the
+# Claude skill tree into ~/.cursor/skills/graphify.
 install_graphify_skills() {
-  local p
+  local p scratch
   [ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ "$PREFIX" = "$HOME/.claude" ] || export CLAUDE_CONFIG_DIR=$PREFIX
 
+  scratch=$(mktemp -d 2>/dev/null || mktemp -d -t tmuxopsx)
+  [ -n "$scratch" ] && [ -d "$scratch" ] || die "could not create a temp directory"
   for p in claude codex opencode agents gemini; do
-    if graphify install --platform "$p" >/dev/null 2>&1; then
+    if (cd "$scratch" && graphify install --platform "$p" >/dev/null 2>&1); then
       ok "graphify install --platform $p"
     else
       warn "graphify install --platform $p failed"
+      rm -rf "$scratch"
       return 1
     fi
   done
+  install_graphify_gemini_globals "$scratch"
+  install_graphify_opencode_globals "$scratch"
+  rm -rf "$scratch"
 
   copy_graphify_skill_tree "$PREFIX/skills/graphify" "$HOME/.cursor/skills/graphify" "Cursor CLI" \
     || copy_graphify_skill_tree "$HOME/.claude/skills/graphify" "$HOME/.cursor/skills/graphify" "Cursor CLI" \
@@ -355,6 +496,10 @@ GEMINI_FORK_SKILLS_DIR=$GEMINI_HOME_DIR/skills/fork
 CODEX_AGENTS_MD=$CODEX_HOME_DIR/AGENTS.md
 OPENCODE_AGENTS_MD=$OPENCODE_CONFIG_DIR/AGENTS.md
 GEMINI_MD=$GEMINI_HOME_DIR/GEMINI.md
+OPENCODE_PLUGINS_DIR=$OPENCODE_CONFIG_DIR/plugins
+OPENCODE_GRAPHIFY_PLUGIN=$OPENCODE_PLUGINS_DIR/graphify.js
+GRAPHIFY_BLOCK_START='<!-- tmux-opsx:graphify:start -->'
+GRAPHIFY_BLOCK_END='<!-- tmux-opsx:graphify:end -->'
 if [ -f "$OPENCODE_CONFIG_DIR/opencode.jsonc" ]; then
   OPENCODE_CONFIG=$OPENCODE_CONFIG_DIR/opencode.jsonc
 else
@@ -365,7 +510,10 @@ fi
 install_openspec_skills() {
   local src_skills=$1 dest_skills=$2 label=$3
   local d name count=0
-  [ -d "$src_skills" ] || return 0
+  if [ ! -d "$src_skills" ]; then
+    warn "no OpenSpec skills generated for $label ($src_skills missing) — skipping"
+    return 0
+  fi
   mkdir -p "$dest_skills" || die "cannot create $dest_skills"
   for d in "$src_skills"/openspec-*; do
     [ -d "$d" ] || continue
@@ -493,15 +641,24 @@ memory_instruction_block() {
 # Create, replace-between-markers, or append the memory instruction block in
 # an instructions file. Keeps a .bak.<timestamp> when the file actually changes.
 upsert_marked_block() {
-  local dest=$1 tmp blockfile
-  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  local dest=$1 blockfile
   blockfile=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
   memory_instruction_block > "$blockfile"
+  upsert_block_file "$dest" "$MEMORY_BLOCK_START" "$MEMORY_BLOCK_END" "$blockfile"
+  rm -f "$blockfile"
+}
+
+# Insert or replace the block delimited by $start/$end in $dest with the
+# contents of $blockfile (which must itself begin with $start and end with
+# $end). Everything else in the file is left alone.
+upsert_block_file() {
+  local dest=$1 start=$2 end=$3 blockfile=$4 tmp
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
 
   if [ ! -f "$dest" ]; then
     cp "$blockfile" "$tmp"
-  elif grep -qF "$MEMORY_BLOCK_START" "$dest" 2>/dev/null; then
-    awk -v start="$MEMORY_BLOCK_START" -v end="$MEMORY_BLOCK_END" -v blockfile="$blockfile" '
+  elif grep -qF "$start" "$dest" 2>/dev/null; then
+    awk -v start="$start" -v end="$end" -v blockfile="$blockfile" '
       $0 == start { while ((getline line < blockfile) > 0) print line; close(blockfile); skip=1; next }
       $0 == end { skip=0; next }
       skip==1 { next }
@@ -512,7 +669,6 @@ upsert_marked_block() {
     [ -s "$tmp" ] && printf '\n' >> "$tmp"
     cat "$blockfile" >> "$tmp"
   fi
-  rm -f "$blockfile"
 
   if [ -f "$dest" ] && cmp -s "$dest" "$tmp"; then
     rm -f "$tmp"
@@ -529,14 +685,14 @@ upsert_marked_block() {
   mv "$tmp" "$dest" || die "cannot write $dest"
 }
 
-# Remove the marked memory block (markers included) from an instructions file,
-# leaving the rest of the file untouched.
+# Remove a marked block (markers included) from an instructions file, leaving
+# the rest of the file untouched. Defaults to the memory block.
 remove_marked_block() {
-  local dest=$1 tmp
+  local dest=$1 start=${2:-$MEMORY_BLOCK_START} end=${3:-$MEMORY_BLOCK_END} label=${4:-memory} tmp
   [ -f "$dest" ] || return 0
-  grep -qF "$MEMORY_BLOCK_START" "$dest" 2>/dev/null || return 0
+  grep -qF "$start" "$dest" 2>/dev/null || return 0
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
-  awk -v start="$MEMORY_BLOCK_START" -v end="$MEMORY_BLOCK_END" '
+  awk -v start="$start" -v end="$end" '
     $0 == start { skip=1; next }
     $0 == end { skip=0; next }
     skip==1 { next }
@@ -546,7 +702,7 @@ remove_marked_block() {
     cp "$dest" "$dest.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
   fi
   mv "$tmp" "$dest" || die "cannot write $dest"
-  ok "removed memory block from $(printf '%s' "$dest" | sed "s|$HOME|~|")"
+  ok "removed $label block from $(printf '%s' "$dest" | sed "s|$HOME|~|")"
 }
 
 # Create the store skeleton (type folders + MEMORY.md) without touching
@@ -867,6 +1023,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
   remove_graphify_skill "$CODEX_HOME_DIR/skills/graphify" "Codex"
   remove_graphify_skill "$OPENCODE_CONFIG_DIR/skills/graphify" "OpenCode"
   remove_graphify_skill "$GEMINI_HOME_DIR/skills/graphify" "Gemini CLI"
+  remove_marked_block "$GEMINI_MD" "$GRAPHIFY_BLOCK_START" "$GRAPHIFY_BLOCK_END" graphify
+  remove_gemini_graphify_hook "$GEMINI_SETTINGS"
+  if [ -f "$OPENCODE_GRAPHIFY_PLUGIN" ]; then
+    rm -f "$OPENCODE_GRAPHIFY_PLUGIN" && ok "removed ~/.config/opencode/plugins/graphify.js (OpenCode)"
+  fi
   rm -rf "$PREFIX/skills/memory" && ok "removed skills/memory (Claude Code)"
   rm -rf "$CURSOR_MEMORY_SKILLS_DIR" && ok "removed ~/.cursor/skills/memory (Cursor CLI)"
   rm -rf "$AGENTS_MEMORY_SKILLS_DIR" && ok "removed ~/.agents/skills/memory (Agent Skills)"
@@ -1037,9 +1198,14 @@ else
     if (cd "$TMPD" && openspec init --tools claude,cursor,codex,opencode,gemini . >/dev/null 2>&1); then
       install_openspec_skills "$TMPD/.claude/skills" "$PREFIX/skills" "Claude Code"
       install_openspec_skills "$TMPD/.cursor/skills" "$HOME/.cursor/skills" "Cursor CLI"
-      install_openspec_skills "$TMPD/.codex/skills" "$CODEX_OPENSPEC_SKILLS_DIR" "Codex"
+      # `openspec init --tools codex` emits Agent Skills under .agents/skills
+      # (older releases used .codex/skills). Codex reads both ~/.agents/skills
+      # and $CODEX_HOME/skills, so install into each.
+      CODEX_OPENSPEC_SRC=$TMPD/.agents/skills
+      [ -d "$CODEX_OPENSPEC_SRC" ] || CODEX_OPENSPEC_SRC=$TMPD/.codex/skills
+      install_openspec_skills "$CODEX_OPENSPEC_SRC" "$CODEX_OPENSPEC_SKILLS_DIR" "Codex"
       if [ "$AGENTS_OPENSPEC_SKILLS_DIR" != "$CODEX_OPENSPEC_SKILLS_DIR" ]; then
-        install_openspec_skills "$TMPD/.codex/skills" "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
+        install_openspec_skills "$CODEX_OPENSPEC_SRC" "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
       fi
       install_openspec_skills "$TMPD/.opencode/skills" "$OPENCODE_OPENSPEC_SKILLS_DIR" "OpenCode"
       install_openspec_skills "$TMPD/.gemini/skills" "$GEMINI_OPENSPEC_SKILLS_DIR" "Gemini CLI"
@@ -1276,6 +1442,34 @@ if [ "$SKIP_GRAPHIFY" -eq 0 ]; then
   else
     warn "graphify CLI not on PATH"; FAIL=1
   fi
+  if [ -f "$GEMINI_MD" ] && grep -qF "$GRAPHIFY_BLOCK_START" "$GEMINI_MD" 2>/dev/null; then
+    ok "graphify block in $(printf '%s' "$GEMINI_MD" | sed "s|$HOME|~|")"
+  else
+    warn "graphify block missing in $GEMINI_MD"; FAIL=1
+  fi
+  if [ -f "$GEMINI_SETTINGS" ] && grep -q 'hook-guard gemini' "$GEMINI_SETTINGS" 2>/dev/null; then
+    ok "graphify BeforeTool hook in $(printf '%s' "$GEMINI_SETTINGS" | sed "s|$HOME|~|")"
+  else
+    warn "graphify BeforeTool hook missing in $GEMINI_SETTINGS"; FAIL=1
+  fi
+  if [ -f "$OPENCODE_GRAPHIFY_PLUGIN" ]; then
+    ok "$(printf '%s' "$OPENCODE_GRAPHIFY_PLUGIN" | sed "s|$HOME|~|")"
+  else
+    warn "missing: $OPENCODE_GRAPHIFY_PLUGIN"; FAIL=1
+  fi
+  for f in GEMINI.md .gemini/settings.json .opencode/plugins/graphify.js; do
+    [ -e "$SRC/$f" ] && warn "project-level $f found in $SRC — graphify wiring belongs in the global config dirs only"
+  done
+fi
+if [ "$SKIP_COMMANDS" -eq 0 ] && have openspec; then
+  for d in "$PREFIX/skills" "$HOME/.cursor/skills" "$AGENTS_OPENSPEC_SKILLS_DIR" \
+           "$CODEX_OPENSPEC_SKILLS_DIR" "$OPENCODE_OPENSPEC_SKILLS_DIR" "$GEMINI_OPENSPEC_SKILLS_DIR"; do
+    if [ -f "$d/openspec-propose/SKILL.md" ]; then
+      ok "OpenSpec skills in $(printf '%s' "$d" | sed "s|$HOME|~|")"
+    else
+      warn "OpenSpec skills missing in $d"; FAIL=1
+    fi
+  done
 fi
 if [ "$SKIP_MEMORY" -eq 0 ]; then
   for f in "$PREFIX/skills/memory/SKILL.md" \

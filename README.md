@@ -54,6 +54,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `/graphify` skill | `~/.claude/skills/graphify/` · `~/.cursor/skills/graphify/` · `~/.agents/skills/graphify/` · `~/.codex/skills/graphify/` · `~/.config/opencode/skills/graphify/` · `~/.gemini/skills/graphify/` | Graphify knowledge-graph skill — installed globally after the CLI is verified |
 | OpenSpec CLI | npm global | `openspec` — the spec/change engine everything is built on |
 | Graphify CLI | uv tool / pipx | `graphify` — required for `/graphify` |
+| Graphify always-on wiring | `~/.claude/CLAUDE.md` · `~/.gemini/GEMINI.md` (marked block `<!-- tmux-opsx:graphify:start -->` … `:end -->`) · `~/.gemini/settings.json` (`BeforeTool` hook) · `~/.config/opencode/plugins/graphify.js` | Tells each agent to consult the knowledge graph. `graphify install` writes the Gemini/OpenCode parts into the current directory; the installer runs it in a scratch dir and lifts them into the global config so nothing lands in a project checkout |
 | `memory` skill | `~/.claude/skills/memory/` · `~/.cursor/skills/memory/` · `~/.agents/skills/memory/` · `~/.codex/skills/memory/` · `~/.config/opencode/skills/memory/` · `~/.gemini/skills/memory/` | Shared cross-agent memory protocol — read/save/update/forget, project tagging, safe concurrent writes |
 | Memory instruction block | `CLAUDE.md` (Claude config dir) · `~/.codex/AGENTS.md` · `~/.config/opencode/AGENTS.md` · `~/.gemini/GEMINI.md` | Marked block (`<!-- tmux-opsx:memory:start -->` … `:end -->`) telling each agent to use the shared store |
 | Memory store | `~/.agents/memory/` | Plain folder: `MEMORY.md` index + `user/` `feedback/` `project/` `reference/` — created once, never overwritten |
@@ -117,16 +118,22 @@ cp -R "$tmp"/.claude/skills/openspec-* ~/.claude/skills/
 cp -R "$tmp"/.claude/commands/opsx ~/.claude/commands/
 cp -R "$tmp"/.cursor/skills/openspec-* ~/.cursor/skills/
 cp "$tmp"/.cursor/commands/opsx-*.md ~/.cursor/commands/
-cp -R "$tmp"/.codex/skills/openspec-* ~/.codex/skills/
-cp -R "$tmp"/.codex/skills/openspec-* ~/.agents/skills/
+cp -R "$tmp"/.agents/skills/openspec-* ~/.codex/skills/    # Codex: openspec emits Agent Skills
+cp -R "$tmp"/.agents/skills/openspec-* ~/.agents/skills/
 cp -R "$tmp"/.opencode/skills/openspec-* ~/.config/opencode/skills/
 cp "$tmp"/.opencode/commands/opsx-*.md ~/.config/opencode/commands/
 cp -R "$tmp"/.gemini/skills/openspec-* ~/.gemini/skills/ 2>/dev/null || true
 rm -rf "$tmp"
 
-graphify install --platform claude,codex,opencode,agents,gemini   # 2b. global /graphify
-mkdir -p ~/.cursor/skills/graphify
+gtmp=$(mktemp -d)                                        # 2b. global /graphify
+(cd "$gtmp" && graphify install --platform claude,codex,opencode,agents,gemini)
+# graphify drops its Gemini/OpenCode wiring into the *current* dir — move it global:
+mkdir -p ~/.gemini ~/.config/opencode/plugins ~/.cursor/skills/graphify
+cat "$gtmp"/GEMINI.md >> ~/.gemini/GEMINI.md             # "## graphify" section
+#   merge "$gtmp"/.gemini/settings.json hooks.BeforeTool into ~/.gemini/settings.json
+cp "$gtmp"/.opencode/plugins/graphify.js ~/.config/opencode/plugins/   # auto-loaded
 cp -R ~/.claude/skills/graphify/. ~/.cursor/skills/graphify/
+rm -rf "$gtmp"
 
 mkdir -p ~/.claude/skills ~/.claude/agents ~/.cursor/agents ~/.cursor/skills \
          ~/.agents/skills ~/.codex/skills ~/.codex/agents \
@@ -504,7 +511,7 @@ New windows default to the CLI of the calling session; override with `--agent-cl
 ./install.sh --uninstall
 ```
 
-Removes the `/opsx-run`, `memory`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, and the memory instruction blocks from every CLI. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/` nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`) is ever deleted.
+Removes the `/opsx-run`, `memory`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/` nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`) is ever deleted.
 
 ---
 
@@ -514,7 +521,7 @@ Removes the `/opsx-run`, `memory`, `/fork` and `/graphify` skills (including `op
 
 **The window is named `claude` instead of the change** — something re-enabled tmux's automatic rename. The script disables it per window at creation; check `tmux show-window-options -t <win> automatic-rename`.
 
-**`/opsx:*` commands or OpenSpec skills don't appear** — restart the agent CLI. `./install.sh` copies them into global dirs (`~/.claude/skills/openspec-*`, `~/.cursor/skills/openspec-*`, `~/.gemini/skills/openspec-*`, …). A project's own `.claude/` / `.cursor/` / `.opencode/` / `.gemini/` copies still take precedence when present.
+**`/opsx:*` commands or OpenSpec skills don't appear** — restart the agent CLI. `./install.sh` copies them into global dirs (`~/.claude/skills/openspec-*`, `~/.cursor/skills/openspec-*`, `~/.agents/skills/openspec-*` + `~/.codex/skills/openspec-*` for Codex, `~/.gemini/skills/openspec-*`, …). A project's own `.claude/` / `.cursor/` / `.opencode/` / `.gemini/` copies still take precedence when present.
 
 **Window ran but nothing happened** — attach to it and look. The dispatcher session is a normal Claude session; it may be asking a question. `/opsx-run <change> status` prints its recent output without leaving your session.
 
