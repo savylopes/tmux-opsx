@@ -123,6 +123,14 @@ ok "single -- separator in long label" '[ "$(grep -o -- "--" <<<"$lab1" | wc -l)
 LP=$(printf 'p%.0s' $(seq 1 70))
 o=$($E up 3003 --name web --project "$LP" | tail -n1); lab=${o#https://}; lab=${lab%.dev.example.com}
 ok "very long project still <= 63" '[ "${#lab}" -le 63 ] && [[ "$lab" == web--* ]]'
+# F2: a project over 40 chars is kept whole when the label fits
+P42=$(printf 'p%.0s' $(seq 1 42))
+o=$($E up 3004 --project "$P42" | tail -n1)
+ok "42-char project kept whole when label fits" '[ "$o" = "https://3004--$P42.dev.example.com" ]'
+P50=$(printf 'q%.0s' $(seq 1 50))
+o=$($E up 3005 --name "longishname-0123456789" --project "$P50" | tail -n1); lab=${o#https://}; lab=${lab%.dev.example.com}
+ok "50-char project kept, name cut instead" '[ "${#lab}" -le 63 ] && [[ "$lab" == *"--$P50" ]] && [[ "$lab" =~ ^[a-z0-9-]*[0-9a-f]{6}--q ]]'
+$E down 3004 --project "$P42" >/dev/null; $E down 3005 --project "$P50" >/dev/null
 
 # ---- 2.2 republish / down ----
 $E up 3000 --name api --project shop >/dev/null
@@ -170,6 +178,37 @@ ok "restarted proxy has no routes" '[ "$(nroutes)" -eq 0 ]'
 l=$($E list 2>/dev/null)
 ok "list restores web route" '[ "$(dial_of web--shop)" = "127.0.0.1:3000" ] && printf "%s\n" "$l" | grep -q "^web "'
 ok "all recorded routes restored once" '[ "$(nroutes)" -eq "$(ls "$RD"/*.env | wc -l)" ]'
+
+# F4: parallel calls right after a restart restore each route once, no errors
+par_calls() {
+  local i pids=() rc=0
+  for i in 1 2 3 4 5 6; do
+    PATH="$1" $E list >/dev/null 2>"$SP/par.$i.err" & pids+=($!)
+  done
+  for i in "${pids[@]}"; do wait "$i" || rc=1; done
+  return $rc
+}
+stop_fake; start_fake
+par_calls "$PATH"; rc=$?
+ok "parallel lists after restart: all exit 0" '[ $rc -eq 0 ]'
+ok "parallel lists: no refused-route errors" '! cat "$SP"/par.*.err | grep -q "refused"'
+ok "parallel lists: each route once" '[ "$(nroutes)" -eq "$(ls "$RD"/*.env | wc -l)" ] && [ "$(routes | grep -o "\"expose-web--shop\"" | wc -l)" -eq 1 ]'
+# A racing call that adds the same route between our DELETE and POST: a curl
+# shim sends every route POST twice, so the second is refused as a duplicate id.
+mkdir -p "$SP/racecurl"
+cat > "$SP/racecurl/curl" <<SHIM
+#!/usr/bin/env bash
+case "\$*" in
+  *"-X POST"*/routes*) body=\$(cat); printf '%s' "\$body" | "$(command -v curl)" "\$@" >/dev/null 2>&1
+                       printf '%s' "\$body" | "$(command -v curl)" "\$@"; exit ;;
+esac
+exec "$(command -v curl)" "\$@"
+SHIM
+chmod +x "$SP/racecurl/curl"
+stop_fake; start_fake
+o=$(PATH="$SP/racecurl:$PATH" $E up 3000 --name web --project shop 2>"$SP/race.err"); rc=$?
+ok "duplicate-id refusal from a racing call: exit 0, no error" '[ $rc -eq 0 ] && ! grep -q "refused" "$SP/race.err" && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://web--shop.dev.example.com" ]'
+ok "duplicate-id refusal: route present once, all routes restored once" '[ "$(routes | grep -o "\"expose-web--shop\"" | wc -l)" -eq 1 ] && [ "$(nroutes)" -eq "$(ls "$RD"/*.env | wc -l)" ]'
 
 # ---- 2.4 OSC 8 on a terminal (script(1) gives stdout a pty) ----
 if command -v script >/dev/null 2>&1 && script -qc true /dev/null >/dev/null 2>&1; then
@@ -278,7 +317,7 @@ if command -v jq >/dev/null 2>&1; then
   ok "caddy.json: wildcard subject + cloudflare DNS" '[ "$(jq -r ".apps.tls.automation.policies[0].subjects[0]" "$J")" = "*.dev.example.com" ] && [ "$(jq -r ".apps.tls.automation.policies[0].issuers[0].challenges.dns.provider.name" "$J")" = cloudflare ]'
   ok "caddy.json: unix admin socket in mode-700 dir" 'a=$(jq -r ".admin.listen" "$J"); [[ "$a" == unix/* ]] && [ "$(dirname "${a#unix/}")" = "$STD" ] && [ "$(stat -c %a "$STD")" = 700 ]'
 fi
-ok "systemd unit written under user config" 'grep -q "^ExecStart=.*run --resume --config" "$CFG/tmux-opsx-caddy.service" && grep -q "^AmbientCapabilities=CAP_NET_BIND_SERVICE" "$CFG/tmux-opsx-caddy.service" && grep -q "^EnvironmentFile=$CFG/expose.env" "$CFG/tmux-opsx-caddy.service"'
+ok "systemd unit written under user config" 'grep -q "^ExecStart=.* run --config" "$CFG/tmux-opsx-caddy.service" && ! grep -q -- "--resume" "$CFG/tmux-opsx-caddy.service" && grep -q "^ExecStartPost=-.*/expose/expose.sh\" list" "$CFG/tmux-opsx-caddy.service" && grep -q "^AmbientCapabilities=CAP_NET_BIND_SERVICE" "$CFG/tmux-opsx-caddy.service" && grep -q "^EnvironmentFile=$CFG/expose.env" "$CFG/tmux-opsx-caddy.service"'
 ok "non-root: no sudo/systemctl invoked" '[ ! -e "$SP/privileged.log" ]'
 ok "non-root: prints the systemctl command" 'grep -q "sudo systemctl enable --now tmux-opsx-caddy" "$IH.out" && grep -q "sudo install -m 644 .*tmux-opsx-caddy.service" "$IH.out"'
 ok "DNS check warns, install still ok" 'grep -q "\*.dev.example.com" "$IH.out" && grep -qi "DNS-only" "$IH.out"'
@@ -297,6 +336,36 @@ ok "rerun without token exits 0 and keeps t1" '[ $rc -eq 0 ] && grep -qx "CLOUDF
 ok "rerun leaves identical files (no .bak, no duplicates)" '[ "$sum_before" = "$sum_after" ]'
 run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" --
 ok "later run without the flag leaves expose untouched" 'grep -qx "CLOUDFLARE_API_TOKEN=secret-t1" "$CFG/expose.env" && [ "$(n_expose_dirs)" -eq 6 ]'
+
+# F1: rerun with another domain while the proxy runs (unit "installed" in a
+# scratch systemd dir): the new caddy.json is loaded, routes move to the new domain.
+SYSD=$SP/systemd; mkdir -p "$SYSD"; cp "$CFG/tmux-opsx-caddy.service" "$SYSD/"
+start_fake
+IE() { env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$IH" "$IH/.claude/skills/expose/expose.sh" "$@"; }
+IE up 3000 --name web --project shop >/dev/null
+rm -f "$SP/privileged.log"
+run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" OPSX_SYSTEMD_DIR="$SYSD" -- --expose-domain other.example.com; rc=$?
+subj=$(adm /config/apps/tls/automation/policies/0/subjects/0)
+ok "domain change: exit 0, new config loaded into running proxy" '[ $rc -eq 0 ] && grep -q "loaded the new" "$IH.out" && [ "$subj" = "\"*.other.example.com\"" ]'
+ok "domain change: route re-added on the new domain" '[ "$(host_of web--shop)" = "web--shop.other.example.com" ] && [ "$(dial_of web--shop)" = "127.0.0.1:3000" ]'
+ok "domain change: record URL rewritten" 'grep -qx "URL=https://web--shop.other.example.com" "$STD/routes/web--shop.env" && [ "$(IE url web --project shop | tail -n1)" = "https://web--shop.other.example.com" ]'
+ok "domain change, same token + unit: no restart asked, no sudo" '! grep -q "systemctl restart" "$IH.out" && [ ! -e "$SP/privileged.log" ]'
+# new token: Caddy reads it from its environment only at start -> restart command
+run_install CLOUDFLARE_API_TOKEN=secret-t2 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" OPSX_SYSTEMD_DIR="$SYSD" -- --expose-domain other.example.com; rc=$?
+ok "token change: prints the restart command, no sudo run" '[ $rc -eq 0 ] && grep -q "sudo systemctl restart tmux-opsx-caddy" "$IH.out" && [ ! -e "$SP/privileged.log" ] && ! grep -q "secret-t2" "$IH.out"'
+# installed unit differs (e.g. an older one with --resume) -> restart command
+sed -i "s| run --config| run --resume --config|" "$SYSD/tmux-opsx-caddy.service"
+run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" OPSX_SYSTEMD_DIR="$SYSD" -- --expose-domain other.example.com; rc=$?
+ok "stale installed unit: prints reinstall + restart" '[ $rc -eq 0 ] && grep -q "sudo install -m 644 .*tmux-opsx-caddy.service.* $SYSD/ && sudo systemctl daemon-reload && sudo systemctl restart tmux-opsx-caddy" "$IH.out"'
+cp "$CFG/tmux-opsx-caddy.service" "$SYSD/"
+# proxy stopped during a domain change: nothing to load, it reads caddy.json at start
+stop_fake
+run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" OPSX_SYSTEMD_DIR="$SYSD" -- --expose-domain third.example.com; rc=$?
+ok "domain change, proxy stopped: exit 0, says it loads at start" '[ $rc -eq 0 ] && grep -q "reads the new" "$IH.out" && grep -q "\*.third.example.com" "$CFG/caddy.json" && grep -qx "URL=https://web--shop.third.example.com" "$STD/routes/web--shop.env"'
+SOCK=$STD/caddy-admin.sock; start_fake
+o=$(IE list)
+ok "after the stopped proxy starts: route restored on the new domain" '[ "$(host_of web--shop)" = "web--shop.third.example.com" ]'
+stop_fake
 
 # caddy without the module
 new_home; run_install CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-bad/caddy" -- --expose-domain dev.example.com; rc=$?

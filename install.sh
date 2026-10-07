@@ -359,12 +359,15 @@ PYHOOK
 }
 
 # Move $dest.tmp over $dest, keeping a timestamped backup, unless identical.
+# Sets REPLACED=1 when $dest was changed or created, 0 when it was identical.
 replace_if_changed() {
   local dest=$1
+  REPLACED=0
   if [ -f "$dest" ] && cmp -s "$dest" "$dest.tmp"; then
     rm -f "$dest.tmp"
     return 0
   fi
+  REPLACED=1
   if [ -e "$dest" ] && [ "$BACKUP" -eq 1 ]; then
     cp "$dest" "$dest.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
   fi
@@ -680,9 +683,14 @@ EXPOSE_UNIT=$EXPOSE_CONFIG_DIR/$EXPOSE_UNIT_NAME.service
 EXPOSE_STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-opsx/expose
 EXPOSE_SOCK=$EXPOSE_STATE_DIR/caddy-admin.sock
 EXPOSE_BIN_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/tmux-opsx/bin
+EXPOSE_SYSTEMD_DIR=${OPSX_SYSTEMD_DIR:-/etc/systemd/system}
 EXPOSE_TOKEN=""
 EXPOSE_TOKEN_SOURCE=""
 CADDY_BIN=""
+# Set by a rerun that changes an existing setup (see expose_apply_changes).
+EXPOSE_OLD_DOMAIN=""
+EXPOSE_CONFIG_CHANGED=0
+EXPOSE_TOKEN_CHANGED=0
 
 tilde() { printf '%s' "$1" | sed "s|^$HOME|~|"; }
 
@@ -730,6 +738,8 @@ expose_token_intake() {
 
 # Ask Cloudflare whether the token is valid. The Authorization header goes to
 # curl on stdin (-H @-), so the token never appears on a command line.
+# /user/tokens/verify only knows user tokens (My Profile > API Tokens);
+# account-owned tokens need OPSX_EXPOSE_SKIP_VERIFY=1.
 expose_verify_token() {
   local api=${OPSX_CLOUDFLARE_API:-https://api.cloudflare.com/client/v4} resp
   if [ "${OPSX_EXPOSE_SKIP_VERIFY:-0}" = 1 ]; then
@@ -744,13 +754,18 @@ expose_verify_token() {
      && printf '%s' "$resp" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"active"'; then
     ok "Cloudflare API token is valid ($EXPOSE_TOKEN_SOURCE)"
   else
-    die "the Cloudflare API token is invalid (Cloudflare rejected it, or it is not active). Create one scoped to Zone:DNS:Edit for the zone of $EXPOSE_DOMAIN. Nothing was installed."
+    die "the Cloudflare API token is invalid (Cloudflare rejected it, or it is not active). Create a user API token under My Profile > API Tokens, scoped to Zone:DNS:Edit for the zone of $EXPOSE_DOMAIN. Account-owned tokens (Manage Account > API Tokens) cannot be checked through /user/tokens/verify; to use one anyway, set OPSX_EXPOSE_SKIP_VERIFY=1. Nothing was installed."
   fi
 }
 
 # Write expose.env (mode 600, mode-700 dir) through a temp file + mv; no .bak.
 expose_write_env() {
-  local tmp
+  local tmp old_token=""
+  if [ -f "$EXPOSE_ENV" ]; then
+    EXPOSE_OLD_DOMAIN=$(env_file_get "$EXPOSE_ENV" EXPOSE_DOMAIN 2>/dev/null) || EXPOSE_OLD_DOMAIN=""
+    old_token=$(env_file_get "$EXPOSE_ENV" CLOUDFLARE_API_TOKEN 2>/dev/null) || old_token=""
+    [ "$old_token" = "$EXPOSE_TOKEN" ] || EXPOSE_TOKEN_CHANGED=1
+  fi
   mkdir -p "$EXPOSE_CONFIG_DIR" || die "cannot create $EXPOSE_CONFIG_DIR"
   chmod 700 "$EXPOSE_CONFIG_DIR" || die "cannot chmod 700 $EXPOSE_CONFIG_DIR"
   tmp=$( umask 077; mktemp "$EXPOSE_CONFIG_DIR/.expose.env.XXXXXX" ) || die "cannot create a temp file in $EXPOSE_CONFIG_DIR"
@@ -873,7 +888,10 @@ expose_write_caddy_config() {
   }
 }
 JSON
+  local existed=0
+  [ -f "$EXPOSE_CADDY_JSON" ] && existed=1
   replace_if_changed "$EXPOSE_CADDY_JSON"
+  [ "$existed" -eq 1 ] && [ "$REPLACED" -eq 1 ] && EXPOSE_CONFIG_CHANGED=1
   ok "$(tilde "$EXPOSE_CADDY_JSON") (*.$EXPOSE_DOMAIN on :443, admin socket $(tilde "$EXPOSE_SOCK"))"
 }
 
@@ -887,9 +905,9 @@ expose_unit_user() {
 
 expose_write_unit() {
   cat > "$EXPOSE_UNIT.tmp" <<UNIT || die "cannot write $EXPOSE_UNIT"
-# Written by tmux-opsx install.sh --expose-domain $EXPOSE_DOMAIN
+# Written by tmux-opsx install.sh --expose-domain (the domain is in caddy.json)
 [Unit]
-Description=tmux-opsx expose proxy (Caddy, *.$EXPOSE_DOMAIN on :443)
+Description=tmux-opsx expose proxy (Caddy on :443)
 After=network-online.target
 Wants=network-online.target
 
@@ -897,8 +915,13 @@ Wants=network-online.target
 Type=notify
 User=$(expose_unit_user)
 Environment="HOME=$HOME"
+Environment="XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}"
+Environment="XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}"
 EnvironmentFile=$EXPOSE_ENV
-ExecStart="$CADDY_BIN" run --resume --config "$EXPOSE_CADDY_JSON"
+# Caddy starts from caddy.json alone (no autosave), so a rerun of install.sh
+# takes effect on the next start; expose.sh then puts the recorded routes back.
+ExecStart="$CADDY_BIN" run --config "$EXPOSE_CADDY_JSON"
+ExecStartPost=-"$PREFIX/skills/expose/expose.sh" list --json
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -913,16 +936,29 @@ UNIT
 }
 
 # Enable the service as root; otherwise print the one privileged command.
+# A rerun that changed the setup also applies the change to a running proxy.
 expose_service_step() {
-  local cmd
+  local cmd installed=$EXPOSE_SYSTEMD_DIR/$EXPOSE_UNIT_NAME.service
   if [ "$PLATFORM" = macOS ]; then
+    expose_apply_changes
     note "macOS: no service is installed (documented gap). Start Caddy with:"
-    info "    (set -a; . \"$EXPOSE_ENV\"; set +a; \"$CADDY_BIN\" run --resume --config \"$EXPOSE_CADDY_JSON\")"
+    info "    (set -a; . \"$EXPOSE_ENV\"; set +a; \"$CADDY_BIN\" run --config \"$EXPOSE_CADDY_JSON\")"
+    [ "$EXPOSE_TOKEN_CHANGED" -eq 0 ] || warn "the token changed: stop a running Caddy and start it again with the command above"
     return 0
   fi
   expose_write_unit
   if [ "$(id -u)" -eq 0 ]; then
-    if install -m 644 "$EXPOSE_UNIT" "/etc/systemd/system/$EXPOSE_UNIT_NAME.service" \
+    if [ -f "$installed" ] && { [ "$EXPOSE_CONFIG_CHANGED" -eq 1 ] || [ "$EXPOSE_TOKEN_CHANGED" -eq 1 ] \
+         || ! cmp -s "$EXPOSE_UNIT" "$installed"; }; then
+      # Already set up and something changed: restart so Caddy reads the new
+      # caddy.json and expose.env (routes come back via ExecStartPost).
+      if install -m 644 "$EXPOSE_UNIT" "$installed" && systemctl daemon-reload \
+         && systemctl enable "$EXPOSE_UNIT_NAME" && systemctl restart "$EXPOSE_UNIT_NAME"; then
+        ok "restarted $EXPOSE_UNIT_NAME with the new configuration (systemd)"
+      else
+        warn "could not restart $EXPOSE_UNIT_NAME — check: systemctl status $EXPOSE_UNIT_NAME"
+      fi
+    elif install -m 644 "$EXPOSE_UNIT" "$installed" \
        && systemctl daemon-reload && systemctl enable --now "$EXPOSE_UNIT_NAME"; then
       ok "enabled and started $EXPOSE_UNIT_NAME (systemd)"
     else
@@ -930,9 +966,68 @@ expose_service_step() {
     fi
     return 0
   fi
-  cmd="sudo install -m 644 \"$EXPOSE_UNIT\" /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now $EXPOSE_UNIT_NAME"
+  # Push a changed caddy.json into a running proxy now.
+  expose_apply_changes
+  if [ -f "$installed" ]; then
+    if ! cmp -s "$EXPOSE_UNIT" "$installed" || [ "$EXPOSE_TOKEN_CHANGED" -eq 1 ] \
+       || { [ "$EXPOSE_CONFIG_CHANGED" -eq 1 ] && [ "$EXPOSE_APPLIED" -eq 0 ]; }; then
+      cmd="sudo install -m 644 \"$EXPOSE_UNIT\" $EXPOSE_SYSTEMD_DIR/ && sudo systemctl daemon-reload && sudo systemctl restart $EXPOSE_UNIT_NAME"
+      warn "the running proxy needs a restart to pick up the new configuration (install.sh never uses sudo):"
+      info "    $cmd"
+    fi
+    return 0
+  fi
+  cmd="sudo install -m 644 \"$EXPOSE_UNIT\" $EXPOSE_SYSTEMD_DIR/ && sudo systemctl daemon-reload && sudo systemctl enable --now $EXPOSE_UNIT_NAME"
   warn "one privileged step left — run this once to start the proxy (install.sh never uses sudo):"
   info "    $cmd"
+}
+
+# Rerun with a new domain: point every recorded exposure's URL at it. The
+# label (and so the route id) does not depend on the domain.
+expose_rewrite_records() {
+  local dir=$EXPOSE_STATE_DIR/routes f label tmp n=0
+  [ -n "$EXPOSE_OLD_DOMAIN" ] && [ "$EXPOSE_OLD_DOMAIN" != "$EXPOSE_DOMAIN" ] || return 0
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/*.env; do
+    [ -f "$f" ] || continue
+    label=$(env_file_get "$f" LABEL 2>/dev/null) || continue
+    [[ "$label" =~ ^[a-z0-9-]+$ ]] || continue
+    tmp=$(mktemp "$dir/.rewrite.XXXXXX") || continue
+    if awk -v url="https://$label.$EXPOSE_DOMAIN" 'BEGIN{FS=OFS="="} $1=="URL"{print "URL=" url; next} {print}' "$f" > "$tmp" \
+       && mv -f "$tmp" "$f"; then
+      n=$((n + 1))
+    else
+      rm -f "$tmp"
+    fi
+  done
+  [ "$n" -eq 0 ] || ok "moved $n exposure URL(s) from *.$EXPOSE_OLD_DOMAIN to *.$EXPOSE_DOMAIN"
+}
+
+# If caddy.json changed and the proxy is running, load it through the admin
+# socket (POST /load), then let expose.sh put the recorded routes back on the
+# new domain. Sets EXPOSE_APPLIED=1 on success.
+EXPOSE_APPLIED=0
+expose_apply_changes() {
+  local code
+  [ "$EXPOSE_CONFIG_CHANGED" -eq 1 ] || return 0
+  if [ ! -S "$EXPOSE_SOCK" ]; then
+    note "the proxy is not running; it reads the new $(tilde "$EXPOSE_CADDY_JSON") when it starts"
+    return 0
+  fi
+  code=$(curl -sS --max-time 30 --unix-socket "$EXPOSE_SOCK" -X POST -H 'Content-Type: application/json' \
+           --data-binary @"$EXPOSE_CADDY_JSON" -o /dev/null -w '%{http_code}' http://127.0.0.1/load 2>/dev/null) || code=000
+  case "$code" in
+    2??)
+      EXPOSE_APPLIED=1
+      ok "loaded the new $(tilde "$EXPOSE_CADDY_JSON") into the running proxy"
+      if OPSX_EXPOSE_ADMIN=$EXPOSE_SOCK bash "$SRC/skills/expose/expose.sh" list --json >/dev/null 2>&1; then
+        ok "restored the recorded exposures on *.$EXPOSE_DOMAIN"
+      else
+        warn "could not restore the recorded exposures; the next expose.sh call retries"
+      fi ;;
+    000) note "the proxy is not reachable on $(tilde "$EXPOSE_SOCK"); it reads the new config when it starts" ;;
+    *)   warn "the running proxy refused the new config (HTTP $code); it still serves the old one" ;;
+  esac
 }
 
 # This host's addresses (best effort).
@@ -1768,6 +1863,7 @@ if [ -n "$EXPOSE_DOMAIN" ]; then
   expose_get_caddy
   expose_write_env
   expose_write_caddy_config
+  expose_rewrite_records
   expose_service_step
   expose_dns_check
   expose_chown

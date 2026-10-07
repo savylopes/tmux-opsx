@@ -14,7 +14,8 @@
 #              git repository (the same for every worktree), or the current
 #              directory's name outside git
 # Both parts are lowercased and reduced to [a-z0-9-]; a label over 63
-# characters has its name part cut and a 6-hex hash appended.
+# characters has its name part cut and a 6-hex hash appended (the project part
+# is cut too only when it alone is over 54 characters).
 #
 # Exposed URLs are PUBLIC with no authentication. Bind apps to 127.0.0.1.
 #
@@ -91,24 +92,31 @@ default_project() {
   fi
 }
 
-# Sets PROJECT_N from the raw project (normalised, capped at 40 chars).
+# Sets PROJECT_N from the raw project (normalised; cut only in make_label).
 resolve_project() {
   local raw=$1
   [ -n "$raw" ] || raw=$(default_project)
   PROJECT_N=$(normalise "$raw")
   [ -n "$PROJECT_N" ] || die "project name '$raw' has no usable characters ([a-z0-9])" 2
-  if [ "${#PROJECT_N}" -gt 40 ]; then
-    PROJECT_N=$(cut_with_hash "$PROJECT_N" 40 "$PROJECT_N")
-  fi
 }
 
 # Prints the hostname label for normalised name $1 and project $2.
+# Fits as is: <name>--<project>. Too long: the name is cut and gets a hash of
+# the full, uncut label. Only when the project alone leaves no room for even a
+# 6-hex name hash (project over 54 characters) is the project cut to 40 too.
 make_label() {
   local name=$1 project=$2 full room
   full="$name--$project"
   if [ "${#full}" -le 63 ]; then
     printf '%s' "$full"
     return
+  fi
+  if [ "${#project}" -gt 54 ]; then
+    project=$(cut_with_hash "$project" 40 "$project")
+    if [ $(( ${#name} + 2 + ${#project} )) -le 63 ]; then
+      printf '%s--%s' "$name" "$project"
+      return
+    fi
   fi
   room=$((63 - 2 - ${#project}))
   printf '%s--%s' "$(cut_with_hash "$name" "$room" "$full")" "$project"
@@ -157,7 +165,7 @@ proxy_down() {
   err "the expose proxy is not running (cannot reach its admin socket $ADMIN_SOCK)."
   case "$(uname -s)" in
     Linux) err "start it with: sudo systemctl start tmux-opsx-caddy   (check: systemctl status tmux-opsx-caddy)" ;;
-    *)     err "start it with the 'caddy run --resume --config …' command printed by install.sh --expose-domain" ;;
+    *)     err "start it with the 'caddy run --config …' command printed by install.sh --expose-domain" ;;
   esac
   exit 4
 }
@@ -194,8 +202,32 @@ add_route() {
   fi
   case "$API_CODE" in
     2??) return 0 ;;
-    *) err "the proxy refused the route for $label (HTTP $API_CODE): $API_BODY"; return 1 ;;
   esac
+  # A parallel call may have added the same route between our DELETE and POST;
+  # Caddy then refuses the duplicate id. That is fine if the route is there now.
+  local refused_code=$API_CODE refused_body=$API_BODY
+  if route_present "$label" "$port"; then
+    return 0
+  fi
+  err "the proxy refused the route for $label (HTTP $refused_code): $refused_body"
+  return 1
+}
+
+# True when the proxy has expose-<label> for <label>.<domain> -> 127.0.0.1:<port>.
+route_present() {
+  api GET "/id/expose-$1" || return 1
+  [ "$API_CODE" = 200 ] || return 1
+  local body
+  body=$(printf '%s' "$API_BODY" | tr -d '[:space:]')
+  [[ "$body" == *"\"$1.$DOMAIN\""* ]] && [[ "$body" == *"\"dial\":\"127.0.0.1:$2\""* ]]
+}
+
+# Serialise expose.sh calls on the state dir (best effort: needs flock(1)).
+take_lock() {
+  mkdir -p "$STATE_DIR" 2>/dev/null && chmod 700 "$STATE_DIR" 2>/dev/null
+  command -v flock >/dev/null 2>&1 || return 0
+  exec 9>>"$STATE_DIR/.lock" 2>/dev/null || return 0
+  flock -w 30 9 2>/dev/null || err "another expose.sh call holds $STATE_DIR/.lock; continuing without the lock"
 }
 
 delete_route() {
@@ -422,6 +454,7 @@ main() {
   [ "$cmd" = list ] || resolve_project "$project"
   command -v curl >/dev/null 2>&1 || die "curl is required"
   require_proxy
+  take_lock
   reconcile
 
   case "$cmd" in

@@ -509,7 +509,7 @@ With more than one child beside the parent, the window switches to `main-vertica
 
 **Setup** (once per host):
 
-1. In Cloudflare, create an API token scoped to **`Zone:DNS:Edit`** for the one zone (it is used only for the ACME DNS-01 challenge).
+1. In Cloudflare, create a **user** API token under **My Profile > API Tokens**, scoped to **`Zone:DNS:Edit`** for the one zone (it is used only for the ACME DNS-01 challenge). The installer checks it with `/user/tokens/verify`, which does not know account-owned tokens (Manage Account > API Tokens); to use one of those, set `OPSX_EXPOSE_SKIP_VERIFY=1` to skip the check.
 2. Add a wildcard DNS record `*.dev.example.com` pointing at the host's public IP, **DNS-only (grey cloud)**. The installer never creates or changes DNS records; it only checks that a random name under the domain resolves to this host, and warns otherwise.
 3. Open port **443** in the VPS provider's firewall. Port 80 is not needed (DNS-01 needs no inbound port).
 4. Run the installer with the domain. The token is read from `$CLOUDFLARE_API_TOKEN`, or from a hidden prompt when you run it in a terminal; it is never a command-line argument, never printed, and stored only in `~/.config/tmux-opsx/expose.env` (mode 600, in a mode-700 directory). A rerun without a token keeps the stored one.
@@ -526,7 +526,7 @@ With more than one child beside the parent, the window switches to `main-vertica
    sudo install -m 644 ~/.config/tmux-opsx/tmux-opsx-caddy.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now tmux-opsx-caddy
    ```
 
-   The unit runs Caddy as you, with only the capability to bind `:443`. On macOS no service is installed (a known gap); the installer prints the `caddy run --resume --config …` command to start it by hand.
+   The unit runs Caddy as you, with only the capability to bind `:443`. On macOS no service is installed (a known gap); the installer prints the `caddy run --config …` command to start it by hand.
 
 **Usage** — from the agent (`/expose 3000`, `/expose list`, …) or the script directly:
 
@@ -543,7 +543,8 @@ EXPOSE=~/.claude/skills/expose/expose.sh  # or the expose/ folder of another CLI
 - Names and projects are lowercased and reduced to `[a-z0-9-]`; a hostname label over 63 characters gets its name part cut and a stable 6-hex hash appended. Re-running `up` with the same name moves it to the new port.
 - The URL is the last line of output. It is copied to your local clipboard with OSC 52 (through tmux when reachable, so it works from an agent's Bash tool too), and shown as a clickable OSC 8 link on a terminal. Nothing opens a browser.
 - Exit codes: `0` ok, `2` bad usage, `3` not configured (run `install.sh --expose-domain`), `4` proxy not running, `1` other.
-- Routes are recorded in `${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/expose/routes/`; every call puts back any route Caddy lost (e.g. after a restart without its autosave).
+- Routes are recorded in `${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/expose/routes/`; every call puts back any route Caddy lost. Caddy starts from `caddy.json` alone (no `--resume`), and the unit runs `expose.sh list` right after start, so routes come back after a restart or reboot.
+- Rerunning `install.sh --expose-domain <other-domain>` (or with a new token) updates an existing setup: a changed `caddy.json` is loaded into the running proxy through its admin socket and the recorded routes are re-added on the new domain (their `URL=` is rewritten). When the token or the unit changed, the installer restarts the service as root, or prints the `sudo … systemctl restart tmux-opsx-caddy` command to run.
 - **Bind apps to `127.0.0.1`**, not `0.0.0.0`. A dev server listening on all interfaces is also reachable directly at `<server-ip>:<port>`, bypassing Caddy — unless a host firewall allows only 22 and 443.
 
 **tmux hint (OSC 8 links)** — tmux passes hyperlinks through only when the outer terminal is declared to support them. The installer does not edit your `tmux.conf`; add this yourself if you want clickable links inside tmux:
