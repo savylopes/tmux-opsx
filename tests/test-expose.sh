@@ -29,6 +29,11 @@ export HOME=$SP/home XDG_CONFIG_HOME=$SP/home/.config XDG_STATE_HOME=$SP/home/.l
 mkdir -p "$HOME"
 SOCK=$SP/admin.sock
 export OPSX_EXPOSE_ADMIN=$SOCK
+# Never copy unless a test asks for it (and then only to the private tmux
+# below); never write the real /etc/systemd/system.
+export OPSX_EXPOSE_NO_COPY=1
+export OPSX_SYSTEMD_DIR=$SP/systemd-scratch
+mkdir -p "$OPSX_SYSTEMD_DIR"
 
 # Private tmux server; $TMUX points at it so expose.sh never finds your real one.
 $L -f /dev/null new-session -d -s et -x 120 -y 30 'exec sleep 3000'
@@ -85,13 +90,33 @@ for p in 70000 abc 443 0 -1 03000; do
   ok "invalid port $p refused (exit 2, named)" '[ $rc -eq 2 ] && [[ "$o" == *"$p"* ]]'
 done
 ok "invalid ports: no route, no state" '[ "$(nroutes)" -eq 0 ] && [ -z "$(ls -A "$RD" 2>/dev/null)" ]'
+o=$($E list); rc=$?
+ok "empty list says (nothing exposed)" '[ $rc -eq 0 ] && [ "$o" = "(nothing exposed)" ]'
+# F1: messages printed after the lock is taken still reach stderr
+command -v flock >/dev/null 2>&1 || echo "note: flock not on PATH; lock path untested"
+e=$($E url nosuch --project shop 2>&1 >/dev/null); rc=$?
+ok "url nosuch: exit 1 with a message on stderr" '[ $rc -eq 1 ] && [[ "$e" == *"no exposure named"* ]]'
+e=$($E up 3000 --name "***" --project shop 2>&1 >/dev/null); rc=$?
+ok "unusable name: exit 2 with a message on stderr" '[ $rc -eq 2 ] && [[ "$e" == *"no usable characters"* ]]'
 
-o=$($E up 3000 --name web --project shop); rc=$?
+o=$(OPSX_EXPOSE_NO_COPY= $E up 3000 --name web --project shop 2>"$SP/up.err"); rc=$?
 ok "publish: exit 0, last line is URL" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://web--shop.dev.example.com" ]'
 ok "publish: route host + dial" '[ "$(host_of web--shop)" = "web--shop.dev.example.com" ] && [ "$(dial_of web--shop)" = "127.0.0.1:3000" ]'
 ok "publish: public warning line" 'printf "%s\n" "$o" | grep -qi "public with no authentication"'
 ok "publish: state record" 'grep -qx "PORT=3000" "$RD/web--shop.env" && grep -qx "URL=https://web--shop.dev.example.com" "$RD/web--shop.env"'
 ok "copied through tmux" '[ "$($L show-buffer)" = "https://web--shop.dev.example.com" ]'
+ok "publish: stderr says copied via tmux" 'grep -q "copied to the clipboard via tmux" "$SP/up.err"'
+if (exec 3<>/dev/tcp/127.0.0.1/3000) 2>/dev/null; then
+  ok "publish: no idle-port note when 3000 listens" '! grep -q "nothing is listening" "$SP/up.err"'
+else
+  ok "publish: stderr notes nothing listens on the port" 'grep -q "nothing is listening on 127.0.0.1:3000" "$SP/up.err"'
+fi
+# F3: opt-outs
+$L set-buffer -- placeholder
+e=$($E url web --project shop 2>&1 >/dev/null)
+ok "OPSX_EXPOSE_NO_COPY=1: no copy, says so" '[ "$($L show-buffer)" = placeholder ] && [[ "$e" == *"not copied"* ]]'
+e=$(TMUX= OPSX_EXPOSE_NO_COPY= setsid -w $E url web --project shop 2>&1 >/dev/null </dev/null)
+ok "TMUX= (empty): no parent tmux search, says not copied" '[ "$($L show-buffer)" = placeholder ] && [[ "$e" == *"not copied to the clipboard: no tmux or terminal"* ]]'
 ok "redirected output has no ESC bytes" '! printf "%s" "$o" | grep -q $'"'"'\033'"'"''
 
 o=$($E up 8080 --name "My_App" --project "Foo.Bar" | tail -n1)
@@ -153,13 +178,14 @@ ok "down of nothing: exit 0, says so" '[ $rc -eq 0 ] && [[ "$o" == *"nothing mat
 o=$($E url web --project shop); rc=$?
 ok "url reprints" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://web--shop.dev.example.com" ]'
 $L set-buffer -- placeholder
-$E url web --project shop >/dev/null
+OPSX_EXPOSE_NO_COPY= $E url web --project shop >/dev/null 2>&1
 ok "url copies again" '[ "$($L show-buffer)" = "https://web--shop.dev.example.com" ]'
 $E url nosuch --project shop >/dev/null 2>&1; rc=$?
 ok "url unknown exits non-zero" '[ $rc -ne 0 ]'
 
 # ---- 1.4 list / UP probe ----
-$E up 3999 --name idle --project shop >/dev/null
+e=$($E up 3999 --name idle --project shop 2>&1 >/dev/null)
+(exec 3<>/dev/tcp/127.0.0.1/3999) 2>/dev/null || ok "up on an idle port: stderr note, URL still last stdout line" '[[ "$e" == *"nothing is listening on 127.0.0.1:3999 yet"* ]] && [ "$($E url idle --project shop 2>/dev/null | tail -n1)" = "https://idle--shop.dev.example.com" ]'
 l=$($E list); j=$($E list --json)
 ok "list header" 'printf "%s\n" "$l" | head -1 | grep -Eq "^NAME +PROJECT +PORT +URL +UP$"'
 ok "idle row UP no" 'printf "%s\n" "$l" | grep -Eq "^idle +shop +3999 +https://idle--shop.dev.example.com +no$"'
@@ -170,12 +196,18 @@ for _ in $(seq 1 50); do (exec 3<>"/dev/tcp/127.0.0.1/$HP") 2>/dev/null && break
 $E up "$HP" --name live --project shop >/dev/null
 l=$($E list); j=$($E list --json)
 ok "live row UP yes" 'printf "%s\n" "$l" | grep -Eq "^live +shop +$HP +.* yes$"'
+LN=$(printf 'n%.0s' $(seq 1 40))
+$E up 3998 --name "$LN" --project shop >/dev/null 2>&1
+l=$($E list)
+ok "list columns fit the widest value" 'printf "%s\n" "$l" | grep -Eq "^$LN  +shop  +3998  +https://$LN--shop.dev.example.com  +no$" && [ "$(printf "%s\n" "$l" | head -1 | grep -o "URL" | wc -l)" -eq 1 ]'
+$E down 3998 --project shop >/dev/null
 ok "json live up true" 'printf "%s" "$j" | python3 -c "import json,sys; d=[o for o in json.load(sys.stdin) if o[\"name\"]==\"live\"]; assert d and d[0][\"up\"] is True"'
 
 # ---- 2.3 reconciliation after a proxy restart ----
 stop_fake; start_fake
 ok "restarted proxy has no routes" '[ "$(nroutes)" -eq 0 ]'
-l=$($E list 2>/dev/null)
+l=$($E list 2>"$SP/restore.err")
+ok "list: restore message on stderr" 'grep -q "restored https://web--shop.dev.example.com -> 127.0.0.1:3000" "$SP/restore.err"'
 ok "list restores web route" '[ "$(dial_of web--shop)" = "127.0.0.1:3000" ] && printf "%s\n" "$l" | grep -q "^web "'
 ok "all recorded routes restored once" '[ "$(nroutes)" -eq "$(ls "$RD"/*.env | wc -l)" ]'
 
@@ -282,8 +314,8 @@ ok "no flag: no expose output" '! sed "s|$SP||g" "$IH.out" | grep -qi "expose"'
 # invalid domain
 new_home; run_install CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" -- --expose-domain 'not a domain'; rc=$?
 ok "invalid domain: non-zero, named, nothing installed" '[ $rc -ne 0 ] && grep -q "not a domain" "$IH.out" && ! installed_anything'
-new_home; run_install CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 -- --expose-domain 'Dev.Example.com'; rc=$?
-ok "uppercase domain refused" '[ $rc -ne 0 ] && ! installed_anything'
+new_home; run_install CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" -- --expose-domain 'Dev.Example.com'; rc=$?
+ok "uppercase domain lowercased" '[ $rc -eq 0 ] && grep -qx "EXPOSE_DOMAIN=dev.example.com" "$IH/.config/tmux-opsx/expose.env"'
 
 # no token anywhere
 new_home; run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" -- --expose-domain dev.example.com; rc=$?

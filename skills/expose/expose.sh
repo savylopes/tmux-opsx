@@ -20,8 +20,13 @@
 # Exposed URLs are PUBLIC with no authentication. Bind apps to 127.0.0.1.
 #
 # The URL is always the last line of standard output. It is copied to the
-# terminal clipboard via OSC 52 (through tmux when reachable, else /dev/tty),
-# and printed as an OSC 8 hyperlink only when stdout is a terminal.
+# terminal clipboard via OSC 52 (through tmux when reachable, else /dev/tty);
+# a stderr line says whether and how it was copied. It is printed as an OSC 8
+# hyperlink only when stdout is a terminal.
+#
+# Clipboard: tmux is found through $TMUX, or else through the environment of
+# a parent process. Set TMUX= (empty) to skip that parent search, or
+# OPSX_EXPOSE_NO_COPY=1 to never copy at all.
 #
 # Config:  ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/expose.env
 #          (written by `install.sh --expose-domain <domain>`)
@@ -226,7 +231,7 @@ route_present() {
 take_lock() {
   mkdir -p "$STATE_DIR" 2>/dev/null && chmod 700 "$STATE_DIR" 2>/dev/null
   command -v flock >/dev/null 2>&1 || return 0
-  exec 9>>"$STATE_DIR/.lock" 2>/dev/null || return 0
+  { exec 9>>"$STATE_DIR/.lock"; } 2>/dev/null || return 0
   flock -w 30 9 2>/dev/null || err "another expose.sh call holds $STATE_DIR/.lock; continuing without the lock"
 }
 
@@ -296,6 +301,8 @@ port_up() {
 recover_tmux_env() {
   local pid=$$ i=0 envline sock
   [ -n "${TMUX:-}" ] && return 0
+  # TMUX set but empty: the caller opted out of the parent search.
+  [ -n "${TMUX+x}" ] && return 1
   [ -d /proc ] || return 1
   while [ "$pid" -gt 1 ] && [ "$i" -lt 30 ]; do
     if [ -r "/proc/$pid/environ" ]; then
@@ -319,13 +326,22 @@ recover_tmux_env() {
 
 copy_url() {
   local url=$1 b64
+  if [ -n "${OPSX_EXPOSE_NO_COPY:-}" ] && [ "$OPSX_EXPOSE_NO_COPY" != 0 ]; then
+    err "not copied to the clipboard (OPSX_EXPOSE_NO_COPY is set)"
+    return 0
+  fi
   if recover_tmux_env && command -v tmux >/dev/null 2>&1; then
     if tmux set-buffer -w -- "$url" 2>/dev/null || tmux set-buffer -- "$url" 2>/dev/null; then
+      err "copied to the clipboard via tmux (OSC 52)"
       return 0
     fi
   fi
   b64=$(printf '%s' "$url" | base64 | tr -d '\n')
-  { printf '\033]52;c;%s\a' "$b64" > /dev/tty; } 2>/dev/null || true
+  if { printf '\033]52;c;%s\a' "$b64" > /dev/tty; } 2>/dev/null; then
+    err "copied to the clipboard via the terminal (OSC 52)"
+  else
+    err "not copied to the clipboard: no tmux or terminal reachable"
+  fi
 }
 
 print_url() {
@@ -351,6 +367,7 @@ cmd_up() {
   add_route "$label" "$port" || exit 1
   write_record "$name" "$PROJECT_N" "$port" "$label" "$url"
   printf 'exposed 127.0.0.1:%s at %s\n' "$port" "$url"
+  port_up "$port" || err "note: nothing is listening on 127.0.0.1:$port yet — start the app there"
   print_url "$url" "$port"
 }
 
@@ -390,13 +407,26 @@ cmd_list() {
     printf ']\n'
     return 0
   fi
-  printf '%-24s %-24s %-6s %-56s %s\n' NAME PROJECT PORT URL UP
+  local rows=() w1=4 w2=7 w3=4 w4=3 row a b c d e
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     read_record "$f" || continue
     if port_up "$R_PORT"; then up=yes; else up=no; fi
-    printf '%-24s %-24s %-6s %-56s %s\n' "$R_NAME" "$R_PROJECT" "$R_PORT" "$R_URL" "$up"
+    rows+=("$R_NAME"$'\x1f'"$R_PROJECT"$'\x1f'"$R_PORT"$'\x1f'"$R_URL"$'\x1f'"$up")
+    [ "${#R_NAME}" -le "$w1" ] || w1=${#R_NAME}
+    [ "${#R_PROJECT}" -le "$w2" ] || w2=${#R_PROJECT}
+    [ "${#R_PORT}" -le "$w3" ] || w3=${#R_PORT}
+    [ "${#R_URL}" -le "$w4" ] || w4=${#R_URL}
   done < <(records)
+  if [ "${#rows[@]}" -eq 0 ]; then
+    printf '(nothing exposed)\n'
+    return 0
+  fi
+  printf '%-*s  %-*s  %-*s  %-*s  %s\n' "$w1" NAME "$w2" PROJECT "$w3" PORT "$w4" URL UP
+  for row in "${rows[@]}"; do
+    IFS=$'\x1f' read -r a b c d e <<<"$row"
+    printf '%-*s  %-*s  %-*s  %-*s  %s\n' "$w1" "$a" "$w2" "$b" "$w3" "$c" "$w4" "$d" "$e"
+  done
 }
 
 cmd_url() {

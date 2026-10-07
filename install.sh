@@ -131,15 +131,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# --expose-domain: strip a leading '*.', then require a lowercase DNS name of
+# --expose-domain: strip a leading '*.', lowercase, then require a DNS name of
 # at least two labels. Checked here, before anything is installed.
 if [ -n "$EXPOSE_DOMAIN" ]; then
   EXPOSE_DOMAIN_ARG=$EXPOSE_DOMAIN
   EXPOSE_DOMAIN=${EXPOSE_DOMAIN#\*.}
   EXPOSE_DOMAIN=${EXPOSE_DOMAIN%.}
+  EXPOSE_DOMAIN=$(printf '%s' "$EXPOSE_DOMAIN" | LC_ALL=C tr 'A-Z' 'a-z')
   if ! [[ "$EXPOSE_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] \
      || [ "${#EXPOSE_DOMAIN}" -gt 200 ]; then
-    die "invalid --expose-domain '$EXPOSE_DOMAIN_ARG': use a lowercase DNS name like dev.example.com (labels of a-z, 0-9 and '-', not starting or ending with '-')"
+    die "invalid --expose-domain '$EXPOSE_DOMAIN_ARG': use a DNS name like dev.example.com (labels of a-z, 0-9 and '-', not starting or ending with '-')"
   fi
 fi
 
