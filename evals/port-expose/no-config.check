@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: port-expose / No config
+# level: L2
+# requirement: Not configured
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+start_admin
+cd "$EVAL_TMP" || exit 1
+x up 3000 >"$EVAL_TMP/o" 2>"$EVAL_TMP/e"; rc=$?
+echo "exit $rc"; echo "stderr:"; cat "$EVAL_TMP/e"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+grep -q 'install.sh --expose-domain' "$EVAL_TMP/e" || fail "stderr does not name install.sh --expose-domain"
+if grep '^curl' "$SHIM_LOG"; then fail "a network call was made"; fi
+echo OK

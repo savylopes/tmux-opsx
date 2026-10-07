@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Restored after restart
+# level: L2
+# requirement: Routes survive a proxy restart
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+x up 3000 --name web >/dev/null || fail "up failed"
+stop_admin; start_admin "$(caddy_json)"
+[ -z "$(routes_to web--shop.dev.example.com)" ] || fail "setup: restarted proxy still has the route"
+l=$(x list); rc=$?; echo "list exit $rc"; echo "$l"
+r=$(routes_to web--shop.dev.example.com); echo "proxy: $r"
+echo "$r" | grep -qx '127.0.0.1:3000' || fail "route for web not restored"
+echo "$l" | awk '{print $1}' | grep -qx web || fail "list does not show web"
+echo OK

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Not passed
+# level: L2
+# requirement: Opt-in flag
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+out=$(install_nt); rc=$?
+echo "install (no --expose-domain) exit $rc"; echo "$out" | tail -8
+[ "$rc" -eq 0 ] || fail "install.sh exited $rc"
+f=$(find "$HOME" -type d -name expose 2>/dev/null); [ -z "$f" ] || fail "expose skill folder created: $f"
+f=$(find "$HOME" -name expose.env 2>/dev/null); [ -z "$f" ] || fail "expose config created: $f"
+f=$(find "$HOME" -name caddy -type f 2>/dev/null); [ -z "$f" ] || fail "caddy binary created: $f"
+if grep -Ei 'cloudflare|caddyserver' "$SHIM_LOG"; then fail "a request to Cloudflare/Caddy was attempted"; fi
+echo "OK: no expose skill, config, caddy or Cloudflare request"

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Port with nothing listening
+# level: L2
+# requirement: List exposures
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+if (exec 3<>/dev/tcp/127.0.0.1/3999) 2>/dev/null; then echo "something listens on 3999 here"; exit 77; fi
+x up 3999 --name idle >/dev/null || fail "up failed"
+l=$(x list); echo "$l"
+row=$(echo "$l" | awk '$1=="idle"'); [ -n "$row" ] || fail "no idle row"
+echo "$l" | head -1 | grep -Eq 'NAME.*PROJECT.*PORT.*URL.*UP' || fail "header lacks NAME PROJECT PORT URL UP"
+[ "$(echo "$row" | awk '{print $NF}')" = no ] || fail "UP is not 'no': $row"
+j=$(x list --json); echo "$j"
+echo "$j" | jq -e '[.[] | select(.name=="idle" and .up==false)] | length == 1' >/dev/null || fail "json lacks name idle with up false"
+echo "$j" | jq -e 'all(.[]; has("name") and has("project") and has("port") and has("url") and has("up"))' >/dev/null || fail "json objects lack required keys"
+echo OK

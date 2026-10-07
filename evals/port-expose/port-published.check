@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Port published
+# level: L2
+# requirement: Publish a local port
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+out=$(x up 3000 --name web --project shop); rc=$?
+echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "expected exit 0"
+last=$(printf '%s\n' "$out" | tail -n1)
+[ "$last" = "https://web--shop.dev.example.com" ] || fail "last line '$last'"
+r=$(routes_to web--shop.dev.example.com); echo "proxy: $r"
+echo "$r" | grep -qx '127.0.0.1:3000' || fail "proxy does not route web--shop.dev.example.com to 127.0.0.1:3000"
+echo OK

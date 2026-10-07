@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Captured output is plain
+# level: L2
+# requirement: URL handoff to the terminal
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+x up 3000 --name web > "$EVAL_TMP/out.txt"; rc=$?
+echo "exit $rc"; od -c "$EVAL_TMP/out.txt" | tail -5
+[ "$rc" -eq 0 ] || fail "up exited $rc"
+last=$(tail -n1 "$EVAL_TMP/out.txt")
+[ "$last" = "https://web--shop.dev.example.com" ] || fail "last line is not exactly the URL: $(printf '%q' "$last")"
+if tail -n1 "$EVAL_TMP/out.txt" | grep -q $'\033'; then fail "escape characters in the URL line"; fi
+echo OK

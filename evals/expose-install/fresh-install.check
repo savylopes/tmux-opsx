@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Fresh install
+# level: L2
+# requirement: Install the expose skill for every CLI
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+out=$(CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install dev.example.com); rc=$?
+echo "install exit $rc"; echo "$out" | tail -8
+[ "$rc" -eq 0 ] || fail "install.sh exited $rc"
+bad=0
+for d in $SKILL_DIRS; do
+  if [ -f "$d/expose/SKILL.md" ] && [ -x "$d/expose/expose.sh" ]; then echo "ok: $d/expose"
+  else echo "missing/incomplete: $d/expose"; bad=1; fi
+done
+[ "$bad" -eq 0 ] || fail "expose skill not in all six skill folders"
+echo OK

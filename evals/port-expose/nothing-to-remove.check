@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Nothing to remove
+# level: L2
+# requirement: Remove an exposure
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+o=$(x down nosuch 2>&1); rc=$?; echo "exit $rc: $o"
+[ "$rc" -eq 0 ] || fail "expected exit 0, got $rc"
+echo "$o" | grep -Eiq 'nothing|no (exposure|match|route)|not (found|exposed)' || fail "output does not say nothing matched"
+echo OK

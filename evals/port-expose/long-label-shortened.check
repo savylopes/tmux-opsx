@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Long label shortened
+# level: L2
+# requirement: Label length limit
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+name=$(printf 'n%.0s' $(seq 70)); [ ${#name} -eq 70 ] || exit 1
+o1=$(x up 3000 --name "$name" --project shop); r1=$?
+o2=$(x up 3000 --name "$name" --project shop); r2=$?
+h1=$(printf '%s\n' "$o1" | tail -n1); h2=$(printf '%s\n' "$o2" | tail -n1)
+echo "exit $r1/$r2"; echo "1: $h1"; echo "2: $h2"
+[ "$r1" -eq 0 ] && [ "$r2" -eq 0 ] || fail "up exited non-zero"
+label=${h1#https://}; label=${label%.dev.example.com}
+echo "label ${#label} chars: $label"
+[ "${#label}" -le 63 ] || fail "label longer than 63"
+case $label in *--shop) ;; *) fail "label does not end with --shop";; esac
+[ "$h1" = "$h2" ] || fail "same command gave a different hostname"
+echo OK

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Token not printed
+# level: L2
+# requirement: Config storage
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+out=$(CLOUDFLARE_API_TOKEN=secret-t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install dev.example.com); rc=$?
+echo "install exit $rc"
+[ "$rc" -eq 0 ] || { echo "$out" | tail; fail "install.sh exited $rc"; }
+if echo "$out" | grep -n 'secret-t1'; then fail "token printed in install output"; fi
+echo OK

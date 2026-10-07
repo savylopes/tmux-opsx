@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Base config
+# level: L2
+# requirement: Caddy proxy
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose
+cfg=$(caddy_json); [ -n "$cfg" ] || fail "no Caddy JSON config under $CFG_DIR"
+echo "config: $cfg"; jq . "$cfg" || fail "config is not JSON"
+jq -e '[.apps.tls.automation.policies[]? | select((.subjects // []) | index("*.dev.example.com"))
+        | [.. | objects | select(has("dns")) | .dns.provider.name] | index("cloudflare")] | any(. != null)' "$cfg" >/dev/null \
+  || fail "no TLS policy for *.dev.example.com with the cloudflare DNS challenge"
+l=$(jq -c '[.apps.http.servers[]?.listen[]?] | unique' "$cfg"); echo "listen: $l"
+[ "$l" = '[":443"]' ] || fail "servers listen on $l, expected only :443"
+jq -e '[.apps.http.servers[] | (.automatic_https.disable_redirects == true or .automatic_https.disable == true)] | all' "$cfg" >/dev/null \
+  || fail "automatic HTTP->HTTPS redirects are on, which binds :80"
+a=$(jq -r '.admin.listen // empty' "$cfg"); echo "admin: $a"
+case $a in unix/*) ;; *) fail "admin endpoint is not a unix socket: $a";; esac
+s=${a#unix/}; s=${s%%|*}; d=$(dirname "$s")
+[ -d "$d" ] || fail "admin socket directory $d does not exist"
+m=$(stat -c %a "$d"); [ "$m" = 700 ] || fail "admin socket directory mode $m, expected 700"
+echo OK

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Removed
+# level: L2
+# requirement: Remove an exposure
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+x up 3000 --name web >/dev/null || fail "up failed"
+[ -n "$(routes_to web--shop.dev.example.com)" ] || fail "setup: route not created"
+o=$(x down web); rc=$?; echo "down exit $rc: $o"
+[ "$rc" -eq 0 ] || fail "down exited $rc"
+r=$(routes_to web--shop.dev.example.com); [ -z "$r" ] || fail "route still in proxy: $r"
+l=$(x list); echo "$l"
+if echo "$l" | awk '{print $1}' | grep -qx web; then fail "list still shows web"; fi
+echo OK
