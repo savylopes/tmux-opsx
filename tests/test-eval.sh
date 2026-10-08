@@ -14,6 +14,8 @@ LAND=$REPO/skills/opsx-run/opsx-land.sh
 SP=$(mktemp -d "${TMPDIR:-/tmp}/eval-test.XXXXXX")
 trap 'rm -rf "$SP"' EXIT
 export NO_COLOR=1
+# Keep land's preview teardown away from your real preview state.
+export XDG_STATE_HOME=$SP/state
 pass=0; fail=0
 ok(){ if eval "$2"; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 

@@ -16,6 +16,17 @@
 #   opsx-window.sh detect-model [--model <id>]
 #   opsx-window.sh mark   <change> <busy|done|fail|idle>   # title badge + status color
 #   opsx-window.sh list
+#   opsx-window.sh preview-start <change> --cwd <dir> --script <file>
+#   opsx-window.sh preview-find  <change>
+#   opsx-window.sh preview-kill  <change>|--all
+#
+# Preview windows (used by opsx-preview.sh, never by hand): preview-start opens
+# a window titled `ox ▶<change>` that runs `bash <file>` (no keys are typed),
+# keeps it open after the app exits (remain-on-exit), and tags it
+# @opsx_preview=<change>. It never carries @opsx_change, so ensure/send/close
+# lookups and `close --all` never mistake it for the agent window. `close`
+# stops the change's preview first (`close --all` stops every preview in the
+# project) through opsx-preview.sh next to this script, ignoring failures.
 #
 # Window status (distinct `ox` title + dark pane + muted bar colors).
 # Lookups use @opsx_change, so renaming does not break ensure/send/close.
@@ -557,6 +568,8 @@ resolve_model() {
 }
 
 # Shell command that reads the prompt inside the new window's cwd.
+# The $(cat …) is expanded later by the window's shell, not here.
+# shellcheck disable=SC2016
 build_launch_cmd() {
   local prompt_file=$1 cli=$2 model=${3:-} model_flag="" codex_model_flag="" oc_model_flag="" gemini_model_flag=""
   if [ -n "$model" ]; then
@@ -875,6 +888,17 @@ cmd_send() {
   printf 'sent %s %s:%s\n' "$win" "$sess" "$change"
 }
 
+# Run `opsx-preview.sh stop <change>|--all` from next to this script; output
+# is relayed, failures are ignored.
+stop_previews() {
+  local script out
+  script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-preview.sh"
+  [ -x "$script" ] || return 0
+  out=$("$script" stop "$1" 2>&1) || true
+  [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/# /'
+  return 0
+}
+
 cmd_close() {
   local change="" all=0 force=0 keep_session=0
   while [ $# -gt 0 ]; do
@@ -891,6 +915,14 @@ cmd_close() {
     [ -z "$change" ] || die "pass either a change name or --all, not both"
   else
     [ -n "$change" ] || die "usage: opsx-window.sh close <change> [--force] | close --all [--force]"
+  fi
+
+  # Stop the preview first (route, app process group, window). Never fatal:
+  # a missing or failing opsx-preview.sh must not block closing the window.
+  if [ "$all" -eq 1 ]; then
+    stop_previews --all
+  else
+    stop_previews "$change"
   fi
 
   require_tmux
@@ -1037,7 +1069,87 @@ cmd_list() {
   # The opsx column marks windows this script created (see tag_window).
   # status comes from @opsx_status (busy|fail|idle; done is stored as idle).
   tmux list-windows -t "$sess" \
-    -F '#{window_id}	#{?@opsx_change,opsx,-}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
+    -F '#{window_id}	#{?@opsx_change,opsx,#{?@opsx_preview,preview,-}}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
+}
+
+# ---------- preview windows (driven by opsx-preview.sh) ----------
+
+# Window id(s) tagged @opsx_preview=$2 in session $1 ($2 = "--all": every one).
+find_preview_windows() {
+  tmux list-windows -t "$1" -F '#{window_id} #{@opsx_preview}' 2>/dev/null \
+    | awk -v n="$2" 'NF>1 && $2!="" && (n=="--all" || $2==n) { print $1 }'
+}
+
+valid_preview_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
+cmd_preview_start() {
+  local change=${1:-} cwd="$PWD" script=""
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cwd)    cwd=${2:-}; shift 2 ;;
+      --script) script=${2:-}; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  [ -n "$change" ] || die "usage: opsx-window.sh preview-start <change> --cwd <dir> --script <file>"
+  valid_preview_name "$change" || die "invalid preview name '$change'"
+  [ -n "$script" ] || die "--script is required"
+  [ -f "$script" ] || die "script not found: $script"
+  [ -d "$cwd" ] || die "cwd not found: $cwd"
+
+  require_tmux
+  local sess win title run created=""
+  title="ox ▶$change"
+  run=$(printf 'bash %q' "$script")
+  if inside_tmux; then
+    sess=$(current_session) || exit 1
+  else
+    sess=$(project_session_name "$PWD")
+    if ! session_exists "$sess"; then
+      win=$(tmux new-session -d -s "$sess" -n "$title" -c "$cwd" -P -F '#{window_id}' \
+            "$run" 2>&1) || die "failed to create session '$sess': $win"
+      created=" session=created"
+    fi
+  fi
+  if [ -z "$created" ]; then
+    # Started with a command, never send-keys: nothing is typed into any pane.
+    win=$(tmux new-window -d -t "$sess:" -n "$title" -c "$cwd" -P -F '#{window_id}' \
+          "$run" 2>&1) || die "failed to create window: $win"
+  fi
+  tmux set-option -w -t "$win" remain-on-exit on >/dev/null 2>&1 || true
+  tmux set-option -w -t "$win" @opsx_preview "$change" >/dev/null 2>&1
+  tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1 || true
+  tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1 || true
+  printf 'created %s %s:%s%s\n' "$win" "$sess" "$title" "$created"
+  [ -n "$created" ] && printf '# attach with: tmux attach -t %s\n' "$sess"
+  return 0
+}
+
+cmd_preview_find() {
+  local change=${1:-} sess id
+  [ -n "$change" ] || die "usage: opsx-window.sh preview-find <change>"
+  require_tmux
+  sess=$(lookup_session) || exit 1
+  id=$(find_preview_windows "$sess" "$change" | head -1)
+  [ -n "$id" ] || exit 1
+  printf '%s\n' "$id"
+}
+
+cmd_preview_kill() {
+  local change=${1:-} sess ids win n=0
+  [ -n "$change" ] || die "usage: opsx-window.sh preview-kill <change>|--all"
+  require_tmux
+  sess=$(lookup_session) || exit 1
+  ids=$(find_preview_windows "$sess" "$change")
+  for win in $ids; do
+    tmux kill-window -t "$win" 2>/dev/null && n=$((n + 1)) \
+      && printf 'closed %s %s (preview %s)\n' "$win" "$sess" "$change"
+  done
+  [ "$n" -gt 0 ] || printf 'no preview window for %s in session %s\n' "$change" "$sess"
+  return 0
 }
 
 case "${1:-}" in
@@ -1049,8 +1161,11 @@ case "${1:-}" in
   detect-cli)   shift; cmd_detect_cli "$@" ;;
   detect-model) shift; cmd_detect_model "$@" ;;
   list)         shift; cmd_list "$@" ;;
+  preview-start) shift; cmd_preview_start "$@" ;;
+  preview-find)  shift; cmd_preview_find "$@" ;;
+  preview-kill)  shift; cmd_preview_kill "$@" ;;
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|list)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|list|preview-start|preview-find|preview-kill)" ;;
 esac

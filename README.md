@@ -8,6 +8,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork
  ├── sharing      /expose: local port → public https://<name>--<project>.<domain> (opt-in)
+ │                /opsx-run <change> preview: a change's app → https://<change>--<project>.<domain>
  └── portability  install.sh → Claude Code · Cursor CLI · Codex CLI · OpenCode · Gemini CLI
 ```
 
@@ -31,6 +32,7 @@ Not in tmux? It starts a session named after the project folder for you.
   /opsx-run add-auth qa ...... one-shot UI/UX QA
   /opsx-run add-auth qa "..." extra notes for ops-qa
   /opsx-run qa "..." ......... same, pick the change if omitted
+  /opsx-run add-auth preview . run the change's app, public URL via /expose
   /opsx-run add-auth merge ... merge into main (branch/window stay)
   /opsx-run add-auth land .... merge + archive + cleanup, window closes
 ```
@@ -46,6 +48,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `opsx-merge.sh` | `~/.claude/skills/opsx-run/` | Merge the change branch into a target (default `main`) — no archive or cleanup |
 | `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — OpenSpec gates, eval regression gate, then `opsx-merge.sh`, archive, branch/worktree cleanup |
 | `opsx-eval.sh` | `~/.claude/skills/opsx-run/` | Runs a repo's saved eval suite (`evals/`) with no LLM — scorecard, coverage, `--json`, regression compare |
+| `opsx-preview.sh` | `~/.claude/skills/opsx-run/` | Runs a change's app (or the main checkout) from its worktree in a tagged tmux window and publishes it through `/expose` — recipe, port, health wait, stop |
 | `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` · `~/.cursor/agents/opsx-applier.md` · `~/.codex/agents/ops-applier.toml` · `~/.config/opencode/agents/ops-applier.md` · `~/.gemini/agents/opsx-applier.md` | Implements the change in an isolated worktree on `opsx/<change>` |
 | `ops-eval` subagent | `~/.claude/agents/opsx-eval.md` · `~/.cursor/agents/opsx-eval.md` · `~/.codex/agents/ops-eval.toml` · `~/.config/opencode/agents/ops-eval.md` · `~/.gemini/agents/opsx-eval.md` | Spec eval gate: one executable check per scenario under `evals/`. Runs on `apply --validate` or `/opsx-run <change> eval` |
 | `ops-reviewer` subagent | `~/.claude/agents/opsx-reviewer.md` · `~/.cursor/agents/opsx-reviewer.md` · `~/.codex/agents/ops-reviewer.toml` · `~/.config/opencode/agents/ops-reviewer.md` · `~/.gemini/agents/opsx-reviewer.md` | Implementation review gate. Runs on `apply --validate` or `/opsx-run <change> review` |
@@ -240,6 +243,10 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> qa` | One-shot **ops-qa** in the change window (creates it if needed). No auto-fix |
 | `/opsx-run <change> qa "..."` | Same, plus extra notes passed through to ops-qa |
 | `/opsx-run qa "..."` | Same as `qa` with extra notes; pick the change if it was omitted (`qa` is the action, not a change name) |
+| `/opsx-run <change> preview` | Runs the change's app from its worktree in its own window and publishes it at `https://<change>--<project>.<domain>` (needs `/expose`; see [Preview](#preview)) |
+| `/opsx-run <change> preview stop` | Stops it: removes the route, kills the app and its window |
+| `/opsx-run <change> preview url` | Prints (and copies) the URL of the running preview |
+| `/opsx-run preview` | Same as `preview`; pick a change or the main checkout (`main--<project>`) |
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
 | `/opsx-run <change> status` | Snapshot of what that window is doing right now |
 | `/opsx-run <change> "<text>"` | Sends any instruction to that change's window (creates the window if it was closed) |
@@ -250,8 +257,8 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> land --force-tasks` | Same, but skips the unchecked-tasks gate |
 | `/opsx-run <change> land --skip-merge` | Already merged: skip merge, still archive + cleanup |
 | `/opsx-run <change> land --skip-eval` | Same as `land`, but bypasses the eval regression gate |
-| `/opsx-run <change> close` | Closes that change's window |
-| `/opsx-run close-all` | Closes every tmux-opsx window in the session (asks first) |
+| `/opsx-run <change> close` | Closes that change's window and stops its preview |
+| `/opsx-run close-all` | Closes every tmux-opsx window in the session and stops every preview in the project (asks first) |
 | `/opsx-run list` | Shows the windows in the current session (or the project's, from outside tmux) |
 
 #### The whole arc
@@ -266,10 +273,11 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 /opsx-run add-rate-limiting eval                      # one-shot spec eval (checks under evals/)
 /opsx-run add-rate-limiting review                    # one-shot implementation review
 /opsx-run add-rate-limiting security                  # one-shot security review
-/opsx-run add-rate-limiting qa                        # one-shot UI/UX QA
+/opsx-run add-rate-limiting preview                   # run its app, open https://add-rate-limiting--<project>.<domain>
+/opsx-run add-rate-limiting qa                        # one-shot UI/UX QA (tests the preview URL when expose is set up)
 /opsx-run add-rate-limiting qa "check the checkout on mobile"
 /opsx-run qa "check the checkout on mobile"           # pick the change, then ops-qa
-/opsx-run add-rate-limiting land                      # merge, archive, delete branch, close window
+/opsx-run add-rate-limiting land                      # merge, archive, delete branch, stop the preview, close window
 git push origin main                                  # you push, never the tool
 ```
 
@@ -289,6 +297,14 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-window.sh status <change> [--lines N]
 ~/.claude/skills/opsx-run/opsx-window.sh mark   <change> <busy|done|fail|idle>
 ~/.claude/skills/opsx-run/opsx-window.sh list
+~/.claude/skills/opsx-run/opsx-window.sh preview-start <change> --cwd <dir> --script <file>   # used by opsx-preview.sh
+~/.claude/skills/opsx-run/opsx-window.sh preview-find  <change>
+~/.claude/skills/opsx-run/opsx-window.sh preview-kill  <change>|--all
+
+~/.claude/skills/opsx-run/opsx-preview.sh up   <change>|--main
+~/.claude/skills/opsx-run/opsx-preview.sh stop <change>|--all
+~/.claude/skills/opsx-run/opsx-preview.sh url  <change>|--main
+~/.claude/skills/opsx-run/opsx-preview.sh list
 
 ~/.claude/skills/opsx-run/opsx-merge.sh <change> [--into <branch>] [--dry-run]
 ~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--skip-merge] [--force-tasks] [--skip-eval] [--dry-run]
@@ -374,7 +390,7 @@ If you were sitting *on* the change branch when you landed it, it stays on the t
 /opsx-run close-all           # close all of them (confirms first)
 ```
 
-Closing kills the agent session in that window along with anything it still had in flight; worktrees, commits and files already written stay on disk.
+Closing kills the agent session in that window along with anything it still had in flight; worktrees, commits and files already written stay on disk. `close` also stops the change's preview, and `close-all` stops every preview in the project (a missing or failing preview never blocks the close).
 
 - `--all` only matches windows tmux-opsx created — your own windows in the same session are never touched.
 - It refuses to close the window you are currently *in* unless you pass `--force`, so `close-all` from inside a change window can't pull the rug out from under itself.
@@ -412,6 +428,8 @@ Security review: auth, injection, secrets, unsafe defaults and trust boundaries.
 ### ops-qa
 
 UI/UX check: visual regressions, broken flows, console errors and accessibility, driven through the browser-use MCP. Run it with `/opsx-run <change> qa ["notes"]` or `/opsx-run qa "notes"`. Returns SKIP when the change has no user-facing UI.
+
+Before ops-qa runs (in `qa` and in the `apply --validate` QA step), the window runs `opsx-preview.sh up <change>` and passes the URL to ops-qa as `PREVIEW_URL`, so the gate tests exactly what you would share; the preview is left running afterwards. When expose is not configured (or the preview fails), ops-qa gets the reason and starts the app itself as before.
 
 ---
 
@@ -564,6 +582,51 @@ rm -rf ~/.claude/skills/expose ~/.cursor/skills/expose ~/.agents/skills/expose ~
 ```
 
 `bash tests/test-expose.sh` runs `expose.sh` and `install.sh --expose-domain` fully offline: a fake Caddy admin server (`tests/fake-caddy-admin.py`), a fake `caddy`, a fake Cloudflare endpoint, and a private tmux server, in scratch HOMEs.
+
+### Preview
+
+`/opsx-run <change> preview` runs a change's app from its worktree (`opsx/<change>`) and publishes it through [`/expose`](#expose) at `https://<change>--<project>.<domain>`. The hostname stays the same across restarts, so you can keep the tab open on your phone. `/opsx-run preview` without a change asks which one to run, and also offers the main checkout (`https://main--<project>.<domain>`). It needs expose set up (`install.sh --expose-domain <domain>`); without it, `preview` fails with that hint before starting anything.
+
+```
+/opsx-run add-auth preview          # start (or reuse) — prints the URL
+/opsx-run add-auth preview url      # print + copy it again
+/opsx-run add-auth preview stop     # remove the route, kill the app and its window
+```
+
+What happens on `preview`:
+
+1. **Recipe.** `.opsx/preview.yaml` in the checkout, else detection (below), else an error asking for `.opsx/preview.yaml`.
+2. **Install**, only when the install command or a lockfile changed since the last successful install in that checkout.
+3. **Port.** The change's last port when free, else the first free one in 3100–3999. `PORT` and `HOST=127.0.0.1` are exported to `install` and `cmd`.
+4. **Window.** The app runs in its own tmux window `ox ▶<change>`, tagged `@opsx_preview=<change>` (never `@opsx_change`, so it is never mistaken for the agent window), in its own process group; output also goes to `~/.local/state/tmux-opsx/preview/<project>/<change>.log`. The window stays open after the app exits.
+5. **Health.** `http://127.0.0.1:<port><health>` is polled until it answers 2xx/3xx. If the app exits or `timeout` passes first, the last log lines are printed, the app is stopped, and nothing is published.
+6. **Publish** with `expose.sh up <port> --name <change> --project <project>`. A second `preview` while it is healthy just prints the same URL.
+
+`close` and `land` always stop the change's preview (route removed, process group killed, window closed); `close-all` stops every preview in the project. `opsx-preview.sh list` shows what is running.
+
+**`.opsx/preview.yaml`** — flat `key: value` lines, `#` comments, one layer of quotes stripped:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `cmd` | — (required) | Starts the app; run with `bash -c` in the checkout. Must listen on `$PORT` |
+| `install` | none | Run before the first start and again when it or a lockfile changes |
+| `health` | `/` | Path polled until it returns 2xx/3xx |
+| `timeout` | `120` | Seconds to wait for health |
+
+<!-- preview-example -->
+```yaml
+# .opsx/preview.yaml — a Next.js app with pnpm
+install: pnpm install
+cmd: pnpm dev --port $PORT --hostname 127.0.0.1
+health: /
+timeout: 180
+```
+
+**Detection** (no `.opsx/preview.yaml`): a `package.json` with a `dev` script runs with the package manager its lockfile implies — `pnpm-lock.yaml` → pnpm, `yarn.lock` → yarn, `bun.lock`/`bun.lockb` → bun, otherwise npm — as `<pm> run dev --port $PORT` (`npm run dev -- --port $PORT` for npm), with `<pm> install` as the install step. `preview` prints a `detected:` line so you can see the guess. If the dev script hard-codes its own port (`-p 3000`), the health check fails with the log tail; add a one-line `.opsx/preview.yaml`.
+
+**Bind to `127.0.0.1`.** Many dev servers ignore `HOST` and listen on every interface, which makes the app reachable at `<server-ip>:<port>` without going through Caddy. Pass the binding flag in `cmd` — `--hostname 127.0.0.1` for Next.js, `--host 127.0.0.1` for Vite — and keep a host firewall that allows only 22 and 443.
+
+`bash tests/test-preview.sh` covers recipes, detection, install hashing, health failures, reuse, stop, `--main`, close/close-all/land teardown and the README example above, against a fake `expose.sh` on a private tmux server.
 
 ---
 

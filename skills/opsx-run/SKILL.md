@@ -1,6 +1,6 @@
 ---
 name: opsx-run
-description: "Run an OpenSpec change's apply/verify/eval/review/security/qa/archive lifecycle in its own tmux window named after the change, driven by the ops-applier, ops-eval, ops-reviewer, ops-security, and ops-qa agents. Reuses the same window for every follow-up instruction about that change. Trigger: /opsx-run <change> [action]"
+description: "Run an OpenSpec change's apply/verify/eval/review/security/qa/preview/archive lifecycle in its own tmux window named after the change, driven by the ops-applier, ops-eval, ops-reviewer, ops-security, and ops-qa agents. Reuses the same window for every follow-up instruction about that change. Trigger: /opsx-run <change> [action]"
 trigger: /opsx-run
 ---
 
@@ -33,6 +33,10 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> qa                   # one-shot UI/UX QA in the change window (no auto-fix)
 /opsx-run <change> qa "..."             # same, plus extra notes passed through to ops-qa
 /opsx-run qa "..."                      # same, but pick the change if it was omitted
+/opsx-run <change> preview              # run the change's app from its worktree, publish it via /expose, print the URL
+/opsx-run <change> preview stop         # remove the route, kill the app and its window
+/opsx-run <change> preview url          # reprint (and copy) the running preview's URL
+/opsx-run preview                       # same, but pick a change or the main checkout (main--<project>)
 /opsx-run <change> archive
 /opsx-run <change> status               # snapshot of what the window is doing right now
 /opsx-run <change> "<free-form text>"   # send to that window (creates it if missing)
@@ -43,8 +47,8 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> land --force-tasks   # ... even when tasks.md still has unchecked boxes
 /opsx-run <change> land --skip-merge    # already merged: skip merge, still archive + cleanup
 /opsx-run <change> land --skip-eval     # bypass the eval regression gate
-/opsx-run <change> close                # close that change's window
-/opsx-run close-all                     # close every opsx window in the session
+/opsx-run <change> close                # close that change's window and stop its preview
+/opsx-run close-all                     # close every opsx window in the session and stop every preview in the project
 /opsx-run list                          # show the windows in this session
 ```
 
@@ -62,7 +66,21 @@ opsx-window.sh close  --all    [--force] [--keep-session]        # close every t
 opsx-window.sh status <change> [--lines N]                       # capture-pane snapshot (default 60 lines)
 opsx-window.sh mark   <change> <busy|done|fail|idle> # title badge + status-bar color
 opsx-window.sh list                                              # windows in the current session
+opsx-window.sh preview-start <change> --cwd <dir> --script <f>   # opsx-preview.sh only: tagged @opsx_preview window
+opsx-window.sh preview-find  <change>                            # opsx-preview.sh only
+opsx-window.sh preview-kill  <change>|--all                      # opsx-preview.sh only
 ```
+
+Previews are run by `~/.claude/skills/opsx-run/opsx-preview.sh` — the **only** code that starts, finds or stops previews. Run it **inline** in this session (like `merge` and `land`); never send a preview prompt to the change window:
+
+```
+opsx-preview.sh up   <change>|--main     # start or reuse; the URL is the last stdout line
+opsx-preview.sh stop <change>|--all      # exit 0 even when nothing runs
+opsx-preview.sh url  <change>|--main     # non-zero when nothing runs
+opsx-preview.sh list
+```
+
+Preview windows are titled `ox ▶<change>` and tagged `@opsx_preview=<change>`, never `@opsx_change`, so they are never mistaken for the agent window.
 
 The saved eval suite is run by `~/.claude/skills/opsx-run/opsx-eval.sh` (no LLM; `--help` for options). ops-eval calls it; `land` calls it for the regression gate; you can run it by hand or in CI:
 
@@ -116,6 +134,7 @@ Write prompts to a file in the session scratchpad (e.g. `<scratchpad>/opsx-<chan
    - `/opsx-run <change> qa` / `review` / `security` and `/opsx-run <change> qa "..."` / `review "..."` / `security "..."` — change is named.
    - `/opsx-run qa` / `review` / `security` and `/opsx-run qa "..."` / `review "..."` / `security "..."` — change is omitted; pick it as above, then run the same action. Extra quoted text is **not** free-form window chat: it is extra notes for **ops-qa**, **ops-reviewer**, or **ops-security** respectively.
    - `/opsx-run <change> eval [--agentic]` — change is named. `/opsx-run eval [--agentic]` — change is omitted; pick it as above. `eval` takes no free-form notes (ops-eval works from the specs only).
+   - **`preview`** as the first token is an action too. `/opsx-run <change> preview [stop|url]` — change is named. `/opsx-run preview [stop|url]` — change is omitted: use **AskUserQuestion** with the active changes (from `openspec list --json`) **plus "main checkout"** as options, and never guess. Picking the main checkout maps to `opsx-preview.sh <up|stop|url> --main` (published as `main--<project>`).
 
 Both `openspec` and the window's agent CLI run from the current working directory, so run `/opsx-run` from the project root.
 
@@ -133,10 +152,11 @@ Both `openspec` and the window's agent CLI run from the current working director
 | `archive` | Gate inline: `validate --strict` passes **and** `status.isComplete` is true. If not, refuse and say exactly which check failed | Archive dispatcher prompt |
 | `status` | — | Nothing; run `opsx-window.sh status <c>` and relay the meaningful tail |
 | free text | — | `ensure` with the user's text verbatim. **If the window is missing, create it** — never tell the user to `apply` first just to recreate the window |
-| `close` | — | Nothing; `opsx-window.sh close <c>` kills that window |
-| `close-all` | Confirm with **AskUserQuestion** first — this kills several live sessions at once | Nothing; `opsx-window.sh close --all` |
+| `preview` / `preview stop` / `preview url` | Runs `opsx-preview.sh up <c>` / `stop <c>` / `url <c>` **inline** (`--main` for the main checkout). Relay the URL (its last stdout line), the `detected:` line when present, and any warning (e.g. unknown recipe keys). On failure relay the reason as printed — e.g. "apply the change first", "add `.opsx/preview.yaml`", or "run `install.sh --expose-domain <domain>`" — plus the log tail | Nothing |
+| `close` | — | Nothing; `opsx-window.sh close <c>` stops the change's preview (route, app, window) and kills that window |
+| `close-all` | Confirm with **AskUserQuestion** first — this kills several live sessions at once | Nothing; `opsx-window.sh close --all` also stops every preview in the project |
 | `merge` | Runs `opsx-merge.sh <change> [--into <branch>]` **inline**; `--no-ff` merge only — keeps the branch, worktree and window | Nothing |
-| `land` | Runs `opsx-land.sh`, which runs the eval regression gate (when `evals/` exists), calls `opsx-merge.sh --stay`, then archive + cleanup. If the branch is already in the target (exit 2 / `ALREADY_MERGED`), **AskUserQuestion** whether to skip the merge and finish cleanup; on yes, re-run with `--skip-merge` and the same flags. Do not tell the user to archive by hand. | Nothing — the window is closed as the last step |
+| `land` | Runs `opsx-land.sh`, which runs the eval regression gate (when `evals/` exists), calls `opsx-merge.sh --stay`, then archive + cleanup (cleanup stops the change's preview before removing the worktree). If the branch is already in the target (exit 2 / `ALREADY_MERGED`), **AskUserQuestion** whether to skip the merge and finish cleanup; on yes, re-run with `--skip-merge` and the same flags. Do not tell the user to archive by hand. | Nothing — the window is closed as the last step |
 
 `verify` and `archive` deliberately run their read-only `openspec` checks in **this** session: they are fast, and a failed gate should be reported to the user immediately rather than discovered inside a window they are not watching.
 
@@ -175,7 +195,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 > 6. Review `FAIL` → delegate **ops-applier** to fix review FINDINGS **verbatim** (keep F1, F2, …), then go to step 5. Review `PASS` or `SKIP` → step 7.
 > 7. Delegate security to **ops-security** only (`run_in_background: false`). Print `VERDICT:` and FINDINGS. Codex/Gemini: run security yourself.
 > 8. Security `FAIL` → delegate **ops-applier** to fix security FINDINGS **verbatim**, then go to step 7. Security `PASS` or `SKIP` → step 9.
-> 9. Delegate QA to **ops-qa** only (`run_in_background: false`). Print `VERDICT:` and FINDINGS.
+> 9. Before QA, run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`. On exit 0 pass its last stdout line to ops-qa as `PREVIEW_URL` (test that URL, do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Then delegate QA to **ops-qa** only (`run_in_background: false`). Codex/Gemini: same, then run QA yourself against that URL. Print `VERDICT:` and FINDINGS. Leave the preview running.
 > 10. QA `PASS` or `SKIP` → `UpdateGoal` complete, `mark <change> done`, stop.
 > 11. QA `FAIL` → keep the goal active. Delegate **ops-applier** to fix QA FINDINGS **verbatim**. Then go to step 9.
 > Stop after marking. Do not return work to the parent session.
@@ -253,8 +273,9 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
-> Delegate to **ops-qa** only (`subagent_type: "ops-qa"` / `@ops-qa`). Codex/Gemini: run the QA checks yourself.
-> Pass: change name, `opsx/<change>` / `../wt-<change>`, how to run the app if known. Use browser-use MCP when user-facing.
+> First run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`. On exit 0 pass its last stdout line to ops-qa as `PREVIEW_URL` (test that URL, do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Leave the preview running.
+> Delegate to **ops-qa** only (`subagent_type: "ops-qa"` / `@ops-qa`). Codex/Gemini: run the QA checks yourself, against `PREVIEW_URL` when you have one.
+> Pass: change name, `opsx/<change>` / `../wt-<change>`, `PREVIEW_URL` (or the reason there is none), how to run the app if known. Use browser-use MCP when user-facing.
 > Extra notes from the user (omit this block if they sent none):
 > <quoted text after `qa`, verbatim>
 > Print `VERDICT: PASS|FAIL|SKIP` and FINDINGS. Do not spawn ops-applier.
@@ -280,6 +301,8 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > Verification of OpenSpec change `<change>` failed. `openspec validate "<change>" --strict` reported: `<errors verbatim>`.
 > Delegate the fix to the ops-applier subagent (Claude: Agent / Cursor: Task / OpenCode: Task or `@ops-applier`). Codex CLI / Gemini CLI: fix it yourself in this window. After it is fixed, re-run `openspec validate "<change>" --strict` and `openspec status --change "<change>" --json` and report the result. Then `opsx-window.sh mark <change> done` (or `fail`).
+
+`<skills>` in the prompts is the skills dir this skill was loaded from (e.g. `~/.claude/skills`); substitute the absolute path when writing the prompt file.
 
 On Claude/Cursor/OpenCode, **"Do NOT do the work yourself"** in the window is load-bearing. On **Codex** and **Gemini** the window does the work; isolation is tmux + `opsx/<change>`. Exception on Cursor: if ops-qa cannot see MCP, **browser-use** stays in that window.
 
@@ -340,6 +363,7 @@ opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
 - The script refuses to close the window the caller is *in* unless `--force` is passed, so a `close-all` from inside a change window can't kill the caller mid-command. Relay the `# skipped …` line when it appears.
 - Closing the last window in a session destroys the session — the script says so. Pass `--keep-session` to park a plain shell window and keep it alive.
 - If the user asks to close a change that has no window, say so; it is not an error worth escalating.
+- `close` stops the change's preview and `close-all` stops every preview in the project (through `opsx-preview.sh stop`, before any window is killed). A missing or failing preview never makes the close fail. A QA preview is left running on purpose so the user can open what QA saw; `close`/`land` clean it up.
 - Free-form text and verify-fix must **not** fail with "run apply first". `send` now creates the window when it is missing (same as `ensure`). Recreate and deliver the instruction in one step.
 
 ## Notes
