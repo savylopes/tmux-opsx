@@ -142,6 +142,7 @@ load_config() {
       EXPOSE_ADMIN_SOCKET) ADMIN_SOCK=$v ;;
     esac
   done < "$CONFIG_FILE"
+  DOMAIN=$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')
   [[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] \
     || die "expose config has no valid EXPOSE_DOMAIN ($CONFIG_FILE) — re-run: install.sh --expose-domain <domain>" 3
   ADMIN_SOCK=${OPSX_EXPOSE_ADMIN:-${ADMIN_SOCK:-$STATE_DIR/caddy-admin.sock}}
@@ -332,7 +333,7 @@ copy_url() {
   fi
   if recover_tmux_env && command -v tmux >/dev/null 2>&1; then
     if tmux set-buffer -w -- "$url" 2>/dev/null || tmux set-buffer -- "$url" 2>/dev/null; then
-      err "copied to the clipboard via tmux (OSC 52)"
+      err "copied to the tmux buffer (forwarded to the clipboard via OSC 52 when tmux set-clipboard is on)"
       return 0
     fi
   fi
@@ -386,7 +387,23 @@ cmd_down() {
       n=$((n + 1))
     fi
   done < <(records)
-  [ "$n" -gt 0 ] || printf 'nothing matched %s in project %s — nothing to remove\n' "$arg" "$PROJECT_N"
+  [ "$n" -gt 0 ] && return 0
+  # Hint at other projects that have this name or port exposed.
+  local others="" p
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    read_record "$f" || continue
+    [ "$R_PROJECT" != "$PROJECT_N" ] || continue
+    if { [ -n "$name" ] && [ "$R_NAME" = "$name" ]; } \
+       || { [[ "$arg" =~ ^[0-9]+$ ]] && [ "$R_PORT" = "$arg" ]; }; then
+      case " $others " in *" $R_PROJECT "*) ;; *) others="${others:+$others }$R_PROJECT" ;; esac
+    fi
+  done < <(records)
+  printf 'nothing matched %s in project %s — nothing to remove' "$arg" "$PROJECT_N"
+  if [ -n "$others" ]; then
+    for p in $others; do printf ' (exposed in project %s; use --project %s)' "$p" "$p"; done
+  fi
+  printf '\n'
 }
 
 json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }

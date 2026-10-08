@@ -105,7 +105,7 @@ ok "publish: route host + dial" '[ "$(host_of web--shop)" = "web--shop.dev.examp
 ok "publish: public warning line" 'printf "%s\n" "$o" | grep -qi "public with no authentication"'
 ok "publish: state record" 'grep -qx "PORT=3000" "$RD/web--shop.env" && grep -qx "URL=https://web--shop.dev.example.com" "$RD/web--shop.env"'
 ok "copied through tmux" '[ "$($L show-buffer)" = "https://web--shop.dev.example.com" ]'
-ok "publish: stderr says copied via tmux" 'grep -q "copied to the clipboard via tmux" "$SP/up.err"'
+ok "publish: stderr says copied to the tmux buffer, clipboard only via set-clipboard" 'grep -q "copied to the tmux buffer (forwarded to the clipboard via OSC 52 when tmux set-clipboard is on)" "$SP/up.err" && ! grep -q "copied to the clipboard via tmux" "$SP/up.err"'
 if (exec 3<>/dev/tcp/127.0.0.1/3000) 2>/dev/null; then
   ok "publish: no idle-port note when 3000 listens" '! grep -q "nothing is listening" "$SP/up.err"'
 else
@@ -173,6 +173,23 @@ o=$($E down 5000 --project shop); rc=$?
 ok "down by port removes every match" '[ $rc -eq 0 ] && [ -z "$(dial_of one--shop)" ] && [ -z "$(dial_of two--shop)" ] && [ "$(printf "%s\n" "$o" | grep -c removed)" -eq 2 ]'
 o=$($E down nosuch --project shop); rc=$?
 ok "down of nothing: exit 0, says so" '[ $rc -eq 0 ] && [[ "$o" == *"nothing matched"* ]]'
+# QA F3: down in the wrong project hints at the project that has it
+$E up 8080 --name hinted --project shop-app >/dev/null
+o=$($E down 8080 --project other-proj); rc=$?
+ok "down by port in wrong project: exit 0, hints other project" '[ $rc -eq 0 ] && [[ "$o" == *"nothing matched 8080 in project other-proj"* ]] && [[ "$o" == *"(exposed in project shop-app; use --project shop-app)"* ]] && [ "$(dial_of hinted--shop-app)" = "127.0.0.1:8080" ]'
+o=$($E down hinted --project other-proj); rc=$?
+ok "down by name in wrong project: hints other project" '[ $rc -eq 0 ] && [[ "$o" == *"use --project shop-app"* ]]'
+o=$($E down 8999 --project other-proj); rc=$?
+ok "down of nothing anywhere: no project hint" '[ $rc -eq 0 ] && [[ "$o" != *"exposed in project"* ]]'
+$E down hinted --project shop-app >/dev/null
+# QA F1: an uppercase EXPOSE_DOMAIN in a hand-edited config is lowercased
+CF=$XDG_CONFIG_HOME/tmux-opsx/expose.env
+cp "$CF" "$SP/expose.env.bak"
+printf 'EXPOSE_DOMAIN=Dev.Example.com\nCLOUDFLARE_API_TOKEN=fake-token\n' > "$CF"
+$E list >/dev/null 2>"$SP/uc.err"; rc=$?
+o=$($E url web --project shop | tail -n1)
+ok "uppercase EXPOSE_DOMAIN in config: list works, URL lowercased" '[ $rc -eq 0 ] && [ "$o" = "https://web--shop.dev.example.com" ]'
+cp "$SP/expose.env.bak" "$CF"; chmod 600 "$CF"
 
 # ---- url ----
 o=$($E url web --project shop); rc=$?

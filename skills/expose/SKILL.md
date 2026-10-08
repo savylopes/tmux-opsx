@@ -48,7 +48,7 @@ Run it from the project directory so the default project name is right.
 
 ## What to tell the user
 
-- After `up` or `url`: relay the **public / no-authentication warning line** and the **URL** (always the last line of output). Relay the clipboard line from stderr as is: `copied to the clipboard via tmux …` / `… via the terminal …` means the URL is on the user's clipboard; `not copied …` means it is not, so do not claim it was. If stderr says nothing is listening on the port yet, pass that on too. Do not try to open a browser.
+- After `up` or `url`: relay the **public / no-authentication warning line** and the **URL** (always the last line of output). Relay the clipboard line from stderr as is: `copied to the tmux buffer …` means the URL is in tmux's paste buffer and reaches the user's clipboard only if tmux `set-clipboard` is on, so say that rather than promising it is on the clipboard; `copied to the clipboard via the terminal …` means it was sent to the terminal by OSC 52; `not copied …` means it is not, so do not claim it was. If stderr says nothing is listening on the port yet, pass that on too. Do not try to open a browser.
 - After `list`: show the table as-is.
 - After `down`: say what was removed, or that nothing matched (that is not an error).
 - Remind the user to bind dev servers to `127.0.0.1`, not `0.0.0.0`; otherwise the app may also be reachable directly at `<server-ip>:<port>`, bypassing the proxy.
