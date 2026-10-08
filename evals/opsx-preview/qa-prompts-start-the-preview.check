@@ -42,10 +42,14 @@ for name in ("qa", "validate"):
     print("%s prompt: %s" % (name, hit))
     if not hit: fail("%s prompt does not run `opsx-preview.sh up <change>`" % name)
     pre = body.find("opsx-preview.sh up <change>")
+    sh = body.find("opsx-preview.sh share <change> --for ops-qa --ttl 1d")
+    print("%s prompt share at %d" % (name, sh))
+    if sh < 0: fail("%s prompt does not run `opsx-preview.sh share <change> --for ops-qa --ttl 1d`" % name)
+    if sh < pre: fail("%s prompt: share is not run after up" % name)
     q = [m.start() for m in re.finditer(r"ops-qa", body)]
-    if not any(i > pre for i in q): fail("%s prompt: preview is not run before ops-qa" % name)
-    if not re.search(r"(URL|last (stdout )?line)[^\n]*ops-qa|ops-qa[^\n]*URL", body, re.I) or "PREVIEW_URL" not in body:
-        fail("%s prompt does not pass the preview URL to ops-qa" % name)
+    if not any(i > sh + 40 for i in q): fail("%s prompt: preview up/share are not run before ops-qa" % name)
+    if "PREVIEW_URL" not in body or not re.search(r"(share link|share[^\n]*(last (stdout )?line|output))[^\n]*(PREVIEW_URL|ops-qa)|PREVIEW_URL[^\n]*share", body, re.I):
+        fail("%s prompt does not pass the share link to ops-qa" % name)
 a = open(agent, encoding="utf-8").read()
 m = re.search(r"[^\n]*PREVIEW_URL[^\n]*(not|never|don't|do not)[^\n]*(start|run)[^\n]*(server|app)[^\n]*", a, re.I)
 print("ops-qa: %s" % (m.group(0) if m else None))

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Wildcard bind refused
+# level: L2
+# requirement: Loopback bind only
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+export OPSX_EXPOSE_NO_COPY=1
+free_port() { python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
+PIDS=""; trap 'for p in $PIDS; do kill $p 2>/dev/null; done; _expose_cleanup' EXIT
+listen() {  # listen <addr> <port>: plain TCP listener
+  python3 -I -c 'import socket,sys,time;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind((sys.argv[1],int(sys.argv[2])));s.listen();time.sleep(600)' "$1" "$2" & PIDS="$PIDS $!"
+  local i; for i in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$2") 2>/dev/null && return 0; sleep 0.1; done; fail "setup: listener on $1:$2 did not start"
+}
+P=$(free_port); listen 0.0.0.0 "$P"
+o=$(x up "$P" --name web 2>"$EVAL_TMP/err"); rc=$?; e=$(cat "$EVAL_TMP/err"); echo "exit $rc"; echo "stdout: $o"; echo "stderr: $e"
+[ "$rc" -eq 2 ] || fail "expected exit 2, got $rc"
+printf '%s' "$e" | grep -qF 0.0.0.0 || fail "error output does not name 0.0.0.0"
+printf '%s' "$e" | grep -qF 127.0.0.1 || fail "error output does not name 127.0.0.1"
+[ -z "$(routes_to web--shop.dev.example.com)" ] || fail "a route for web exists"
+x list --json | jq -e 'all(.[]; .name != "web")' >/dev/null || fail "list has a web record"
+f=$(grep -rls "web" "$STATE_DIR" 2>/dev/null | grep -v -e lock -e sock); [ -z "$f" ] || fail "state record for web: $f"
+echo OK

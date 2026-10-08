@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Access column
+# level: L2
+# requirement: List exposures
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+export OPSX_EXPOSE_NO_COPY=1
+free_port() { python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
+PIDS=""; trap 'for p in $PIDS; do kill $p 2>/dev/null; done; _expose_cleanup' EXIT
+listen() {  # listen <addr> <port>: plain TCP listener
+  python3 -I -c 'import socket,sys,time;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind((sys.argv[1],int(sys.argv[2])));s.listen();time.sleep(600)' "$1" "$2" & PIDS="$PIDS $!"
+  local i; for i in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$2") 2>/dev/null && return 0; sleep 0.1; done; fail "setup: listener on $1:$2 did not start"
+}
+x up 3000 --name web >/dev/null 2>&1 || fail "up web failed"
+x up 3001 --name hook --public >/dev/null 2>&1 || fail "up hook --public failed"
+l=$(x list); echo "$l"
+col=$(echo "$l" | head -1 | awk '{for(i=1;i<=NF;i++) if($i=="ACCESS") print i}'); [ -n "$col" ] || fail "no ACCESS column"
+w=$(echo "$l" | awk -v c="$col" '$1=="web"{print $c}'); h=$(echo "$l" | awk -v c="$col" '$1=="hook"{print $c}')
+[ "$w" = login ] || fail "web ACCESS '$w'"; [ "$h" = public ] || fail "hook ACCESS '$h'"
+x list --json | jq -e '([.[]|select(.name=="web")][0].public==false) and ([.[]|select(.name=="hook")][0].public==true)' >/dev/null || fail "json public flags wrong"
+echo OK

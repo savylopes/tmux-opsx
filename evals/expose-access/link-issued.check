@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Link issued
+# level: L2
+# requirement: Share links
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup
+x up 3000 --name web >/dev/null || fail "up failed"
+o=$(x share web --for Acme); rc=$?; echo "exit $rc"; echo "$o" | sed -E 's/(opsx_share=)[A-Za-z0-9_-]+/\1<token>/'
+[ "$rc" -eq 0 ] || fail "share exited $rc"
+l=$(printf '%s\n' "$o" | tail -n1)
+printf '%s' "$l" | grep -Eqx "https://web--shop\.$DOMAIN/\?opsx_share=[A-Za-z0-9_-]{22,}" || fail "last line is not the share link: $l"
+echo OK

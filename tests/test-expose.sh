@@ -13,12 +13,15 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "curl is required"; exit 1; }
 command -v tmux >/dev/null 2>&1 || { echo "tmux is required"; exit 1; }
 REPO=$(cd -- "$(dirname -- "$0")/.." && pwd)
+REAL_HOME=$HOME
 E=$REPO/skills/expose/expose.sh
 SP=$(mktemp -d "${TMPDIR:-/tmp}/expose-test.XXXXXX")
 L="tmux -L expose-test-$$"
-FAKE_PID=""; HTTP_PID=""
+FAKE_PID=""; HTTP_PID=""; CADDY_PID=""; APP_PIDS=()
 cleanup() {
   [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
+  [ -n "${CADDY_PID:-}" ] && kill "$CADDY_PID" 2>/dev/null
+  [ "${#APP_PIDS[@]}" -gt 0 ] && kill "${APP_PIDS[@]}" 2>/dev/null
   [ -n "$HTTP_PID" ] && kill "$HTTP_PID" 2>/dev/null
   $L kill-server 2>/dev/null
   rm -rf "$SP"
@@ -53,16 +56,29 @@ stop_fake() { kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null; FAKE_P
 adm() { curl -sS --unix-socket "$SOCK" "http://127.0.0.1$1"; }
 routes() { adm /config/apps/http/servers/expose/routes; }
 nroutes() { routes | python3 -c 'import json,sys; v=json.load(sys.stdin); print(len(v or []))'; }
-dial_of() { adm "/id/expose-$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["handle"][0]["upstreams"][0]["dial"])' 2>/dev/null; }
+# The upstream dial anywhere in the route (flat for --public, else inside the subroute).
+dial_of() { adm "/id/expose-$1" | python3 -c '
+import json,sys
+def walk(n):
+    if isinstance(n,dict):
+        if n.get("handler")=="reverse_proxy": print(n["upstreams"][0]["dial"]); sys.exit(0)
+        for v in n.values(): walk(v)
+    elif isinstance(n,list):
+        for v in n: walk(v)
+walk(json.load(sys.stdin))' 2>/dev/null; }
+group_of() { adm "/id/expose-$1" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("group",""))' 2>/dev/null; }
 host_of() { adm "/id/expose-$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["match"][0]["host"][0])' 2>/dev/null; }
 RD=$XDG_STATE_HOME/tmux-opsx/expose/routes
 
 # ---- 1.1 help / usage ----
 h=$($E help); rc=$?
 ok "help exits 0" '[ $rc -eq 0 ]'
-ok "help lists subcommands and options" 'for w in up down list url help --name --project --json; do [[ "$h" == *"$w"* ]] || exit 1; done'
+ok "help lists subcommands and options" 'for w in up down list url share "key rotate" help --name --project --json --public --with-key --for --ttl --list --revoke; do [[ "$h" == *"$w"* ]] || exit 1; done'
 $E bogus >/dev/null 2>&1; rc=$?
 ok "unknown subcommand exits 2" '[ $rc -eq 2 ]'
+SKILL=$REPO/skills/expose/SKILL.md
+ok "skill documents every subcommand and option" 'for w in "up " "down " "list" "url " "share " "key rotate" --name --project --public --with-key --for --ttl --list --revoke; do grep -qF -- "$w" "$SKILL" || exit 1; done'
+ok "skill: no login/share link unless asked; loopback refusal" 'grep -q "Never print the owner login link" "$SKILL" && grep -q "refusing to publish port" "$SKILL"'
 
 # ---- 1.2 not configured ----
 o=$($E up 3000 2>&1); rc=$?
@@ -99,10 +115,10 @@ ok "url nosuch: exit 1 with a message on stderr" '[ $rc -eq 1 ] && [[ "$e" == *"
 e=$($E up 3000 --name "***" --project shop 2>&1 >/dev/null); rc=$?
 ok "unusable name: exit 2 with a message on stderr" '[ $rc -eq 2 ] && [[ "$e" == *"no usable characters"* ]]'
 
-o=$(OPSX_EXPOSE_NO_COPY= $E up 3000 --name web --project shop 2>"$SP/up.err"); rc=$?
+o=$(OPSX_EXPOSE_NO_COPY='' $E up 3000 --name web --project shop 2>"$SP/up.err"); rc=$?
 ok "publish: exit 0, last line is URL" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://web--shop.dev.example.com" ]'
 ok "publish: route host + dial" '[ "$(host_of web--shop)" = "web--shop.dev.example.com" ] && [ "$(dial_of web--shop)" = "127.0.0.1:3000" ]'
-ok "publish: public warning line" 'printf "%s\n" "$o" | grep -qi "public with no authentication"'
+ok "publish: no public warning without --public" '! printf "%s\n" "$o" | grep -qi "public with no authentication"'
 ok "publish: state record" 'grep -qx "PORT=3000" "$RD/web--shop.env" && grep -qx "URL=https://web--shop.dev.example.com" "$RD/web--shop.env"'
 ok "copied through tmux" '[ "$($L show-buffer)" = "https://web--shop.dev.example.com" ]'
 ok "publish: stderr says copied to the tmux buffer, clipboard only via set-clipboard" 'grep -q "copied to the tmux buffer (forwarded to the clipboard via OSC 52 when tmux set-clipboard is on)" "$SP/up.err" && ! grep -q "copied to the clipboard via tmux" "$SP/up.err"'
@@ -115,7 +131,7 @@ fi
 $L set-buffer -- placeholder
 e=$($E url web --project shop 2>&1 >/dev/null)
 ok "OPSX_EXPOSE_NO_COPY=1: no copy, says so" '[ "$($L show-buffer)" = placeholder ] && [[ "$e" == *"not copied"* ]]'
-e=$(TMUX= OPSX_EXPOSE_NO_COPY= setsid -w $E url web --project shop 2>&1 >/dev/null </dev/null)
+e=$(TMUX='' OPSX_EXPOSE_NO_COPY='' setsid -w "$E" url web --project shop 2>&1 >/dev/null </dev/null)
 ok "TMUX= (empty): no parent tmux search, says not copied" '[ "$($L show-buffer)" = placeholder ] && [[ "$e" == *"not copied to the clipboard: no tmux or terminal"* ]]'
 ok "redirected output has no ESC bytes" '! printf "%s" "$o" | grep -q $'"'"'\033'"'"''
 
@@ -195,7 +211,7 @@ cp "$SP/expose.env.bak" "$CF"; chmod 600 "$CF"
 o=$($E url web --project shop); rc=$?
 ok "url reprints" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://web--shop.dev.example.com" ]'
 $L set-buffer -- placeholder
-OPSX_EXPOSE_NO_COPY= $E url web --project shop >/dev/null 2>&1
+OPSX_EXPOSE_NO_COPY='' $E url web --project shop >/dev/null 2>&1
 ok "url copies again" '[ "$($L show-buffer)" = "https://web--shop.dev.example.com" ]'
 $E url nosuch --project shop >/dev/null 2>&1; rc=$?
 ok "url unknown exits non-zero" '[ $rc -ne 0 ]'
@@ -204,21 +220,21 @@ ok "url unknown exits non-zero" '[ $rc -ne 0 ]'
 e=$($E up 3999 --name idle --project shop 2>&1 >/dev/null)
 (exec 3<>/dev/tcp/127.0.0.1/3999) 2>/dev/null || ok "up on an idle port: stderr note, URL still last stdout line" '[[ "$e" == *"nothing is listening on 127.0.0.1:3999 yet"* ]] && [ "$($E url idle --project shop 2>/dev/null | tail -n1)" = "https://idle--shop.dev.example.com" ]'
 l=$($E list); j=$($E list --json)
-ok "list header" 'printf "%s\n" "$l" | head -1 | grep -Eq "^NAME +PROJECT +PORT +URL +UP$"'
-ok "idle row UP no" 'printf "%s\n" "$l" | grep -Eq "^idle +shop +3999 +https://idle--shop.dev.example.com +no$"'
-ok "json idle up false" 'printf "%s" "$j" | python3 -c "import json,sys; d=[o for o in json.load(sys.stdin) if o[\"name\"]==\"idle\"]; assert d and d[0][\"up\"] is False and d[0][\"port\"]==3999 and set(d[0])=={\"name\",\"project\",\"port\",\"url\",\"up\"}"'
+ok "list header" 'printf "%s\n" "$l" | head -1 | grep -Eq "^NAME +PROJECT +PORT +URL +UP +BIND +ACCESS$"'
+ok "idle row UP no, BIND -, ACCESS login" 'printf "%s\n" "$l" | grep -Eq "^idle +shop +3999 +https://idle--shop.dev.example.com +no +- +login$"'
+ok "json idle up false" 'printf "%s" "$j" | python3 -c "import json,sys; d=[o for o in json.load(sys.stdin) if o[\"name\"]==\"idle\"]; assert d and d[0][\"up\"] is False and d[0][\"port\"]==3999 and d[0][\"bind\"] is None and d[0][\"public\"] is False and set(d[0])=={\"name\",\"project\",\"port\",\"url\",\"up\",\"bind\",\"public\"}"'
 HP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 (cd "$SP" && exec python3 -m http.server "$HP" --bind 127.0.0.1 >/dev/null 2>&1) & HTTP_PID=$!
 for _ in $(seq 1 50); do (exec 3<>"/dev/tcp/127.0.0.1/$HP") 2>/dev/null && break; sleep 0.1; done
 $E up "$HP" --name live --project shop >/dev/null
 l=$($E list); j=$($E list --json)
-ok "live row UP yes" 'printf "%s\n" "$l" | grep -Eq "^live +shop +$HP +.* yes$"'
+ok "live row UP yes, BIND loopback" 'printf "%s\n" "$l" | grep -Eq "^live +shop +$HP +.* yes +loopback +login$"'
 LN=$(printf 'n%.0s' $(seq 1 40))
 $E up 3998 --name "$LN" --project shop >/dev/null 2>&1
 l=$($E list)
-ok "list columns fit the widest value" 'printf "%s\n" "$l" | grep -Eq "^$LN  +shop  +3998  +https://$LN--shop.dev.example.com  +no$" && [ "$(printf "%s\n" "$l" | head -1 | grep -o "URL" | wc -l)" -eq 1 ]'
+ok "list columns fit the widest value" 'printf "%s\n" "$l" | grep -Eq "^$LN  +shop  +3998  +https://$LN--shop.dev.example.com  +no +- +login$" && [ "$(printf "%s\n" "$l" | head -1 | grep -o "URL" | wc -l)" -eq 1 ]'
 $E down 3998 --project shop >/dev/null
-ok "json live up true" 'printf "%s" "$j" | python3 -c "import json,sys; d=[o for o in json.load(sys.stdin) if o[\"name\"]==\"live\"]; assert d and d[0][\"up\"] is True"'
+ok "json live up true" 'printf "%s" "$j" | python3 -c "import json,sys; d=[o for o in json.load(sys.stdin) if o[\"name\"]==\"live\"]; assert d and d[0][\"up\"] is True and d[0][\"bind\"]==\"loopback\""'
 
 # ---- 2.3 reconciliation after a proxy restart ----
 stop_fake; start_fake
@@ -263,6 +279,288 @@ ok "duplicate-id refusal: route present once, all routes restored once" '[ "$(ro
 if command -v script >/dev/null 2>&1 && script -qc true /dev/null >/dev/null 2>&1; then
   script -qc "$E url web --project shop" "$SP/tty.out" >/dev/null 2>&1
   ok "terminal stdout gets OSC 8 link" 'grep -q $'"'"'\033\]8;;https://web--shop.dev.example.com'"'"' "$SP/tty.out"'
+fi
+
+# ---- owner key (fake admin) ----
+KF=$XDG_CONFIG_HOME/tmux-opsx/expose.key
+rm -f "$KF"
+$E list >/dev/null 2>&1; k1=$(cat "$KF" 2>/dev/null); m1=$(stat -c %a "$KF" 2>/dev/null)
+$E list >/dev/null 2>&1; k2=$(cat "$KF" 2>/dev/null); m2=$(stat -c %a "$KF" 2>/dev/null)
+ok "owner key created once, mode 600, unchanged by a second list" '[ -n "$k1" ] && [ "$k1" = "$k2" ] && [ "$m1" = 600 ] && [ "$m2" = 600 ]'
+ok "owner key: >=128 bits of [A-Za-z0-9_-]" '[[ "$k1" =~ ^[A-Za-z0-9_-]{22,}$ ]]'
+o=$($E up 3000 --name web --project shop 2>&1; $E url web --project shop 2>&1; $E list 2>&1; $E list --json 2>&1)
+ok "owner key not printed by up/url/list" '[[ "$o" != *"$k1"* ]]'
+o=$($E url web --project shop --with-key 2>/dev/null); rc=$?
+ok "url --with-key: last line is <url>/?opsx_key=<key>" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://web--shop.dev.example.com/?opsx_key=$k1" ]'
+ok "plain url unchanged" '[ "$($E url web --project shop 2>/dev/null | tail -n1)" = "https://web--shop.dev.example.com" ]'
+$L set-buffer -- placeholder
+OPSX_EXPOSE_NO_COPY='' $E url web --project shop --with-key >/dev/null 2>&1
+ok "url --with-key copies the login link" '[ "$($L show-buffer)" = "https://web--shop.dev.example.com/?opsx_key=$k1" ]'
+for bad in "list --with-key" "up 3000 --with-key" "url web --public" "list --public" "url web --for x" "down web --ttl 1d" "key" "key spin" "share" "share web --list --revoke x" "share web --list --for x"; do
+  # shellcheck disable=SC2086
+  $E $bad --project shop >/dev/null 2>&1; rc=$?
+  ok "misused options exit 2: $bad" '[ $rc -eq 2 ]'
+done
+
+# ---- route fingerprint + reconcile (fake admin) ----
+fp1=$(group_of web--shop)
+ok "route has a fingerprint group (full sha256)" '[[ "$fp1" =~ ^expose-fp-[0-9a-f]{64}$ ]]'
+# Hand-insert a pre-auth route (no group, flat reverse_proxy) in place of web's.
+adm_post() { curl -sS --unix-socket "$SOCK" -X POST -H 'Content-Type: application/json' --data-binary "$2" "http://127.0.0.1$1" >/dev/null; }
+curl -sS --unix-socket "$SOCK" -X DELETE "http://127.0.0.1/id/expose-web--shop" >/dev/null
+adm_post /config/apps/http/servers/expose/routes '{"@id":"expose-web--shop","match":[{"host":["web--shop.dev.example.com"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:3000"}]}],"terminal":true}'
+ok "pre-auth route has no group" '[ -z "$(group_of web--shop)" ]'
+$E list >/dev/null 2>"$SP/upg.err"
+ok "list rebuilds the pre-auth route (fingerprint back, subroute inside)" '[ "$(group_of web--shop)" = "$fp1" ] && adm /id/expose-web--shop | grep -q "\"subroute\"" && grep -q "out of date" "$SP/upg.err"'
+ok "rebuilt once: one web route" '[ "$(routes | grep -o "\"expose-web--shop\"" | wc -l)" -eq 1 ]'
+$E list >/dev/null 2>"$SP/upg2.err"
+ok "up-to-date routes are left alone" '! grep -q "out of date" "$SP/upg2.err"'
+
+# ---- loopback bind check (real listeners, fake admin) ----
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+serve() { (cd "$SP" && exec python3 -m http.server "$1" --bind "$2" >/dev/null 2>&1) & BG_PID=$!; for _ in $(seq 1 50); do ss -Hltn "sport = :$1" 2>/dev/null | grep -q . && break; sleep 0.1; done; }
+if [ "$(uname -s)" = Linux ] && command -v ss >/dev/null 2>&1; then
+  WP=$(free_port); serve "$WP" 0.0.0.0; WPID=$BG_PID
+  e=$($E up "$WP" --name wild --project shop 2>&1 >/dev/null); rc=$?
+  ok "0.0.0.0 bind refused: exit 2, names 0.0.0.0 and 127.0.0.1" '[ $rc -eq 2 ] && [[ "$e" == *"0.0.0.0"* ]] && [[ "$e" == *"127.0.0.1"* ]]'
+  ok "0.0.0.0 bind refused: no route, no state" '[ -z "$(dial_of wild--shop)" ] && [ ! -e "$RD/wild--shop.env" ]'
+  # refused re-publish keeps the old port
+  $E up 3000 --name keep --project shop >/dev/null 2>&1
+  $E up "$WP" --name keep --project shop >/dev/null 2>&1; rc=$?
+  ok "refused re-publish: exit 2, still routes to 3000" '[ $rc -eq 2 ] && [ "$(dial_of keep--shop)" = "127.0.0.1:3000" ] && grep -qx "PORT=3000" "$RD/keep--shop.env"'
+  $E down keep --project shop >/dev/null
+  # late public bind shows up in list
+  LP2=$(free_port)
+  $E up "$LP2" --name late --project shop >/dev/null 2>&1
+  serve "$LP2" 0.0.0.0; LPID=$BG_PID
+  l=$($E list); j=$($E list --json)
+  ok "late 0.0.0.0 bind: list BIND PUBLIC" 'printf "%s\n" "$l" | grep -Eq "^late +shop +$LP2 +[^ ]+ +yes +PUBLIC +login$"'
+  ok "late 0.0.0.0 bind: list --json bind public" 'printf "%s" "$j" | python3 -c "import json,sys; d=[o for o in json.load(sys.stdin) if o[\"name\"]==\"late\"]; assert d and d[0][\"bind\"]==\"public\""'
+  kill "$LPID" "$WPID" 2>/dev/null; wait "$LPID" "$WPID" 2>/dev/null
+  $E down late --project shop >/dev/null
+  # 127.0.0.1 accepted (the live server from above)
+  o=$($E up "$HP" --name live --project shop 2>/dev/null); rc=$?
+  ok "127.0.0.1 bind accepted: exit 0, URL last" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://live--shop.dev.example.com" ]'
+  # no ss on PATH: up refuses (fail closed), list shows -
+  NOSS=$SP/noss; mkdir -p "$NOSS"
+  for f in /usr/local/bin/* /usr/bin/* /bin/*; do b=${f##*/}; [ "$b" = ss ] || [ -e "$NOSS/$b" ] || ln -s "$f" "$NOSS/$b"; done
+  e=$(PATH=$NOSS $E up "$HP" --name noss --project shop 2>&1 >/dev/null); rc=$?
+  ok "no ss on PATH: up exits 2 saying it cannot check, no state" '[ $rc -eq 2 ] && [[ "$e" == *"cannot check"* ]] && [ ! -e "$RD/noss--shop.env" ]'
+  l=$(PATH=$NOSS $E list)
+  ok "no ss on PATH: list BIND -" 'printf "%s\n" "$l" | grep -Eq "^live +shop +$HP +[^ ]+ +yes +- +login$"'
+else
+  echo "note: not Linux or no ss; bind checks untested here"
+fi
+
+# ---- --public (fake admin view) ----
+o=$($E up 3000 --name hook --project shop --public 2>/dev/null); rc=$?
+ok "up --public: exit 0, says public with no authentication" '[ $rc -eq 0 ] && printf "%s\n" "$o" | grep -qi "public with no authentication" && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://hook--shop.dev.example.com" ]'
+ok "up --public: route proxies to the port, PUBLIC=1 recorded" '[ "$(dial_of hook--shop)" = "127.0.0.1:3000" ] && grep -qx "PUBLIC=1" "$RD/hook--shop.env"'
+ok "up --public: route has no 401 login page" '! adm /id/expose-hook--shop | grep -q "\"status_code\":401"'
+l=$($E list)
+ok "list ACCESS public/login" 'printf "%s\n" "$l" | grep -Eq "^hook .* public$" && printf "%s\n" "$l" | grep -Eq "^web .* login$"'
+o=$($E share hook --project shop 2>&1); rc=$?
+ok "share of a public exposure refused, no token" '[ $rc -ne 0 ] && ! grep -q "^SHARE=" "$RD/hook--shop.env"'
+$E up 3000 --name hook --project shop >/dev/null 2>&1
+ok "up again without --public: login route, PUBLIC dropped" 'adm /id/expose-hook--shop | grep -q subroute && ! grep -q "^PUBLIC=" "$RD/hook--shop.env"'
+$E down hook --project shop >/dev/null
+
+# ---- key rotate when the proxy refuses a route (fake admin) ----
+printf 'expose-web--shop\n' > "$SOCK.refuse"
+o=$($E key rotate 2>&1); rc=$?
+rm -f "$SOCK.refuse"
+ok "key rotate with a refused route: non-zero exit, names the route and the old key" '[ $rc -ne 0 ] && printf "%s\n" "$o" | grep -q "web--shop" && printf "%s\n" "$o" | grep -qi "old key" && ! printf "%s\n" "$o" | grep -q "^rotated the owner key:"'
+$E list >/dev/null 2>&1
+ok "after the proxy accepts again, the next call rebuilds the route" 'adm /id/expose-web--shop | grep -q "$(cat "$XDG_CONFIG_HOME/tmux-opsx/expose.key")"'
+
+# =====================================================================
+# Real Caddy: the same expose.sh against a scratch Caddy (the installed
+# ~/.local/share/tmux-opsx/bin/caddy, $OPSX_CADDY_BIN, or caddy on PATH) on a
+# private admin socket and a high HTTP port on 127.0.0.1, with a "*.ex.test"
+# server and no TLS. Requests set the Host header; cookies are passed by hand
+# (they are Secure, so a cookie jar over http would drop them).
+# =====================================================================
+CADDY_BIN=${OPSX_CADDY_BIN:-}
+if [ -z "$CADDY_BIN" ]; then
+  for c in "$REAL_HOME/.local/share/tmux-opsx/bin/caddy" "$(command -v caddy 2>/dev/null)"; do
+    [ -n "$c" ] && [ -x "$c" ] && { CADDY_BIN=$c; break; }
+  done
+fi
+RC=$SP/rc; RSOCK=$RC/admin.sock; CADDY_PID=""; APP_PIDS=()
+start_caddy() {
+  mkdir -p "$RC/config/tmux-opsx" "$RC/state"; chmod 700 "$RC/config/tmux-opsx"
+  printf 'EXPOSE_DOMAIN=ex.test\n' > "$RC/config/tmux-opsx/expose.env"
+  RP=$(free_port)
+  printf '{"admin":{"listen":"unix/%s","config":{"persist":false}},"apps":{"http":{"http_port":%s,"servers":{"expose":{"listen":["127.0.0.1:%s"],"automatic_https":{"disable":true},"routes":[]}}}}}\n' \
+    "$RSOCK" "$RP" "$RP" > "$RC/caddy.json"
+  XDG_DATA_HOME=$RC/data XDG_CONFIG_HOME=$RC/cfg "$CADDY_BIN" run --config "$RC/caddy.json" > "$RC/caddy.log" 2>&1 & CADDY_PID=$!
+  for _ in $(seq 1 100); do [ -S "$RSOCK" ] && (exec 3<>"/dev/tcp/127.0.0.1/$RP") 2>/dev/null && return 0; sleep 0.1; done
+  echo "real Caddy did not start:"; cat "$RC/caddy.log"; return 1
+}
+stop_caddy() { [ -n "$CADDY_PID" ] && kill "$CADDY_PID" 2>/dev/null && wait "$CADDY_PID" 2>/dev/null; CADDY_PID=""; }
+RE() { XDG_CONFIG_HOME=$RC/config XDG_STATE_HOME=$RC/state OPSX_EXPOSE_ADMIN=$RSOCK "$E" "$@"; }
+# echo app: answers "app <name> cookie=[<Cookie>]" and logs each request.
+cat > "$SP/echo-app.py" <<'PYAPP'
+import http.server, sys
+name, port, log = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        with open(log, "a") as f: f.write(self.path + "\n")
+        b = ("app %s cookie=[%s]\n" % (name, self.headers.get("Cookie", ""))).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
+PYAPP
+start_app() { # start_app <name> -> sets APP_PORT
+  APP_PORT=$(free_port)
+  python3 "$SP/echo-app.py" "$1" "$APP_PORT" "$RC/app-$1.log" & APP_PIDS+=($!)
+  for _ in $(seq 1 50); do (exec 3<>"/dev/tcp/127.0.0.1/$APP_PORT") 2>/dev/null && return 0; sleep 0.1; done
+}
+# rq <label> <path> [curl args...]: status code; body in $RC/body, headers in $RC/hdr
+rq() { local h=$1 p=$2; shift 2; curl -s -o "$RC/body" -D "$RC/hdr" -w '%{http_code}' -H "Host: $h.ex.test" "$@" "http://127.0.0.1:$RP$p"; }
+hdr() { grep -i "^$1:" "$RC/hdr" | head -n1 | cut -d' ' -f2- | tr -d '\r'; }
+tok_of() { printf '%s' "${1##*opsx_share=}"; }
+
+if [ -z "$CADDY_BIN" ]; then
+  echo "SKIP real-Caddy tests: no caddy binary (install.sh --expose-domain, \$OPSX_CADDY_BIN or caddy on PATH)"
+elif ! start_caddy; then
+  ok "real Caddy starts" 'false'
+else
+  # ---- smoke: the helper's Caddy answers through the scratch server ----
+  ok "real Caddy: smoke request answered (no route -> empty 200)" '[ "$(rq nothing /)" = 200 ]'
+  start_app web; WEBP=$APP_PORT; start_app api; APIP=$APP_PORT; start_app web2; WEB2P=$APP_PORT
+  RE up "$WEBP" --name web --project shop >/dev/null 2>&1
+  RE up "$APIP" --name api --project shop >/dev/null 2>&1
+  RK=$(cat "$RC/config/tmux-opsx/expose.key")
+
+  # ---- login required ----
+  : > "$RC/app-web.log"
+  code=$(rq web--shop /)
+  ok "no cookie: 401, app not reached" '[ "$code" = 401 ] && [ ! -s "$RC/app-web.log" ]'
+  ok "401 is the HTML login page with an opsx_key field, no-store" 'grep -q "name=\"opsx_key\"" "$RC/body" && grep -qi "may have expired" "$RC/body" && [[ "$(hdr Content-Type)" == text/html* ]] && [ "$(hdr Cache-Control)" = no-store ]'
+  ok "wrong owner cookie: 401" '[ "$(rq web--shop / -H "Cookie: opsx_auth=wrong")" = 401 ]'
+  code=$(rq web--shop "/admin?opsx_key=wrong")
+  ok "wrong key: 401, no cookie set" '[ "$code" = 401 ] && [ -z "$(hdr Set-Cookie)" ]'
+  code=$(rq web--shop "/admin?opsx_key=$RK")
+  sc=$(hdr Set-Cookie)
+  ok "login link: 302 to /admin on the same host, without the key" '[ "$code" = 302 ] && [ "$(hdr Location)" = https://web--shop.ex.test/admin ]'
+  code2=$(rq web--shop "//evil.example/x?opsx_key=$RK")
+  ok "login link on a //host path: redirect stays on the exposure host" '[ "$code2" = 302 ] && [ "$(hdr Location)" = https://web--shop.ex.test//evil.example/x ]'
+  rq web--shop "/admin?opsx_key=$RK" >/dev/null
+  ok "login link: owner cookie with Domain, Path, Secure, HttpOnly, SameSite=Lax, 30-day Max-Age" '[[ "$sc" == "opsx_auth=$RK;"* ]] && [[ "$sc" == *"Domain=ex.test"* ]] && [[ "$sc" == *"Path=/"* ]] && [[ "$sc" == *"Secure"* ]] && [[ "$sc" == *"HttpOnly"* ]] && [[ "$sc" == *"SameSite=Lax"* ]] && [[ "$sc" == *"Max-Age=2592000"* ]]'
+  rq api--shop / -H "Cookie: opsx_auth=$RK" >/dev/null
+  ok "owner cookie reaches the api app (another exposure)" 'grep -q "^app api " "$RC/body"'
+  rq web--shop / -H "Cookie: sid=1; opsx_auth=$RK; theme=dark" >/dev/null
+  ok "app sees its cookies without opsx_auth" 'grep -qx "app web cookie=\[sid=1; theme=dark\]" "$RC/body"'
+  rq web--shop / -H "Cookie: opsx_auth=$RK; sid=1" >/dev/null
+  ok "leading opsx_auth stripped cleanly" 'grep -qx "app web cookie=\[sid=1\]" "$RC/body"'
+
+  # ---- pre-auth route upgraded (real Caddy) ----
+  curl -sS --unix-socket "$RSOCK" -X DELETE "http://127.0.0.1/id/expose-web--shop" >/dev/null
+  curl -sS --unix-socket "$RSOCK" -X POST -H 'Content-Type: application/json' --data-binary \
+    '{"@id":"expose-web--shop","match":[{"host":["web--shop.ex.test"]}],"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:'"$WEBP"'"}]}],"terminal":true}' \
+    "http://127.0.0.1/config/apps/http/servers/expose/routes" >/dev/null
+  ok "hand-inserted pre-auth route lets anyone in" '[ "$(rq web--shop /)" = 200 ]'
+  RE list >/dev/null 2>&1
+  ok "after list, the pre-auth route needs a login (401)" '[ "$(rq web--shop /)" = 401 ]'
+
+  # ---- --public ----
+  o=$(RE up "$WEB2P" --name hook --project shop --public 2>/dev/null)
+  ok "--public: cookie-less request reaches the app, output says public" '[ "$(rq hook--shop /)" = 200 ] && grep -q "^app web2 " "$RC/body" && printf "%s\n" "$o" | grep -qi "public with no authentication"'
+  ok "--public: list ACCESS public" 'RE list | grep -Eq "^hook .* public$"'
+  rq hook--shop / -H "Cookie: sid=1; opsx_auth=$RK; opsx_share=zzzzzzzzzzzzzzzzzzzzzzzz; theme=dark" >/dev/null
+  ok "--public: owner and share cookies stripped, others kept" 'grep -qx "app web2 cookie=\[sid=1; theme=dark\]" "$RC/body"'
+  : > "$RC/app-web2.log"
+  code=$(rq hook--shop "/cb?opsx_key=$RK"); sc=$(hdr Set-Cookie)
+  ok "--public: owner login link caught by the proxy (302 + owner cookie), app never sees the key" '[ "$code" = 302 ] && [ "$(hdr Location)" = https://hook--shop.ex.test/cb ] && [[ "$sc" == "opsx_auth=$RK;"* ]] && ! grep -q opsx_key "$RC/app-web2.log"'
+  code=$(rq hook--shop "/cb?x=1&opsx_key=wrongwrongwrongwrongwrong")
+  ok "--public: a wrong opsx_key is dropped by a 302 without a cookie, app not reached" '[ "$code" = 302 ] && [ "$(hdr Location)" = https://hook--shop.ex.test/cb ] && [ -z "$(hdr Set-Cookie)" ] && ! grep -q opsx_key "$RC/app-web2.log"'
+  code=$(rq hook--shop "/cb?opsx_share=zzzzzzzzzzzzzzzzzzzzzzzz")
+  ok "--public: an opsx_share query is dropped by a 302, app not reached" '[ "$code" = 302 ] && [ -z "$(hdr Set-Cookie)" ] && ! grep -q opsx_share "$RC/app-web2.log"'
+  code=$(rq hook--shop "/cb?event=push")
+  ok "--public: other queries reach the app untouched" '[ "$code" = 200 ] && grep -qx "/cb?event=push" "$RC/app-web2.log"'
+  o=$(RE url hook --project shop --with-key 2>/dev/null)
+  ok "--public: url --with-key says the proxy keeps the key from the app" 'printf "%s\n" "$o" | grep -q "app never sees it"'
+  RE up "$WEB2P" --name hook --project shop >/dev/null 2>&1
+  ok "up again without --public: 401, ACCESS login" '[ "$(rq hook--shop /)" = 401 ] && RE list | grep -Eq "^hook .* login$"'
+  RE down hook --project shop >/dev/null
+
+  # ---- share links ----
+  o=$(RE share web --for Acme --project shop 2>/dev/null); rc=$?
+  A1=$(printf '%s\n' "$o" | tail -n1); TA1=$(tok_of "$A1")
+  ok "share --for Acme: exit 0, last line is <url>/?opsx_share=<token>" '[ $rc -eq 0 ] && [[ "$A1" =~ ^https://web--shop\.ex\.test/\?opsx_share=[A-Za-z0-9_-]{22,}$ ]]'
+  ok "share token not the owner key, key not printed" '[ "$TA1" != "$RK" ] && [[ "$o" != *"$RK"* ]]'
+  ok "recipient normalised to acme in state" 'grep -q "^SHARE=[0-9a-f]\{6\}:acme:[0-9]*:$TA1$" "$RC/state/tmux-opsx/expose/routes/web--shop.env"'
+  o=$(RE share web --for acme --project shop 2>/dev/null); A2=$(printf '%s\n' "$o" | tail -n1); TA2=$(tok_of "$A2")
+  ok "same recipient replaced: new token, old link 401, new link 302" '[ "$TA1" != "$TA2" ] && [ "$(rq web--shop "/?opsx_share=$TA1")" = 401 ] && [ "$(rq web--shop "/?opsx_share=$TA2")" = 302 ] && [ "$(grep -c ":acme:" "$RC/state/tmux-opsx/expose/routes/web--shop.env")" -eq 1 ]'
+  code=$(rq web--shop "/x/y?opsx_share=$TA2"); sc=$(hdr Set-Cookie)
+  exp=$(grep ":acme:" "$RC/state/tmux-opsx/expose/routes/web--shop.env" | cut -d: -f3)
+  ok "share link: 302 to the path, host-only cookie (no Domain), Expires at the deadline" '[ "$code" = 302 ] && [ "$(hdr Location)" = https://web--shop.ex.test/x/y ] && [[ "$sc" == "opsx_share=$TA2;"* ]] && [[ "$sc" != *"Domain"* ]] && [[ "$sc" == *"Path=/"* ]] && [[ "$sc" == *"Secure"* ]] && [[ "$sc" == *"HttpOnly"* ]] && [[ "$sc" == *"SameSite=Lax"* ]] && [[ "$sc" == *"Expires=$(LC_ALL=C date -u -d "@$exp" "+%a, %d %b %Y %H:%M:%S GMT")"* ]]'
+  rq web--shop / -H "Cookie: opsx_share=$TA2; theme=dark" >/dev/null
+  ok "share cookie reaches the app, stripped" 'grep -qx "app web cookie=\[theme=dark\]" "$RC/body"'
+  ok "web share token refused on api (query and cookie)" '[ "$(rq api--shop "/?opsx_share=$TA2")" = 401 ] && [ "$(rq api--shop / -H "Cookie: opsx_share=$TA2")" = 401 ]'
+  now=$(date +%s)
+  ok "default ttl: 7 days" '[ $((exp - now)) -ge $((7*86400 - 60)) ] && [ $((exp - now)) -le $((7*86400)) ]'
+  o=$(RE share web --project shop 2>/dev/null); D1=$(tok_of "$(printf '%s\n' "$o" | tail -n1)")
+  did=$(grep ":$D1$" "$RC/state/tmux-opsx/expose/routes/web--shop.env" | cut -d= -f2 | cut -d: -f1)
+  ok "no --for: recipient link-<id>" 'grep -q "^SHARE=$did:link-$did:" "$RC/state/tmux-opsx/expose/routes/web--shop.env"'
+  G=$(tok_of "$(RE share web --for globex --ttl never --project shop 2>/dev/null | tail -n1)")
+  ok "--ttl never: no deadline, cookie without Expires" 'grep -q ":globex:never:$G$" "$RC/state/tmux-opsx/expose/routes/web--shop.env" && [ "$(rq web--shop "/?opsx_share=$G")" = 302 ] && [[ "$(hdr Set-Cookie)" != *Expires* ]]'
+  l=$(RE share web --list --project shop 2>/dev/null)
+  ok "share --list: header + rows for acme and globex with ID, expiry, link" 'printf "%s\n" "$l" | head -1 | grep -Eq "^FOR +ID +EXPIRES +LINK$" && printf "%s\n" "$l" | grep -Eq "^acme +[0-9a-f]{6} +[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z +https://web--shop.ex.test/\?opsx_share=$TA2$" && printf "%s\n" "$l" | grep -Eq "^globex +[0-9a-f]{6} +never +https://web--shop.ex.test/\?opsx_share=$G$"'
+  ok "share --list: acme expires 7 days from now" 'printf "%s\n" "$l" | grep -q "^acme .* $(date -u -d "@$exp" +%Y-%m-%dT%H:%MZ) "'
+  n_before=$(grep -c "^SHARE=" "$RC/state/tmux-opsx/expose/routes/web--shop.env")
+  e=$(RE share web --ttl 3weeks --project shop 2>&1); rc=$?
+  ok "invalid ttl: exit 2 naming it, no token" '[ $rc -eq 2 ] && [[ "$e" == *3weeks* ]] && [ "$(grep -c "^SHARE=" "$RC/state/tmux-opsx/expose/routes/web--shop.env")" -eq "$n_before" ]'
+  for t in 0d 5w 1.5h -1d d; do
+    RE share web --ttl "$t" --project shop >/dev/null 2>&1; rc=$?
+    ok "invalid ttl $t: exit 2" '[ $rc -eq 2 ]'
+  done
+  RE share nosuch --project shop >/dev/null 2>&1; rc=$?
+  ok "share of an unknown exposure: non-zero, no record" '[ $rc -ne 0 ] && [ ! -e "$RC/state/tmux-opsx/expose/routes/nosuch--shop.env" ]'
+
+  # ---- expiry enforced by the proxy (stored deadline 2s ahead via OPSX_EXPOSE_NOW) ----
+  S=$(tok_of "$(OPSX_EXPOSE_NOW=$(( $(date +%s) - 58 )) RE share web --for shorty --ttl 1m --project shop 2>/dev/null | tail -n1)")
+  ok "short link works before its deadline" '[ "$(rq web--shop "/?opsx_share=$S")" = 302 ] && [ "$(rq web--shop / -H "Cookie: opsx_share=$S")" = 200 ]'
+  sleep 3
+  ok "after its deadline, no expose.sh call in between: query and cookie 401" '[ "$(rq web--shop "/?opsx_share=$S")" = 401 ] && [ "$(rq web--shop / -H "Cookie: opsx_share=$S")" = 401 ]'
+  ok "expired token still listed as expired until the next call prunes it" 'grep -q ":shorty:" "$RC/state/tmux-opsx/expose/routes/web--shop.env"'
+  l=$(RE share web --list --project shop 2>/dev/null)
+  ok "expired token gone from --list and state after the next call" '! printf "%s\n" "$l" | grep -q "^shorty " && ! grep -q ":shorty:" "$RC/state/tmux-opsx/expose/routes/web--shop.env"'
+
+  # ---- revoke ----
+  o=$(RE share web --revoke acme --project shop 2>/dev/null); rc=$?
+  ok "revoke acme: exit 0, its cookie 401, globex still works" '[ $rc -eq 0 ] && [ "$(rq web--shop / -H "Cookie: opsx_share=$TA2")" = 401 ] && [ "$(rq web--shop / -H "Cookie: opsx_share=$G")" = 200 ]'
+  o=$(RE share web --revoke nosuch --project shop 2>/dev/null); rc=$?
+  ok "revoke nosuch: exit 0, says nothing matched" '[ $rc -eq 0 ] && [[ "$o" == *"nothing to revoke"* ]]'
+  RE share web --revoke "$did" --project shop >/dev/null 2>&1
+  ok "revoke by id" '! grep -q "^SHARE=$did:" "$RC/state/tmux-opsx/expose/routes/web--shop.env" && [ "$(rq web--shop "/?opsx_share=$D1")" = 401 ]'
+
+  # ---- re-publish keeps links; down drops them ----
+  RE up "$WEB2P" --name web --project shop >/dev/null 2>&1
+  rq web--shop / -H "Cookie: opsx_share=$G" >/dev/null
+  ok "re-publish to a new port: globex link still works, reaches the new app" 'grep -q "^app web2 " "$RC/body" && [ "$(rq web--shop "/?opsx_share=$G")" = 302 ]'
+
+  # ---- key rotate ----
+  o=$(RE key rotate 2>&1); rc=$?
+  RK2=$(cat "$RC/config/tmux-opsx/expose.key")
+  ok "key rotate: exit 0, new key, not printed" '[ $rc -eq 0 ] && [ "$RK2" != "$RK" ] && [[ "$o" != *"$RK2"* ]] && [ "$(stat -c %a "$RC/config/tmux-opsx/expose.key")" = 600 ]'
+  ok "key rotate: old owner cookie and old login link 401" '[ "$(rq web--shop / -H "Cookie: opsx_auth=$RK")" = 401 ] && [ "$(rq api--shop "/?opsx_key=$RK")" = 401 ]'
+  NL=$(RE url web --project shop --with-key 2>/dev/null | tail -n1)
+  ok "key rotate: url --with-key prints the new key, which logs in" '[ "$NL" = "https://web--shop.ex.test/?opsx_key=$RK2" ] && [ "$(rq web--shop "/?opsx_key=$RK2")" = 302 ]'
+  ok "key rotate: share links still work" '[ "$(rq web--shop / -H "Cookie: opsx_share=$G")" = 200 ]'
+  RE share web --revoke all --project shop >/dev/null 2>&1
+  ok "revoke all: no SHARE lines, globex 401" '! grep -q "^SHARE=" "$RC/state/tmux-opsx/expose/routes/web--shop.env" && [ "$(rq web--shop / -H "Cookie: opsx_share=$G")" = 401 ]'
+
+  # ---- down then up drops share links ----
+  Z=$(tok_of "$(RE share web --for acme --project shop 2>/dev/null | tail -n1)")
+  RE down web --project shop >/dev/null 2>&1
+  RE up "$WEBP" --name web --project shop >/dev/null 2>&1
+  ok "down then up: old link 401, --list empty" '[ "$(rq web--shop "/?opsx_share=$Z")" = 401 ] && RE share web --list --project shop 2>/dev/null | grep -q "no share links"'
+
+  stop_caddy
+  kill "${APP_PIDS[@]}" 2>/dev/null; wait "${APP_PIDS[@]}" 2>/dev/null
+  ok "real Caddy torn down" '! (exec 3<>"/dev/tcp/127.0.0.1/$RP") 2>/dev/null'
 fi
 
 # =====================================================================
@@ -364,6 +662,7 @@ if command -v jq >/dev/null 2>&1; then
   J="$CFG/caddy.json"
   ok "caddy.json: only :443" '[ "$(jq -c "[.apps.http.servers[].listen[]]" "$J")" = "[\":443\"]" ] && [ "$(jq -r ".apps.http.servers.expose.automatic_https.disable_redirects" "$J")" = true ]'
   ok "caddy.json: wildcard subject + cloudflare DNS" '[ "$(jq -r ".apps.tls.automation.policies[0].subjects[0]" "$J")" = "*.dev.example.com" ] && [ "$(jq -r ".apps.tls.automation.policies[0].issuers[0].challenges.dns.provider.name" "$J")" = cloudflare ]'
+  ok "caddy.json: no autosave (admin.config.persist false)" '[ "$(jq -r ".admin.config.persist" "$J")" = false ]'
   ok "caddy.json: unix admin socket in mode-700 dir" 'a=$(jq -r ".admin.listen" "$J"); [[ "$a" == unix/* ]] && [ "$(dirname "${a#unix/}")" = "$STD" ] && [ "$(stat -c %a "$STD")" = 700 ]'
 fi
 ok "systemd unit written under user config" 'grep -q "^ExecStart=.* run --config" "$CFG/tmux-opsx-caddy.service" && ! grep -q -- "--resume" "$CFG/tmux-opsx-caddy.service" && grep -q "^ExecStartPost=-.*/expose/expose.sh\" list" "$CFG/tmux-opsx-caddy.service" && grep -q "^AmbientCapabilities=CAP_NET_BIND_SERVICE" "$CFG/tmux-opsx-caddy.service" && grep -q "^EnvironmentFile=$CFG/expose.env" "$CFG/tmux-opsx-caddy.service"'
@@ -385,6 +684,17 @@ ok "rerun without token exits 0 and keeps t1" '[ $rc -eq 0 ] && grep -qx "CLOUDF
 ok "rerun leaves identical files (no .bak, no duplicates)" '[ "$sum_before" = "$sum_after" ]'
 run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" --
 ok "later run without the flag leaves expose untouched" 'grep -qx "CLOUDFLARE_API_TOKEN=secret-t1" "$CFG/expose.env" && [ "$(n_expose_dirs)" -eq 6 ]'
+
+# An old Caddy autosave holding expose routes (and so keys) is removed on
+# rerun; one that is not ours is left alone.
+AS=$IH/.config/caddy/autosave.json; mkdir -p "$(dirname "$AS")"
+printf '{"apps":{"http":{"servers":{"expose":{"routes":[{"@id":"expose-web--shop","handle":[{"handler":"static_response","headers":{"Set-Cookie":["opsx_auth=k"]}}]}]}}}}}\n' > "$AS"
+run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" -- --expose-domain dev.example.com; rc=$?
+ok "rerun removes an old autosave.json holding expose routes" '[ $rc -eq 0 ] && [ ! -e "$AS" ]'
+printf '{"apps":{"http":{"servers":{"mine":{"routes":[]}}}}}\n' > "$AS"
+run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" -- --expose-domain dev.example.com
+ok "rerun keeps an autosave.json that is not ours" '[ -f "$AS" ]'
+rm -f "$AS"
 
 # F1: rerun with another domain while the proxy runs (unit "installed" in a
 # scratch systemd dir): the new caddy.json is loaded, routes move to the new domain.

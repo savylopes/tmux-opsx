@@ -6,6 +6,9 @@
 #   opsx-preview.sh up   <change>|--main   start (or reuse) the preview, print its URL
 #   opsx-preview.sh stop <change>|--all    remove the route, kill the app and its window
 #   opsx-preview.sh url  <change>|--main   reprint (and copy) the URL of a running preview
+#   opsx-preview.sh share <change>|--main [--for <recipient>] [--ttl <dur>]
+#                                          share link for a running preview (expose.sh share)
+#   opsx-preview.sh share <change>|--main --list | --revoke <recipient|id|all>
 #   opsx-preview.sh list                   previews recorded for this project
 #   opsx-preview.sh prune                  forget state left by changes whose worktree is gone
 #   opsx-preview.sh help
@@ -14,6 +17,10 @@
 # runs the main checkout and publishes it under the name `main`. The project
 # is the main checkout's folder name, the same from every worktree, so the URL
 # is https://<change>--<project>.<domain> and stays the same across restarts.
+# Like every exposure it needs a login: the owner's cookie, or a share link
+# from `share` (one host only, expires after --ttl, default 7d). The app must
+# listen on 127.0.0.1 (HOST is exported for that); `up` fails, stops the app
+# and closes its window when expose.sh refuses a non-loopback bind.
 #
 # Recipe, from the checkout being previewed:
 #   .opsx/preview.yaml   flat `key: value` lines (# comments, one layer of
@@ -60,7 +67,8 @@
 #         hashes of checkouts that no longer exist.
 #
 # Exit codes: 0 ok (stop with nothing running is ok), 1 failure, 2 usage.
-# `up` and `url` print the URL as the last line of standard output.
+# `up` and `url` print the URL as the last line of standard output; `share`
+# relays expose.sh share (the link is its last line) and its exit code.
 
 set -uo pipefail
 
@@ -79,7 +87,7 @@ warn() { printf 'opsx-preview: warning: %s\n' "$*" >&2; }
 err()  { printf 'opsx-preview: %s\n' "$*" >&2; }
 die()  { err "$1"; exit "${2:-1}"; }
 usage() { awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"; }
-short_usage() { err "usage: opsx-preview.sh up|stop|url <change>|--main, stop --all, list, prune — see: opsx-preview.sh help"; }
+short_usage() { err "usage: opsx-preview.sh up|stop|url|share <change>|--main, stop --all, list, prune — see: opsx-preview.sh help"; }
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
@@ -705,11 +713,16 @@ cmd_up() {
   errf=$PROJECT_STATE/$NAME.expose.err
   out=$("$EXPOSE" up "$port" --name "$NAME" --project "$PROJECT" 2>"$errf" 9>&-); rc=$?
   if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 2 ] && grep -q "refusing to publish" "$errf" 2>/dev/null; then
+      # Loopback only: the app listens on a public address. Relay expose's
+      # reason (it names the address and 127.0.0.1) and clean up.
+      abort_start "$pgid" "$log" "the app listens on a non-loopback address, so expose refused it — make the preview command bind to 127.0.0.1 (\$HOST) instead: $(awk 'NF' "$errf" | sed 's/^expose: //' | tail -n 2)"
+    fi
     abort_start "$pgid" "$log" "expose.sh up failed (exit $rc): $( { cat "$errf"; printf '%s\n' "$out"; } 2>/dev/null | awk 'NF' | tail -n 3)"
   fi
   [ -s "$errf" ] && cat "$errf" >&2
   rm -f "$errf"
-  # Relay expose's own lines (public-URL warning, ...) but not the URL itself.
+  # Relay expose's own lines (login note, ...) but not the URL itself.
   printf '%s\n' "$out" | awk 'NF { if (l != "") print l; l = $0 }' | strip_osc8
   url=$(printf '%s\n' "$out" | awk 'NF { l = $0 } END { print l }' | strip_osc8)
   write_record "$NAME" "$CHECKOUT" "$port" "$pgid" "$wid" "$log" "$url" "$R_HEALTH_PATH"
@@ -851,6 +864,34 @@ cmd_url() {
   say "$R_URL"
 }
 
+# share <change>|--main [--for <r>] [--ttl <d>] [--list] [--revoke <r|id|all>]:
+# expose.sh share for the preview's exposure, output and exit code relayed.
+cmd_share() {
+  local arg=${1:-} name f opts=()
+  [ -n "$arg" ] || die "usage: opsx-preview.sh share <change>|--main [--for <recipient>] [--ttl <dur>] [--list] [--revoke <recipient|id|all>]" 2
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --for|--ttl|--revoke)
+        [ $# -ge 2 ] || die "$1 needs a value" 2
+        opts+=("$1" "$2"); shift 2 ;;
+      --for=*|--ttl=*|--revoke=*|--list) opts+=("$1"); shift ;;
+      *) die "share: unknown argument '$1' (options: --for, --ttl, --list, --revoke)" 2 ;;
+    esac
+  done
+  name=$arg
+  [ "$arg" = "--main" ] && name=main
+  valid_name "$name" || die "invalid change name '$arg'" 2
+  f=$(record_file "$name")
+  if ! { read_record "$f" && [ -n "$R_URL" ] && window_alive "$name" "$R_WINDOW_ID" \
+          && group_is_preview "$name" "$R_PGID"; }; then
+    die "no preview running for $name — start one with: opsx-preview.sh up $arg"
+  fi
+  find_expose
+  [ -n "$EXPOSE" ] || die "expose is not installed — previews need it: run install.sh --expose-domain <domain>"
+  "$EXPOSE" share "$name" --project "$PROJECT" "${opts[@]+"${opts[@]}"}" 9>&-
+}
+
 cmd_list() {
   local f status n=0
   for f in "$PROJECT_STATE"/*.env; do
@@ -876,11 +917,12 @@ main() {
   [ $# -gt 0 ] && shift
   case "$cmd" in
     help|-h|--help) usage; exit 0 ;;
-    up|stop|url|list|prune) ;;
+    up|stop|url|share|list|prune) ;;
     *) err "unknown subcommand: $cmd"; short_usage; exit 2 ;;
   esac
   case "$cmd" in
     list|prune) [ $# -eq 0 ] || die "$cmd takes no arguments" 2 ;;
+    share)      ;;
     *)          [ $# -le 1 ] || die "$cmd takes one argument (got: $*)" 2 ;;
   esac
   resolve_project
@@ -891,6 +933,7 @@ main() {
     up)    cmd_up "$@" ;;
     stop)  cmd_stop "$@" ;;
     url)   cmd_url "$@" ;;
+    share) cmd_share "$@" ;;
     list)  cmd_list ;;
     prune) prune_state ;;
   esac

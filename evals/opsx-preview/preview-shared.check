@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Preview shared
+# level: L2
+# requirement: Share a preview
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+trap '_preview_cleanup; _expose_cleanup' EXIT
+# real expose.sh against the independent fake Caddy admin (no real proxy, DNS or TLS)
+configure_expose; start_admin "$(caddy_json)"; export OPSX_EXPOSE_SH="$EXPOSE_SH"
+xl() { "$EXPOSE_SH" list --json; }
+mk_repo; mk_worktree; recipe "$WT" "$HTTP_CMD" "timeout: 30"
+pv up add-auth; echo "up exit $rc"; echo "$out" | tail -3; [ "$rc" -eq 0 ] || fail "setup: preview up failed"
+pv share add-auth --for acme; echo "share exit $rc"; echo "$out" | sed -E 's/(opsx_share=)[A-Za-z0-9_-]+/\1<token>/'
+[ "$rc" -eq 0 ] || fail "share exited $rc"
+l=$(last_line); printf '%s' "$l" | grep -Eqx 'https://add-auth--shop\.dev\.example\.com/\?opsx_share=[A-Za-z0-9_-]{22,}' || fail "last line is not the share link: $l"
+echo OK

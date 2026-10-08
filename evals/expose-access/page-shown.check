@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Page shown
+# level: L2
+# requirement: Login page
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app web
+x up "$APP_PORT" --name web >/dev/null || fail "up failed"
+req web--shop /some/path; echo "-> $CODE"; printf '%s\n' "$HDRS" | tr -d '\r' | grep -i '^content-type'
+[ "$CODE" = 401 ] || fail "expected 401, got $CODE"
+printf '%s' "$BODY" | grep -iq '<form' || fail "401 body has no <form>"
+printf '%s' "$BODY" | grep -Eq "name=[\"']?opsx_key" || fail "no form field named opsx_key"
+printf '%s' "$BODY" | grep -iq 'expired' || fail "body does not say the link may have expired"
+printf '%s' "$BODY" | grep -iqE '<html|<!doctype html' || fail "body is not HTML"
+echo OK

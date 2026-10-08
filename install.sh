@@ -72,7 +72,9 @@
 #   --skip-memory      Don't install the memory skill, instruction blocks, store, or import
 #   --skip-fork        Don't install the /fork skill
 #   --expose-domain <d>  Set up /expose: publish local ports at https://<name>--<project>.<d>
-#                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9)
+#                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9).
+#                      Use a domain that serves nothing else: the login cookie
+#                      is sent to every host under it
 #   --no-backup        Overwrite existing files without keeping a .bak copy
 #   --uninstall        Remove everything this script installs (except the CLI)
 #   -h, --help         Show this help
@@ -847,7 +849,10 @@ expose_write_caddy_config() {
   cat > "$EXPOSE_CADDY_JSON.tmp" <<JSON || die "cannot write $EXPOSE_CADDY_JSON"
 {
   "admin": {
-    "listen": "unix/$sock"
+    "listen": "unix/$sock",
+    "config": {
+      "persist": false
+    }
   },
   "apps": {
     "http": {
@@ -896,6 +901,21 @@ JSON
   replace_if_changed "$EXPOSE_CADDY_JSON"
   [ "$existed" -eq 1 ] && [ "$REPLACED" -eq 1 ] && EXPOSE_CONFIG_CHANGED=1
   ok "$(tilde "$EXPOSE_CADDY_JSON") (*.$EXPOSE_DOMAIN on :443, admin socket $(tilde "$EXPOSE_SOCK"))"
+  expose_remove_autosave
+}
+
+# An earlier build ran Caddy with autosave on, so autosave.json may still hold
+# routes with the owner key and share tokens. Delete it when it is ours (it
+# names an expose route or the opsx cookies); leave any other Caddy's alone.
+expose_remove_autosave() {
+  local f=${XDG_CONFIG_HOME:-$HOME/.config}/caddy/autosave.json
+  [ -f "$f" ] || return 0
+  grep -qE '"expose-fp-|opsx_(auth|key|share)' "$f" 2>/dev/null || return 0
+  if rm -f "$f"; then
+    ok "removed $(tilde "$f") (an old Caddy autosave that held expose routes and keys)"
+  else
+    warn "cannot remove $(tilde "$f"); it may hold the owner key — delete it by hand"
+  fi
 }
 
 expose_unit_user() {
@@ -921,7 +941,8 @@ Environment="HOME=$HOME"
 Environment="XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}"
 Environment="XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}"
 EnvironmentFile=$EXPOSE_ENV
-# Caddy starts from caddy.json alone (no autosave), so a rerun of install.sh
+# Caddy starts from caddy.json alone (autosave is off: "persist": false keeps
+# the owner key and share tokens out of autosave.json), so a rerun of install.sh
 # takes effect on the next start; expose.sh then puts the recorded routes back.
 ExecStart="$CADDY_BIN" run --config "$EXPOSE_CADDY_JSON"
 ExecStartPost=-"$PREFIX/skills/expose/expose.sh" list --json

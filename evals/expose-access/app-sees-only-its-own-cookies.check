@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: expose-access / App sees only its own cookies
+# level: L2
+# requirement: Credentials not forwarded
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app web
+x up "$APP_PORT" --name web >/dev/null || fail "up failed"
+k=$(owner_key)
+req web--shop /c -H "Cookie: sid=1; opsx_auth=$k; theme=dark"; echo "-> $CODE"
+[ "$CODE" = 200 ] || fail "authorised request got $CODE"
+c=$(awk -F'\t' '$1=="/c"{print $2}' "$EVAL_TMP/app-web.log" | tail -1); echo "app saw Cookie: ${c//$k/<key>}"
+case "$c" in *opsx_auth*) fail "opsx_auth forwarded";; esac
+printf '%s' "$c" | grep -Eq '(^|; ?)sid=1(;|$)' || fail "sid=1 missing"
+printf '%s' "$c" | grep -Eq '(^|; ?)theme=dark(;|$)' || fail "theme=dark missing"
+echo OK

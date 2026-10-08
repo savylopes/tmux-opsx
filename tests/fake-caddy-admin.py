@@ -8,13 +8,17 @@ Caddy without --resume). Supports the subset of the admin API expose.sh uses:
   GET    /config/<path>   read a value (null when the leaf key is missing)
   POST   /config/<path>   append to an array, or set a missing/object key
   DELETE /config/<path>   remove a key or array item
-  GET    /id/<id>         read the object whose "@id" is <id>
+  GET    /id/<id>         read the object whose "@id" is <id>, verbatim (every
+                          field kept as posted, including a route's "group",
+                          which expose.sh uses as its route fingerprint)
   DELETE /id/<id>         remove the object whose "@id" is <id>
   POST   /load            replace the whole config (like `caddy reload`)
 Like Caddy, a change that would leave two objects with the same "@id" is
 refused with HTTP 400 and the config is left as it was. Requests are handled
 one at a time, as Caddy serialises config changes.
 Like Caddy on a unix socket, only Host 127.0.0.1, ::1 or "" is accepted.
+Fault injection: while the file <socket-path>.refuse exists, a POST whose body
+holds an "@id" listed in it (one per line) is refused with HTTP 400.
 
 Note: evals/_lib/fake_caddy_admin.py is a separate fake owned by ops-eval (the
 eval suite must not depend on test code, and tests must not depend on evals/).
@@ -169,6 +173,8 @@ class Handler(BaseHTTPRequestHandler):
                 return 200, parent[int(key)]
             if method == "POST":
                 val = self.body()
+                if refused(self.server.sock, val):
+                    return 400, {"error": "refused by test fault injection"}
                 if not parts:
                     self.server.config = val
                     return 200, None
@@ -212,6 +218,26 @@ class Handler(BaseHTTPRequestHandler):
         self.handle_any("DELETE")
 
 
+def ids_in(node):
+    if isinstance(node, dict):
+        if "@id" in node:
+            yield node["@id"]
+        for v in node.values():
+            yield from ids_in(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from ids_in(v)
+
+
+def refused(sock, val):
+    try:
+        with open(sock + ".refuse") as f:
+            bad = {line.strip() for line in f if line.strip()}
+    except OSError:
+        return False
+    return any(i in bad for i in ids_in(val))
+
+
 class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
 
@@ -223,6 +249,7 @@ def main():
     if os.path.exists(sock):
         os.unlink(sock)
     srv = Server(sock, Handler)
+    srv.sock = sock
     if len(sys.argv) > 2:
         with open(sys.argv[2]) as f:
             srv.config = json.load(f)

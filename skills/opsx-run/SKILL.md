@@ -36,6 +36,8 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> preview              # run the change's app from its worktree, publish it via /expose, print the URL
 /opsx-run <change> preview stop         # remove the route, kill the app and its window
 /opsx-run <change> preview url          # reprint (and copy) the running preview's URL
+/opsx-run <change> preview share [--for <recipient>] [--ttl <dur>]   # share link for a client (one host, expires; default 7d)
+/opsx-run <change> preview share --list | --revoke <recipient|id|all> # list or revoke the preview's share links
 /opsx-run preview                       # same, but pick a change or the main checkout (main--<project>)
 /opsx-run <change> archive
 /opsx-run <change> status               # snapshot of what the window is doing right now
@@ -77,9 +79,13 @@ Previews are run by `~/.claude/skills/opsx-run/opsx-preview.sh` — the **only**
 opsx-preview.sh up   <change>|--main     # start or reuse; the URL is the last stdout line
 opsx-preview.sh stop <change>|--all      # exit 0 even when nothing runs; 1 when a window could not be closed
 opsx-preview.sh url  <change>|--main     # non-zero when nothing runs
+opsx-preview.sh share <change>|--main [--for <r>] [--ttl <n>m|<n>h|<n>d|never] [--list] [--revoke <r|id|all>]
+                                         # expose.sh share for the preview; the link is the last stdout line
 opsx-preview.sh list
 opsx-preview.sh prune                    # forget state of changes whose worktree is gone (land runs it)
 ```
+
+Preview URLs need a login like every exposure (owner cookie from `expose.sh url <name> --with-key`, or a share link). Do not print the owner login link or a share link unless the user asked for it; `preview share` is that request. A recipe whose app binds `0.0.0.0` fails `up` (expose refuses non-loopback binds) — relay that it must bind `127.0.0.1` (`$HOST`).
 
 Preview windows are titled `ox ><change>` (ASCII, so non-UTF-8 clients show it as-is) and tagged `@opsx_preview=<change>`, never `@opsx_change`, so they are never mistaken for the agent window.
 
@@ -135,7 +141,7 @@ Write prompts to a file in the session scratchpad (e.g. `<scratchpad>/opsx-<chan
    - `/opsx-run <change> qa` / `review` / `security` and `/opsx-run <change> qa "..."` / `review "..."` / `security "..."` — change is named.
    - `/opsx-run qa` / `review` / `security` and `/opsx-run qa "..."` / `review "..."` / `security "..."` — change is omitted; pick it as above, then run the same action. Extra quoted text is **not** free-form window chat: it is extra notes for **ops-qa**, **ops-reviewer**, or **ops-security** respectively.
    - `/opsx-run <change> eval [--agentic]` — change is named. `/opsx-run eval [--agentic]` — change is omitted; pick it as above. `eval` takes no free-form notes (ops-eval works from the specs only).
-   - **`preview`** as the first token is an action too. `/opsx-run <change> preview [stop|url]` — change is named. `/opsx-run preview [stop|url]` — change is omitted: use **AskUserQuestion** with the active changes (from `openspec list --json`) **plus "main checkout"** as options, and never guess. Picking the main checkout maps to `opsx-preview.sh <up|stop|url> --main` (published as `main--<project>`).
+   - **`preview`** as the first token is an action too. `/opsx-run <change> preview [stop|url|share …]` — change is named. `/opsx-run preview [stop|url|share …]` — change is omitted: use **AskUserQuestion** with the active changes (from `openspec list --json`) **plus "main checkout"** as options, and never guess. Picking the main checkout maps to `opsx-preview.sh <up|stop|url|share> --main` (published as `main--<project>`).
 
 Both `openspec` and the window's agent CLI run from the current working directory, so run `/opsx-run` from the project root.
 
@@ -153,7 +159,7 @@ Both `openspec` and the window's agent CLI run from the current working director
 | `archive` | Gate inline: `validate --strict` passes **and** `status.isComplete` is true. If not, refuse and say exactly which check failed | Archive dispatcher prompt |
 | `status` | — | Nothing; run `opsx-window.sh status <c>` and relay the meaningful tail |
 | free text | — | `ensure` with the user's text verbatim. **If the window is missing, create it** — never tell the user to `apply` first just to recreate the window |
-| `preview` / `preview stop` / `preview url` | Runs `opsx-preview.sh up <c>` / `stop <c>` / `url <c>` **inline** (`--main` for the main checkout). Relay the URL (its last stdout line), the `detected:` line when present, and any warning (e.g. unknown recipe keys). On failure relay the reason as printed — e.g. "apply the change first", "add `.opsx/preview.yaml`", or "run `install.sh --expose-domain <domain>`" — plus the log tail | Nothing |
+| `preview` / `preview stop` / `preview url` / `preview share` | Runs `opsx-preview.sh up <c>` / `stop <c>` / `url <c>` / `share <c> [options]` **inline** (`--main` for the main checkout; `share` options passed as given). Relay the URL (its last stdout line), the `detected:` line when present, and any warning (e.g. unknown recipe keys). On failure relay the reason as printed — e.g. "apply the change first", "add `.opsx/preview.yaml`", or "run `install.sh --expose-domain <domain>`" — plus the log tail | Nothing |
 | `close` | — | Nothing; `opsx-window.sh close <c>` stops the change's preview (route, app, window) and kills that window |
 | `close-all` | Confirm with **AskUserQuestion** first — this kills several live sessions at once | Nothing; `opsx-window.sh close --all` also stops every preview in the project |
 | `merge` | Runs `opsx-merge.sh <change> [--into <branch>]` **inline**; `--no-ff` merge only — keeps the branch, worktree and window | Nothing |
@@ -196,7 +202,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 > 6. Review `FAIL` → delegate **ops-applier** to fix review FINDINGS **verbatim** (keep F1, F2, …), then go to step 5. Review `PASS` or `SKIP` → step 7.
 > 7. Delegate security to **ops-security** only (`run_in_background: false`). Print `VERDICT:` and FINDINGS. Codex/Gemini: run security yourself.
 > 8. Security `FAIL` → delegate **ops-applier** to fix security FINDINGS **verbatim**, then go to step 7. Security `PASS` or `SKIP` → step 9.
-> 9. Before QA, run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`. On exit 0 pass its last stdout line to ops-qa as `PREVIEW_URL` (test that URL, do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Then delegate QA to **ops-qa** only (`run_in_background: false`). Codex/Gemini: same, then run QA yourself against that URL. Print `VERDICT:` and FINDINGS. Leave the preview running.
+> 9. Before QA, run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`, then on exit 0 `<skills>/opsx-run/opsx-preview.sh share <change> --for ops-qa --ttl 1d`. On exit 0 of both pass the share command's last stdout line (a share link) to ops-qa as `PREVIEW_URL` (open it first and keep the same browser context so its login cookie applies; do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Then delegate QA to **ops-qa** only (`run_in_background: false`). Codex/Gemini: same, then run QA yourself against that URL. Print `VERDICT:` and FINDINGS. Leave the preview running.
 > 10. QA `PASS` or `SKIP` → `UpdateGoal` complete, `mark <change> done`, stop.
 > 11. QA `FAIL` → keep the goal active. Delegate **ops-applier** to fix QA FINDINGS **verbatim**. Then go to step 9.
 > Stop after marking. Do not return work to the parent session.
@@ -274,7 +280,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
-> First run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`. On exit 0 pass its last stdout line to ops-qa as `PREVIEW_URL` (test that URL, do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Leave the preview running.
+> First run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`, then on exit 0 `<skills>/opsx-run/opsx-preview.sh share <change> --for ops-qa --ttl 1d`. On exit 0 of both pass the share command's last stdout line (a share link) to ops-qa as `PREVIEW_URL` (open it first and keep the same browser context so its login cookie applies; do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Leave the preview running.
 > Delegate to **ops-qa** only (`subagent_type: "ops-qa"` / `@ops-qa`). Codex/Gemini: run the QA checks yourself, against `PREVIEW_URL` when you have one.
 > Pass: change name, `opsx/<change>` / `../wt-<change>`, `PREVIEW_URL` (or the reason there is none), how to run the app if known. Use browser-use MCP when user-facing.
 > Extra notes from the user (omit this block if they sent none):

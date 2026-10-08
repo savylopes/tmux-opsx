@@ -7,7 +7,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  ├── workflow     /opsx-run: change → window → apply → gates → merge/land
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork
- ├── sharing      /expose: local port → public https://<name>--<project>.<domain> (opt-in)
+ ├── sharing      /expose: local port → https://<name>--<project>.<domain> behind a login, share links for clients (opt-in)
  │                /opsx-run <change> preview: a change's app → https://<change>--<project>.<domain>
  └── portability  install.sh → Claude Code · Cursor CLI · Codex CLI · OpenCode · Gemini CLI
 ```
@@ -32,7 +32,7 @@ Not in tmux? It starts a session named after the project folder for you.
   /opsx-run add-auth qa ...... one-shot UI/UX QA
   /opsx-run add-auth qa "..." extra notes for ops-qa
   /opsx-run qa "..." ......... same, pick the change if omitted
-  /opsx-run add-auth preview . run the change's app, public URL via /expose
+  /opsx-run add-auth preview . run the change's app, URL (behind a login) via /expose
   /opsx-run add-auth merge ... merge into main (branch/window stay)
   /opsx-run add-auth land .... merge + archive + cleanup, window closes
 ```
@@ -63,7 +63,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | Memory instruction block | `CLAUDE.md` (Claude config dir) · `~/.codex/AGENTS.md` · `~/.config/opencode/AGENTS.md` · `~/.gemini/GEMINI.md` | Marked block (`<!-- tmux-opsx:memory:start -->` … `:end -->`) telling each agent to use the shared store |
 | Memory store | `~/.agents/memory/` | Plain folder: `MEMORY.md` index + `user/` `feedback/` `project/` `reference/` — created once, never overwritten |
 | `/fork` skill + `fork.sh` | `~/.claude/skills/fork/` · `~/.cursor/skills/fork/` · `~/.agents/skills/fork/` · `$CODEX_HOME/skills/fork/` · `~/.config/opencode/skills/fork/` · `~/.gemini/skills/fork/` | Read-only side-question agent in a tmux pane, briefed with the current context; notify-then-pull results (see [Fork](#fork)) |
-| `/expose` skill + `expose.sh` (opt-in, `--expose-domain`) | `~/.claude/skills/expose/` · `~/.cursor/skills/expose/` · `~/.agents/skills/expose/` · `$CODEX_HOME/skills/expose/` · `~/.config/opencode/skills/expose/` · `~/.gemini/skills/expose/` | Publish `127.0.0.1:<port>` at `https://<name>--<project>.<domain>` through Caddy; list/down/url (see [Expose](#expose)) |
+| `/expose` skill + `expose.sh` (opt-in, `--expose-domain`) | `~/.claude/skills/expose/` · `~/.cursor/skills/expose/` · `~/.agents/skills/expose/` · `$CODEX_HOME/skills/expose/` · `~/.config/opencode/skills/expose/` · `~/.gemini/skills/expose/` | Publish `127.0.0.1:<port>` at `https://<name>--<project>.<domain>` through Caddy, behind a login; list/down/url, share links, key rotate (see [Expose](#expose)) |
 | Expose proxy (opt-in) | `~/.config/tmux-opsx/{expose.env,caddy.json,tmux-opsx-caddy.service}` · `~/.local/share/tmux-opsx/bin/caddy` | Caddy with `caddy-dns/cloudflare`: one wildcard cert via DNS-01, `:443` only, admin API on a user-only unix socket |
 
 ---
@@ -246,6 +246,7 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> preview` | Runs the change's app from its worktree in its own window and publishes it at `https://<change>--<project>.<domain>` (needs `/expose`; see [Preview](#preview)) |
 | `/opsx-run <change> preview stop` | Stops it: removes the route, kills the app and its window |
 | `/opsx-run <change> preview url` | Prints (and copies) the URL of the running preview |
+| `/opsx-run <change> preview share [--for <r>] [--ttl <d>]` | Prints a share link for the running preview (one host, expires; `--list`, `--revoke <r>` too) |
 | `/opsx-run preview` | Same as `preview`; pick a change or the main checkout (`main--<project>`) |
 | `/opsx-run <change> archive` | Gates on validate + all tasks complete, then dispatches the archive |
 | `/opsx-run <change> status` | Snapshot of what that window is doing right now |
@@ -304,6 +305,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-preview.sh up   <change>|--main
 ~/.claude/skills/opsx-run/opsx-preview.sh stop <change>|--all
 ~/.claude/skills/opsx-run/opsx-preview.sh url  <change>|--main
+~/.claude/skills/opsx-run/opsx-preview.sh share <change>|--main [--for <r>] [--ttl <d>] [--list] [--revoke <r|id|all>]
 ~/.claude/skills/opsx-run/opsx-preview.sh list
 ~/.claude/skills/opsx-run/opsx-preview.sh prune
 
@@ -430,7 +432,7 @@ Security review: auth, injection, secrets, unsafe defaults and trust boundaries.
 
 UI/UX check: visual regressions, broken flows, console errors and accessibility, driven through the browser-use MCP. Run it with `/opsx-run <change> qa ["notes"]` or `/opsx-run qa "notes"`. Returns SKIP when the change has no user-facing UI.
 
-Before ops-qa runs (in `qa` and in the `apply --validate` QA step), the window runs `opsx-preview.sh up <change>` and passes the URL to ops-qa as `PREVIEW_URL`, so the gate tests exactly what you would share; the preview is left running afterwards. When expose is not configured (or the preview fails), ops-qa gets the reason and starts the app itself as before.
+Before ops-qa runs (in `qa` and in the `apply --validate` QA step), the window runs `opsx-preview.sh up <change>` and then `opsx-preview.sh share <change> --for ops-qa --ttl 1d`, and passes that share link to ops-qa as `PREVIEW_URL`, so the gate tests exactly what you would share. ops-qa opens the link first and keeps the same browser context, so its login cookie applies; the link opens only that preview's host, expires after a day, and the next QA run replaces it. The owner key never reaches an agent transcript. The preview is left running afterwards. When expose is not configured (or the preview fails), ops-qa gets the reason and starts the app itself as before.
 
 ---
 
@@ -516,7 +518,7 @@ With more than one child beside the parent, the window switches to `main-vertica
 
 ### Expose
 
-`/expose` turns a local port into a public HTTPS URL, so you can open an app running on the VPS from a phone or laptop, or share it, without SSH tunnels. `/expose 3000` publishes `127.0.0.1:3000` at `https://3000--<project>.<domain>`, where `<project>` is the repo's folder name (the same in every worktree). It is opt-in: without `--expose-domain`, the installer sets up nothing expose-related.
+`/expose` turns a local port into an HTTPS URL behind a login, so you can open an app running on the VPS from a phone or laptop, or share it with a client, without SSH tunnels. `/expose 3000` publishes `127.0.0.1:3000` at `https://3000--<project>.<domain>`, where `<project>` is the repo's folder name (the same in every worktree). It is opt-in: without `--expose-domain`, the installer sets up nothing expose-related.
 
 ```
  browser ──https──> *.dev.example.com:443 ──> Caddy (wildcard cert, DNS-01)
@@ -524,7 +526,7 @@ With more than one child beside the parent, the window switches to `main-vertica
  expose.sh up/down ──> Caddy admin API (unix socket, user-only) — routes added live, no reload
 ```
 
-**Exposed URLs are public, with no authentication.** Anyone with the link can reach the app — debug pages, seeded admin accounts and real data included. `up` prints that warning every time.
+**Exposed URLs require a login.** Caddy lets a request through only with your owner cookie (any exposed host) or a share cookie (that one host); anything else gets a 401 login page and never reaches the app. See [Login and share links](#login-and-share-links). `--public` turns that off for one exposure.
 
 **Setup** (once per host):
 
@@ -554,14 +556,20 @@ EXPOSE=~/.claude/skills/expose/expose.sh  # or the expose/ folder of another CLI
 "$EXPOSE" up 3000                     # https://3000--<project>.dev.example.com
 "$EXPOSE" up 3000 --name web          # https://web--<project>.dev.example.com
 "$EXPOSE" up 3000 --name web --project shop   # https://web--shop.dev.example.com
-"$EXPOSE" list                        # NAME PROJECT PORT URL UP   (--json for scripts)
+"$EXPOSE" list                        # NAME PROJECT PORT URL UP BIND ACCESS   (--json for scripts)
 "$EXPOSE" url web                     # print + copy the URL again
-"$EXPOSE" down web                    # remove by name (down 3000 removes every exposure of port 3000)
+"$EXPOSE" url web --with-key          # your login link: open it once per device
+"$EXPOSE" share web --for acme        # share link for a client: this host only, 7 days
+"$EXPOSE" share web --list            # FOR ID EXPIRES LINK
+"$EXPOSE" share web --revoke acme     # that link and its cookie stop working at once
+"$EXPOSE" up 3001 --name hook --public   # no login (webhooks, OAuth callbacks)
+"$EXPOSE" key rotate                  # new owner key: logs every device out
+"$EXPOSE" down web                    # remove by name, with its share links (down 3000 removes every exposure of port 3000)
 ```
 
 - Names and projects are lowercased and reduced to `[a-z0-9-]`; a hostname label over 63 characters gets its name part cut and a stable 6-hex hash appended. Re-running `up` with the same name moves it to the new port.
 - The URL is the last line of output. It is copied to your local clipboard with OSC 52 (through tmux when reachable, so it works from an agent's Bash tool too), and shown as a clickable OSC 8 link on a terminal; a line on stderr says where it went (through tmux it lands in tmux's paste buffer, and reaches your clipboard only when tmux forwards it, see `set-clipboard` below). Nothing opens a browser. When `$TMUX` is unset, tmux is looked up through the parent processes' environment; set `TMUX=` (empty) to skip that lookup, or `OPSX_EXPOSE_NO_COPY=1` to never copy. `up` also notes on stderr when nothing listens on the port yet.
-- Exit codes: `0` ok, `2` bad usage, `3` not configured (run `install.sh --expose-domain`), `4` proxy not running, `1` other.
+- Exit codes: `0` ok, `2` bad usage or a refused non-loopback bind, `3` not configured (run `install.sh --expose-domain`), `4` proxy not running, `1` other.
 - Routes are recorded in `${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/expose/routes/`; every call puts back any route Caddy lost. Caddy starts from `caddy.json` alone (no `--resume`), and the unit runs `expose.sh list` right after start, so routes come back after a restart or reboot.
 - Rerunning `install.sh --expose-domain <other-domain>` (or with a new token) updates an existing setup: a changed `caddy.json` is loaded into the running proxy through its admin socket and the recorded routes are re-added on the new domain (their `URL=` is rewritten). When the token or the unit changed, the installer restarts the service as root, or prints the `sudo … systemctl restart tmux-opsx-caddy` command to run.
 - **Bind apps to `127.0.0.1`**, not `0.0.0.0`. A dev server listening on all interfaces is also reachable directly at `<server-ip>:<port>`, bypassing Caddy — unless a host firewall allows only 22 and 443.
@@ -574,6 +582,18 @@ set -as terminal-features ',*:hyperlinks'
 
 OSC 52 copying through tmux needs `set-clipboard` to be `on` or `external` (anything but `off`).
 
+#### Login and share links
+
+Every exposure needs a login unless it was published with `--public`. All checks run inside Caddy on every request (no extra service), and both cookies are removed from the request before it reaches your app, which still gets all its other cookies.
+
+- **You (owner):** `expose.sh url <name> --with-key` prints `https://<name>--<project>.<domain>/?opsx_key=<key>`. Open it once on each device (phone, laptop): it sets an `opsx_auth` cookie for every host under your domain (30 days, `Secure`, `HttpOnly`, `SameSite=Lax`) and redirects to the same path without the key. Because that cookie holds the owner key and goes to every host under the domain, use a domain that serves nothing but `/expose` (e.g. a dedicated `dev.example.com`). The login page also has a field to paste the key. The key lives in `~/.config/tmux-opsx/expose.key` (mode 600, created on first use, kept across reinstalls); only `url --with-key` prints it. `expose.sh key rotate` replaces it: every device is logged out and old login links stop working, share links keep working. If the proxy refuses to rebuild a route, `key rotate` exits non-zero and names the routes that may still accept the old key; the next `expose.sh` call retries them.
+- **Clients:** `expose.sh share <name> --for <recipient>` prints a share link `…/?opsx_share=<token>`. It works only on that one hostname and sets a host-only cookie there. One link per recipient: sharing again with the same `--for` replaces the old link. `--ttl` takes `<n>m`, `<n>h`, `<n>d` or `never` (default `7d`); Caddy refuses the link and its cookie after that time even if `expose.sh` never runs again. `share <name> --list` shows FOR, ID, EXPIRES and LINK; `share <name> --revoke <recipient|id|all>` deletes links at once. Expired links are cleaned out of the state on the next call. Re-publishing a name on another port keeps its links; `down` deletes them.
+- **No login:** `up <port> --public` publishes without any login, for webhooks or OAuth callbacks, and prints a warning that the URL is public. Caddy still catches `?opsx_key=` and `?opsx_share=` on a public host (a 302 to the same path without the query; the right owner key also logs you in), so a key or token never reaches the app's request log. Running `up` again without `--public` puts the login back.
+- **Agents** print the plain URL from `up` and `url`. The `/expose` skill tells them not to print a login or share link unless you asked for one.
+- **Loopback only:** `up` refuses (exit 2, nothing changed) a port that something listens on at `0.0.0.0`, `[::]` or another non-loopback address, because the app would be reachable at `<server-ip>:<port>` without the login. Bind it to `127.0.0.1` (Docker: `-p 127.0.0.1:3000:3000`). The check uses `ss` on Linux and `lsof` on macOS; without them `up` refuses too. When nothing listens yet, `up` publishes anyway, and `list` shows each exposure's BIND (`loopback`, `PUBLIC`, or `-`), so an app that binds publicly later shows up there.
+
+**Upgrading from public URLs:** links handed out before this version stop working without a cookie. After reinstalling (`install.sh --expose-domain <domain>`), the next `expose.sh` call (or a proxy restart) creates the key and rebuilds every recorded route with the login. Then run `expose.sh url <name> --with-key` once per device, issue `share` links to anyone who had the old URLs, and use `up --public` for anything that must stay open.
+
 **Removing expose** (there is no `--uninstall` for it yet):
 
 ```bash
@@ -582,7 +602,7 @@ rm -rf ~/.config/tmux-opsx ~/.local/share/tmux-opsx ~/.local/state/tmux-opsx/exp
 rm -rf ~/.claude/skills/expose ~/.cursor/skills/expose ~/.agents/skills/expose ~/.codex/skills/expose ~/.config/opencode/skills/expose ~/.gemini/skills/expose
 ```
 
-`bash tests/test-expose.sh` runs `expose.sh` and `install.sh --expose-domain` fully offline: a fake Caddy admin server (`tests/fake-caddy-admin.py`), a fake `caddy`, a fake Cloudflare endpoint, and a private tmux server, in scratch HOMEs.
+`bash tests/test-expose.sh` runs `expose.sh` and `install.sh --expose-domain` fully offline: a fake Caddy admin server (`tests/fake-caddy-admin.py`), a fake `caddy`, a fake Cloudflare endpoint, and a private tmux server, in scratch HOMEs. The login, share-link, expiry and cookie-stripping checks run real requests through a scratch Caddy on a private socket and a high port on 127.0.0.1 (the installed `~/.local/share/tmux-opsx/bin/caddy`, `$OPSX_CADDY_BIN`, or `caddy` on `PATH`; skipped with a notice when there is none).
 
 ### Preview
 
@@ -592,6 +612,7 @@ rm -rf ~/.claude/skills/expose ~/.cursor/skills/expose ~/.agents/skills/expose ~
 /opsx-run add-auth preview          # start (or reuse) — prints the URL
 /opsx-run add-auth preview url      # print + copy it again
 /opsx-run add-auth preview stop     # remove the route, kill the app and its window
+/opsx-run add-auth preview share --for acme --ttl 3d   # share link for a client (--list, --revoke acme)
 ```
 
 What happens on `preview`:
@@ -601,7 +622,7 @@ What happens on `preview`:
 3. **Port.** The change's last port when free, else the first free one in 3100–3999. `PORT` and `HOST=127.0.0.1` are exported to `install` and `cmd`.
 4. **Window.** The app runs in its own tmux window `ox ><change>` (ASCII, so non-UTF-8 clients show it as-is), tagged `@opsx_preview=<change>` (never `@opsx_change`, so it is never mistaken for the agent window), in its own process group; output also goes to `~/.local/state/tmux-opsx/preview/<project>/<change>.log`. The window stays open after the app exits.
 5. **Health.** `http://127.0.0.1:<port><health>` is polled until it answers 2xx/3xx. If the app exits or `timeout` passes first, the last log lines are printed, the app is stopped, and nothing is published.
-6. **Publish** with `expose.sh up <port> --name <change> --project <project>`. A second `preview` while it is healthy just prints the same URL. Two `preview` runs for the same change never race: the second waits for the first (including its health wait) and then reuses it, and a `preview stop` during a start waits for it and then stops it.
+6. **Publish** with `expose.sh up <port> --name <change> --project <project>`. The URL needs a login like any exposure (your owner cookie, or a link from `preview share`). The app must listen on `127.0.0.1` (use `$HOST`): if it binds `0.0.0.0`, expose refuses it and `preview` stops the app, closes its window and says to bind `127.0.0.1`. A second `preview` while it is healthy just prints the same URL. Two `preview` runs for the same change never race: the second waits for the first (including its health wait) and then reuses it, and a `preview stop` during a start waits for it and then stops it.
 
 Failure output shows only the current run's log lines. State lives in `~/.local/state/tmux-opsx/preview/<project>/`; `land` (and every `up`/`stop`/`list`) prunes the files of changes whose worktree is gone, and `opsx-preview.sh prune` does it by hand.
 

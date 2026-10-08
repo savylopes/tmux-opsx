@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Listed
+# level: L2
+# requirement: List share links
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup
+x up 3000 --name web >/dev/null || fail "up failed"
+la=$(x share web --for acme | tail -n1); lg=$(x share web --for globex --ttl never | tail -n1)
+l=$(x share web --list); rc=$?; echo "exit $rc"; echo "$l" | sed -E 's/(opsx_share=)[A-Za-z0-9_-]+/\1<token>/'
+[ "$rc" -eq 0 ] || fail "--list exited $rc"
+echo "$l" | head -1 | grep -Eq 'FOR.*ID.*EXPIRES.*LINK' || fail "header lacks FOR ID EXPIRES LINK"
+for p in "acme $la" "globex $lg"; do set -- $p
+  row=$(echo "$l" | awk -v r="$1" '$1==r'); [ -n "$row" ] || fail "no row for $1"
+  printf '%s' "$row" | grep -qF -- "$2" || fail "$1 row lacks its link"
+  printf '%s' "$row" | awk '{print $2}' | grep -Eqx '[0-9a-f]{6}' || fail "$1 row lacks a 6-hex ID"
+done
+echo "$l" | awk '$1=="acme"' | grep -Eq '[0-9]{4}-[0-9]{2}-[0-9]{2}' || fail "acme EXPIRES is not a date"
+echo "$l" | awk '$1=="globex"' | grep -qw never || fail "globex EXPIRES is not never"
+echo OK

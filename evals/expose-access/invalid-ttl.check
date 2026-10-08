@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Invalid ttl
+# level: L2
+# requirement: Share link expiry
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup
+x up 3000 --name web >/dev/null || fail "up failed"
+o=$(x share web --ttl 3weeks 2>&1); rc=$?; echo "exit $rc: $o"
+[ "$rc" -eq 2 ] || fail "expected exit 2, got $rc"
+printf '%s' "$o" | grep -Eiq 'ttl|3weeks' || fail "error does not name the ttl"
+case "$o" in *opsx_share=*) fail "a link was printed";; esac
+l=$(x share web --list 2>&1); echo "$l"
+case "$l" in *opsx_share=*) fail "a token was created";; esac
+echo OK

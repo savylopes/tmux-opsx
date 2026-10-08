@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Rotated
+# level: L2
+# requirement: Rotate the owner key
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app web
+x up "$APP_PORT" --name web >/dev/null || fail "up failed"
+k1=$(owner_key); t=$(x share web --for acme | tail -n1 | sed -n 's/.*opsx_share=//p')
+req web--shop / -H "Cookie: opsx_auth=$k1"; [ "$CODE" = 200 ] || fail "setup: owner cookie not accepted ($CODE)"
+o=$(x key rotate 2>&1); rc=$?; echo "rotate exit $rc"; [ "$rc" -eq 0 ] || fail "key rotate exited $rc: $o"
+k2=$(owner_key); [ -n "$k2" ] && [ "$k2" != "$k1" ] || fail "key not replaced"
+req web--shop / -H "Cookie: opsx_auth=$k1"; echo "old owner cookie -> $CODE"; [ "$CODE" = 401 ] || fail "old cookie got $CODE"
+req web--shop "/?opsx_key=$k1"; echo "old login link -> $CODE"; [ "$CODE" = 401 ] || fail "old login link got $CODE"
+l=$(x url web --with-key | tail -n1); [ "$l" = "https://web--shop.$DOMAIN/?opsx_key=$k2" ] || fail "url --with-key does not print the new key link"
+req web--shop "/?opsx_share=$t"; echo "share link -> $CODE"; [ "$CODE" = 302 ] || fail "share link got $CODE"
+req web--shop / -H "Cookie: opsx_share=$t"; echo "share cookie -> $CODE"; [ "$CODE" = 200 ] || fail "share cookie got $CODE"
+echo OK

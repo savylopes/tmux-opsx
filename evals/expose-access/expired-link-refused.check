@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Expired link refused
+# level: L2
+# requirement: Share link expiry
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+# Waits 2 minutes of real time: the proxy must refuse on its own.
+proxy_setup; start_app web
+x up "$APP_PORT" --name web >/dev/null || fail "up failed"
+t=$(x share web --for acme --ttl 1m | tail -n1 | sed -n 's/.*opsx_share=//p'); [ -n "$t" ] || fail "no share link"
+req web--shop / -H "Cookie: opsx_share=$t"; echo "fresh cookie -> $CODE"
+[ "$CODE" = 200 ] || fail "setup: fresh link not accepted ($CODE)"
+sleep 121
+req web--shop "/?opsx_share=$t"; echo "after 2m, query -> $CODE"; q=$CODE
+req web--shop / -H "Cookie: opsx_share=$t"; echo "after 2m, cookie -> $CODE"; c=$CODE
+[ "$q" = 401 ] && [ "$c" = 401 ] || fail "expired token still accepted"
+echo OK

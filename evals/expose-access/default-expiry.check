@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Default expiry
+# level: L2
+# requirement: Share link expiry
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup
+x up 3000 --name web >/dev/null || fail "up failed"
+x share web --for acme >/dev/null || fail "share failed"
+l=$(x share web --list); echo "$l" | sed -E 's/(opsx_share=)[A-Za-z0-9_-]+/\1<token>/'
+row=$(echo "$l" | awk '$1=="acme"'); [ -n "$row" ] || fail "no acme row"
+d=$(printf '%s' "$row" | grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1); [ -n "$d" ] || fail "no date in acme row"
+ok=""; for e in "$(date -d '+7 days' +%F)" "$(date -u -d '+7 days' +%F)"; do [ "$d" = "$e" ] && ok=1; done
+[ -n "$ok" ] || fail "acme expires $d, expected $(date -d '+7 days' +%F)"
+echo OK

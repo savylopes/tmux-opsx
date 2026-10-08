@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Public route
+# level: L2
+# requirement: Public opt-out
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app hook
+o=$(x up "$APP_PORT" --name hook --public 2>&1); rc=$?; echo "exit $rc"; echo "$o"
+[ "$rc" -eq 0 ] || fail "up --public exited $rc"
+printf '%s\n' "$o" | grep -i public | grep -Eiq 'no auth|without auth|unauthenticated|no login' || fail "output does not say public with no authentication"
+req hook--shop /; echo "no cookie -> $CODE $BODY"
+[ "$CODE" = 200 ] && [ "$BODY" = app:hook ] || fail "request did not reach the app"
+echo OK

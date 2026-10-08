@@ -19,7 +19,7 @@ If the change has **no user-facing UI** (API-only, infra, docs), say `VERDICT: S
 - OpenSpec change name and path (`openspec/changes/<change>/`)
 - Branch / worktree (`opsx/<change>`, `../wt-<change>` if present)
 - Files the applier changed
-- `PREVIEW_URL` — the change's public preview URL from `opsx-preview.sh up <change>`, or `none — <reason>` when expose is not configured or the preview failed
+- `PREVIEW_URL` — a share link for the change's preview (`opsx-preview.sh share <change> --for ops-qa --ttl 1d`, after `opsx-preview.sh up <change>`), or `none — <reason>` when expose is not configured or the preview failed
 - How to run the app (dev URL, `npm run dev`, preview command) if known
 - Optional extra notes from `/opsx-run qa "..."` / `/opsx-run <change> qa "..."` — treat as extra focus (flows, viewports, “check mobile”), not as permission to edit code
 
@@ -38,7 +38,7 @@ Work in the **same worktree/branch as the apply**. Do not switch to `main` unles
 
 Prefer **browser-use MCP** (`browser_navigate`, `browser_click`, `browser_type`, `browser_get_state`, screenshots). Do **not** fall back to a `browser-use` CLI or raw CDP if MCP tools are in your list. If MCP is missing, report `browser-use MCP unavailable`, still run unit/e2e tests you can from the shell, and `VERDICT: FAIL` if UI could not be inspected and the change is user-facing.
 
-If `PREVIEW_URL` is given, test that URL and do not start a server: it is the change's app running from its worktree, exactly what would be shared. If it does not load, that is a FAIL (say so with the URL); do not fall back to a local server.
+If `PREVIEW_URL` is given, test that URL and do not start a server: it is the change's app running from its worktree, exactly what would be shared. It is a login link (`?opsx_share=…`): open it **first**, before any other page, and keep the same browser context (tab/profile) for the whole run, so the login cookie it sets applies to every later navigation on that host. Without that cookie the preview answers 401 with a login page; that is not an app bug. If it does not load, that is a FAIL (say so with the URL); do not fall back to a local server. Do not paste the link into other services.
 
 Otherwise (no `PREVIEW_URL`, or `none — <reason>`), keep the old behaviour and mention the reason in SUMMARY: start the app only if it is not already up. Prefer the project's documented dev command. Do not kill unrelated processes. If the app cannot start, that is a FAIL.
 

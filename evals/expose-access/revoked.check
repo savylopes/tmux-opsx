@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Revoked
+# level: L2
+# requirement: Revoke share links
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app web
+x up "$APP_PORT" --name web >/dev/null || fail "up failed"
+ta=$(x share web --for acme | tail -n1 | sed -n 's/.*opsx_share=//p')
+tg=$(x share web --for globex | tail -n1 | sed -n 's/.*opsx_share=//p')
+req web--shop / -H "Cookie: opsx_share=$ta"; echo "acme cookie before -> $CODE"; [ "$CODE" = 200 ] || fail "setup: acme cookie not accepted"
+o=$(x share web --revoke acme 2>&1); rc=$?; echo "revoke exit $rc: $o"; [ "$rc" -eq 0 ] || fail "revoke exited $rc"
+req web--shop / -H "Cookie: opsx_share=$ta"; echo "acme cookie after -> $CODE"; [ "$CODE" = 401 ] || fail "revoked cookie got $CODE"
+req web--shop "/?opsx_share=$tg"; echo "globex link -> $CODE"; [ "$CODE" = 302 ] || fail "globex link got $CODE"
+req web--shop / -H "Cookie: opsx_share=$tg"; echo "globex cookie -> $CODE"; [ "$CODE" = 200 ] || fail "globex cookie got $CODE"
+echo OK
