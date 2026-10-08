@@ -7,7 +7,8 @@
 # into) and pulls the result with `collect`.
 #
 # Usage:
-#   fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]  < brief
+#   fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]
+#                [--model <m>] [--parent-model <m>]                 < brief
 #   fork.sh return                                                     < result
 #   fork.sh collect [<id>]
 #   fork.sh list
@@ -17,12 +18,20 @@
 #
 # State: ${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks/<tmux-session>/<id>/
 #   brief.md    brief (parent text + generated fork protocol), first prompt
-#   meta        key=value: parent_pane child_pane window cli cwd created status …
+#   meta        key=value: parent_pane child_pane window cli model cwd created status …
 #   result.md   the child's result (written by `return`, or recovered by collect)
 #   capture.txt last pane capture (saved by collect/close when no result)
 #
-# Child CLI selection: --cli > $FORK_CLI > host detection (Cursor, Claude,
-# Codex, OpenCode, Gemini) > first of claude/agent/codex/opencode/gemini on PATH.
+# Child CLI selection: --cli > $FORK_CLI > host CLI (Cursor, Claude, Codex,
+# OpenCode, Gemini) > first of claude/agent/codex/opencode/gemini on PATH.
+# The host CLI is $FORK_HOST_CLI when set (a CLI name, or `none` = undetected),
+# otherwise detected from env vars and the process chain.
+#
+# Child model selection: --model > $FORK_MODEL > --parent-model (only when the
+# child CLI is the host CLI; for opencode only in provider/model form) > none
+# (no model flag, the CLI's default). The parent agent passes its own model id
+# as --parent-model. Values that are empty, contain whitespace or start with
+# `-` are rejected. Flag per CLI: claude/agent --model, codex/opencode/gemini -m.
 # Children always launch in the CLI's read-only / plan mode and never with
 # bypass or force flags:
 #   claude    --permission-mode plan (+ narrow allow rule for `fork.sh return`)
@@ -259,22 +268,33 @@ running_under_gemini() {
   ancestor_matches '/gemini( |$)|gemini-cli' 'gemini|Gemini'
 }
 
+# The CLI this script runs under: $FORK_HOST_CLI when set (`none` = not
+# detected), else the running_under_* checks. Empty when nothing matches; there
+# is deliberately no PATH fallback.
+host_cli() {
+  if [ -n "${FORK_HOST_CLI:-}" ]; then
+    [ "$FORK_HOST_CLI" = none ] || normalize_cli "$FORK_HOST_CLI"
+    return 0
+  fi
+  if running_under_cursor; then printf '%s' agent
+  elif running_under_claude; then printf '%s' claude
+  elif running_under_codex; then printf '%s' codex
+  elif running_under_opencode; then printf '%s' opencode
+  elif running_under_gemini; then printf '%s' gemini
+  fi
+  return 0
+}
+
 resolve_cli() {
-  local explicit=${1:-} cli=""
+  local explicit=${1:-} cli="" host
+  host=""
+  [ -z "$explicit" ] && [ -z "${FORK_CLI:-}" ] && host=$(host_cli)
   if [ -n "$explicit" ]; then
     cli=$(normalize_cli "$explicit")
   elif [ -n "${FORK_CLI:-}" ]; then
     cli=$(normalize_cli "$FORK_CLI")
-  elif running_under_cursor && command -v agent >/dev/null 2>&1; then
-    cli=agent
-  elif running_under_claude && command -v claude >/dev/null 2>&1; then
-    cli=claude
-  elif running_under_codex && command -v codex >/dev/null 2>&1; then
-    cli=codex
-  elif running_under_opencode && command -v opencode >/dev/null 2>&1; then
-    cli=opencode
-  elif running_under_gemini && command -v gemini >/dev/null 2>&1; then
-    cli=gemini
+  elif [ -n "$host" ] && command -v "$host" >/dev/null 2>&1; then
+    cli=$host
   else
     for cli in claude agent codex opencode gemini ""; do
       [ -n "$cli" ] && command -v "$cli" >/dev/null 2>&1 && break
@@ -290,14 +310,57 @@ resolve_cli() {
 }
 
 # ---------------------------------------------------------------------------
+# Model selection
+
+# A model value must be non-empty, contain no whitespace and not start with
+# `-` (the child CLI could read it as a flag, e.g. a bypass flag).
+valid_model() {
+  case "$1" in
+    ''|-*|*[[:space:]]*) return 1 ;;
+  esac
+  return 0
+}
+
+check_model() {
+  valid_model "$2" \
+    || die "invalid $1 value '$2' — a model must be non-empty, contain no whitespace and not start with '-'."
+}
+
+# Print the child's model for CLI $1 (empty = CLI default):
+# --model ($2) > $FORK_MODEL > --parent-model ($3, same CLI as the host only;
+# opencode only in provider/model form) > none.
+resolve_model() {
+  local cli=$1 explicit=$2 parent=$3 host
+  if [ -n "$explicit" ]; then
+    printf '%s' "$explicit"
+  elif [ -n "${FORK_MODEL:-}" ]; then
+    printf '%s' "$FORK_MODEL"
+  elif [ -n "$parent" ]; then
+    host=$(host_cli)
+    [ -n "$host" ] && [ "$host" = "$cli" ] || return 0
+    if [ "$cli" = opencode ]; then
+      case "$parent" in ?*/?*) ;; *) return 0 ;; esac
+    fi
+    printf '%s' "$parent"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Launch command (read-only; never bypass/force flags)
 
 # The "$(cat …)" parts are meant to stay literal: they run in the launcher.
 # shellcheck disable=SC2016
 build_launch_cmd() {
-  local cli=$1 brief=$2 id=$3 dir=$4 parent=$5 script envp carve rule
+  local cli=$1 brief=$2 id=$3 dir=$4 parent=$5 model=${6:-} script envp carve rule mf=""
   script=$(this_script)
   envp=$(printf 'FORK_ID=%q FORK_DIR=%q FORK_PARENT=%q FORK_SH=%q' "$id" "$dir" "$parent" "$script")
+  if [ -n "$model" ]; then
+    case "$cli" in
+      claude|agent) mf=$(printf ' --model %q' "$model") ;;
+      *)            mf=$(printf ' -m %q' "$model") ;;
+    esac
+  fi
   case "$cli" in
     claude)
       # Plan mode refuses mutating shell commands; allow exactly `fork.sh
@@ -305,21 +368,21 @@ build_launch_cmd() {
       # that this one command is the sanctioned exception.
       rule="Bash($script return:*)"
       carve="You are a read-only fork child (fork $id). The only permitted exception to plan mode is running '$script return' when the user asks you to return; it saves your answer to a state directory outside the repository and is not a code change. Do not exit plan mode and do not modify files."
-      printf 'exec env %s claude --permission-mode plan --allowedTools %q --append-system-prompt %q "$(cat %q)"' \
-        "$envp" "$rule" "$carve" "$brief"
+      printf 'exec env %s claude --permission-mode plan --allowedTools %q --append-system-prompt %q%s "$(cat %q)"' \
+        "$envp" "$rule" "$carve" "$mf" "$brief"
       ;;
     agent)
-      printf 'exec env %s agent --mode ask "$(cat %q)"' "$envp" "$brief"
+      printf 'exec env %s agent --mode ask%s "$(cat %q)"' "$envp" "$mf" "$brief"
       ;;
     codex)
-      printf 'exec env %s codex --sandbox read-only --ask-for-approval on-request "$(cat %q)"' \
-        "$envp" "$brief"
+      printf 'exec env %s codex --sandbox read-only --ask-for-approval on-request%s "$(cat %q)"' \
+        "$envp" "$mf" "$brief"
       ;;
     opencode)
-      printf 'exec env %s opencode --agent plan --prompt "$(cat %q)"' "$envp" "$brief"
+      printf 'exec env %s opencode --agent plan%s --prompt "$(cat %q)"' "$envp" "$mf" "$brief"
       ;;
     gemini)
-      printf 'exec env %s gemini --approval-mode plan -i "$(cat %q)"' "$envp" "$brief"
+      printf 'exec env %s gemini --approval-mode plan%s -i "$(cat %q)"' "$envp" "$mf" "$brief"
       ;;
     *) die "unsupported CLI '$cli'" ;;
   esac
@@ -464,25 +527,35 @@ extract_marker_block() {
 # Subcommands
 
 cmd_open() {
-  local window=0 vertical=0 cli_opt="" cwd=$PWD
+  local window=0 vertical=0 cli_opt="" cwd=$PWD model_opt="" parent_model=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --window)   window=1; shift ;;
       --vertical) vertical=1; shift ;;
       --cli)      cli_opt=${2:-}; [ -n "$cli_opt" ] || die "--cli needs a value"; shift 2 ;;
+      --model)    [ $# -ge 2 ] || die "--model needs a value"
+                  model_opt=$2; check_model --model "$model_opt"; shift 2 ;;
+      --model=*)  model_opt=${1#--model=}; check_model --model "$model_opt"; shift ;;
+      --parent-model)
+                  [ $# -ge 2 ] || die "--parent-model needs a value"
+                  parent_model=$2; check_model --parent-model "$parent_model"; shift 2 ;;
+      --parent-model=*)
+                  parent_model=${1#--parent-model=}; check_model --parent-model "$parent_model"; shift ;;
       --cwd)      cwd=${2:-}; shift 2 ;;
       -h|--help)  usage; return 0 ;;
       *) die "unknown option for open: $1" ;;
     esac
   done
+  [ -z "${FORK_MODEL:-}" ] || check_model "\$FORK_MODEL" "$FORK_MODEL"
   require_tmux
   [ -n "${TMUX_PANE:-}" ] || die "cannot determine the parent pane (\$TMUX_PANE is unset)."
   pane_alive "$TMUX_PANE" || die "parent pane $TMUX_PANE not found."
   [ -d "$cwd" ] || die "cwd not found: $cwd"
   [ -t 0 ] && die "pipe the brief on stdin, e.g.  fork.sh open <<'EOF' … EOF"
 
-  local cli brief_text
+  local cli brief_text model
   cli=$(resolve_cli "$cli_opt") || exit 1
+  model=$(resolve_model "$cli" "$model_opt" "$parent_model")
   brief_text=$(cat)
   [ -n "${brief_text//[[:space:]]/}" ] || die "the brief on stdin is empty."
 
@@ -501,6 +574,7 @@ cmd_open() {
   meta_set id "$id" "$dir"
   meta_set parent_pane "$parent" "$dir"
   meta_set cli "$cli" "$dir"
+  meta_set model "$model" "$dir"
   meta_set cwd "$cwd" "$dir"
   meta_set created "$(now)" "$dir"
   meta_set mode "$([ "$window" -eq 1 ] && echo window || echo pane)" "$dir"
@@ -514,7 +588,7 @@ cmd_open() {
     printf '#!/usr/bin/env bash\n'
     printf '# fork %s child launcher (generated by fork.sh open)\n' "$id"
     printf 'cd %q || exit 1\n' "$cwd"
-    build_launch_cmd "$cli" "$dir/brief.md" "$id" "$dir" "$parent" || exit 1
+    build_launch_cmd "$cli" "$dir/brief.md" "$id" "$dir" "$parent" "$model" || exit 1
     printf '\n'
   } > "$dir/launch.sh" || die "cannot write $dir/launch.sh"
   launch=$(printf 'bash %q' "$dir/launch.sh")
@@ -546,7 +620,7 @@ cmd_open() {
 
   [ "$window" -eq 0 ] && arrange_layout "$parent" "$vertical"
 
-  printf 'fork %s pane %s cli %s\n' "$id" "$child" "$cli"
+  printf 'fork %s pane %s cli %s model %s\n' "$id" "$child" "$cli" "${model:-default}"
   printf '# state: %s\n' "$dir"
   printf '# collect later with: %s collect %s\n' "$script" "$id"
 }
@@ -683,23 +757,24 @@ cmd_collect() {
 }
 
 cmd_list() {
-  local sdir i dir st child cli q any=0
+  local sdir i dir st child cli model q any=0
   require_tmux
   sdir=$(session_dir) || exit 1
   for i in $(fork_ids "$sdir"); do
     dir=$sdir/$i
     if [ "$any" -eq 0 ]; then
-      printf '%-4s %-18s %-9s %-6s %s\n' ID STATUS CLI PANE QUESTION
+      printf '%-4s %-18s %-9s %-20s %-6s %s\n' ID STATUS CLI MODEL PANE QUESTION
       any=1
     fi
     st=$(meta_get status "$dir")
     child=$(meta_get child_pane "$dir")
     cli=$(meta_get cli "$dir")
+    model=$(meta_get model "$dir")
     q=$(meta_get question "$dir")
     if [ "$st" != closed ] && ! pane_is_fork "$child" "$dir"; then
       st="$st (pane gone)"
     fi
-    printf '%-4s %-18s %-9s %-6s %s\n' "$i" "${st:-?}" "${cli:--}" "${child:--}" "${q:--}"
+    printf '%-4s %-18s %-9s %-20s %-6s %s\n' "$i" "${st:-?}" "${cli:--}" "${model:-default}" "${child:--}" "${q:--}"
   done
   [ "$any" -eq 1 ] || printf 'no forks in tmux session %s\n' "$(current_session)"
 }

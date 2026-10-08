@@ -18,9 +18,10 @@ Independent of OpenSpec and `/opsx-run`. Requires tmux (except `/fork return`).
 | parent | `/fork --vertical ["question"]` | same, split top/bottom |
 | parent | `/fork --window ["question"]` | same, in a new window `fork-<id>` |
 | parent | `/fork --cli <claude\|agent\|codex\|opencode\|gemini> …` | use another CLI for the child (default: the same CLI as this session) |
+| parent | `/fork --model <m> …` | run the child on model `<m>` (default: `$FORK_MODEL`, else this session's model when the child uses the same CLI, else the CLI's default) |
 | child | `/fork return` | write the result and notify the parent |
 | parent | `/fork collect [id]` | read a fork's result into this conversation (default: the most recently returned) |
-| parent | `/fork list` | list this tmux session's forks |
+| parent | `/fork list` | list this tmux session's forks (id, status, CLI, model, pane, question) |
 | parent | `/fork close <id>` / `/fork close --all` | save a capture if needed, kill the child pane/window |
 
 ## The script
@@ -33,13 +34,18 @@ FORK_SH=$(ls ~/.claude/skills/fork/fork.sh ~/.cursor/skills/fork/fork.sh ~/.agen
 ```
 
 ```
-fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]   < brief
+fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]
+             [--model <m>] [--parent-model <m>]                     < brief
 fork.sh return                                                      < result
 fork.sh collect [<id>]
 fork.sh list
 fork.sh close <id> | --all
 fork.sh detect-cli [--cli <name>]
 ```
+
+Environment defaults: `$FORK_CLI` (child CLI), `$FORK_MODEL` (child model), `$FORK_HOST_CLI` (override host CLI detection; `none` = undetected).
+
+Model precedence: `--model` > `$FORK_MODEL` > `--parent-model` (only when the child CLI is the host CLI; for OpenCode only in `provider/model` form) > the CLI's default (no flag). Values that are empty, contain whitespace or start with `-` are rejected.
 
 **Rules**
 
@@ -52,7 +58,7 @@ fork.sh detect-cli [--cli <name>]
 1. Write a **brief** with these sections (Markdown), then pipe it to `fork.sh open` on stdin with a quoted heredoc so nothing is expanded:
 
    ```bash
-   "$FORK_SH" open <<'EOF'
+   "$FORK_SH" open --parent-model <your own model id> <<'EOF'
    ## Question
    <the user's question, or "general exploration" if none>
 
@@ -67,9 +73,11 @@ fork.sh detect-cli [--cli <name>]
    EOF
    ```
 
-   Add `--window`, `--vertical` or `--cli <name>` only when the user asked for them. `fork.sh` appends a generated **Fork protocol** section (read-only rule, the exact return command, the marker fallback), stores everything as `brief.md` and uses it as the child's first prompt.
+   **Always** pass `--parent-model <your own model id>` (the exact id you are running as, e.g. `claude-opus-5-5`), so the child inherits your model. `fork.sh` ignores it when the child runs on a different CLI (or `--model` / `$FORK_MODEL` gives a model), so passing it is always safe. If you do not know your model id, omit it; the child then uses its CLI's default.
 
-2. Report the output line (`fork <id> pane <%N> cli <cli>`) to the user in one sentence, e.g. "Opened fork 2 in the pane on the right (Claude, plan mode). Ask it anything; say `/fork return` there when done." Then continue with your own work. Do not wait for or poll the child.
+   Add `--model <m>` only when the user names a model for the fork. Add `--window`, `--vertical` or `--cli <name>` only when the user asked for them. `fork.sh` appends a generated **Fork protocol** section (read-only rule, the exact return command, the marker fallback), stores everything as `brief.md` and uses it as the child's first prompt.
+
+2. Report the output line (`fork <id> pane <%N> cli <cli> model <m|default>`) to the user in one sentence, e.g. "Opened fork 2 in the pane on the right (Claude, claude-opus-5-5, plan mode). Ask it anything; say `/fork return` there when done." Then continue with your own work. Do not wait for or poll the child.
 
 Brief content comes from **this conversation**, not a re-investigation: summarize, don't research. Never include secrets (tokens, keys, passwords) in the brief.
 
@@ -113,7 +121,7 @@ Collecting clears that fork's badge on the parent pane. Summarize the result for
 
 ## Parent: `/fork list` and `/fork close`
 
-- `"$FORK_SH" list` — show the table (id, status `open` / `returned` / `closed`, CLI, pane, first line of the question). `(pane gone)` means the child exited without being closed.
+- `"$FORK_SH" list` — show the table (id, status `open` / `returned` / `closed`, CLI, model (`default` = the CLI's default), pane, first line of the question). `(pane gone)` means the child exited without being closed.
 - `"$FORK_SH" close <id>` / `close --all` — if a fork has no result yet, a `capture.txt` is saved first, so a later `collect <id>` still returns something. The pane/window is killed; state is kept.
 
 ## Read-only children per CLI

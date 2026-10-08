@@ -5,7 +5,7 @@
 # it never touches your tmux session, your agent CLIs, or your fork state.
 # Usage: bash tests/test-fork.sh
 # Assertions are eval'd strings, so variables read only there look unused.
-# shellcheck disable=SC2034
+# shellcheck disable=SC2034,SC2016,SC2086
 set -u
 command -v tmux >/dev/null 2>&1 || { echo "tmux is required"; exit 1; }
 REPO=$(cd -- "$(dirname -- "$0")/.." && pwd)
@@ -105,7 +105,7 @@ ok "collect raw capture labelled" '[[ "$c" == *"RAW CAPTURE"* ]] && [[ "$c" == *
 # list
 l=$($F list); echo "$l"
 ok "list shows 5 forks" '[ "$(echo "$l" | tail -n +2 | wc -l)" -eq 5 ]'
-ok "list columns" 'echo "$l" | grep -Eq "^2 +returned +codex +%[0-9]+ +second q"'
+ok "list columns" 'echo "$l" | grep -Eq "^2 +returned +codex +default +%[0-9]+ +second q"'
 
 # close without result -> capture.txt, pane killed, later collect returns capture
 C4=$(awk -F= '/^child_pane=/{print $2}' $SD/4/meta)
@@ -127,6 +127,75 @@ ok "state kept" '[ -f $SD/1/brief.md ] && [ -f $SD/5/result.md ]'
 for i in $(seq 1 12); do (printf 'c%s\n' $i | $F open --window --cli gemini > $SP/conc.$i 2>&1 &) ; done; sleep 3
 ids=$(cat $SP/conc.* | awk '/^fork/{print $2}' | sort -n | uniq | wc -l)
 ok "concurrent distinct ids" '[ "$ids" -eq 12 ]'
+$F close --all >/dev/null
+
+# ---------------------------------------------------------------------------
+# model selection (every case sets FORK_HOST_CLI explicitly so the real agent
+# session running these tests is never detected)
+unset FORK_MODEL FORK_CLI
+# mopen <var> <env…> -- <open args…>: open a window fork, set <var> to its id
+mopen() {
+  local var=$1 o envs=(); shift
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+  o=$(printf 'model q\n' | env "${envs[@]}" "$F" open --window "$@") || { printf -v "$var" ''; return 1; }
+  echo "$o" | head -n 1
+  o=${o#fork }; printf -v "$var" '%s' "${o%% *}"
+}
+lline() { grep '^exec env' "$SD/$1/launch.sh"; }
+has_flag() { lline "$1" | grep -q -- " $2 $3 "; }
+no_model_flag() { ! lline "$1" | grep -Eq -- ' (--model|-m) '; }
+
+mopen M1 FORK_HOST_CLI=claude -- --cli claude --model haiku
+ok "model: explicit --model" 'has_flag $M1 --model haiku'
+ok "model: meta model=haiku" 'grep -qx model=haiku $SD/$M1/meta'
+mout=$(printf 'q\n' | FORK_HOST_CLI=claude $F open --window --cli claude --model haiku)
+ok "model: output line" '[[ "$(echo "$mout" | head -n1)" =~ ^fork\ [0-9]+\ pane\ %[0-9]+\ cli\ claude\ model\ haiku$ ]]'
+mopen M2 FORK_HOST_CLI=claude -- --cli claude
+ok "model: none -> no flag" 'no_model_flag $M2'
+ok "model: meta model= empty" 'grep -qx "model=" $SD/$M2/meta'
+mout=$(printf 'q\n' | FORK_HOST_CLI=claude $F open --window --cli claude)
+ok "model: output line default" '[[ "$(echo "$mout" | head -n1)" == *" cli claude model default" ]]'
+mopen M3 FORK_HOST_CLI=claude FORK_MODEL=sonnet -- --cli claude
+ok "model: \$FORK_MODEL" 'has_flag $M3 --model sonnet'
+mopen M4 FORK_HOST_CLI=claude FORK_MODEL=sonnet -- --cli claude --model opus
+ok "model: flag beats env" 'has_flag $M4 --model opus && ! lline $M4 | grep -q sonnet'
+for c in claude agent codex opencode gemini; do
+  mopen MC FORK_HOST_CLI=none -- --cli $c --model m1
+  case $c in claude|agent) fl=--model ;; *) fl=-m ;; esac
+  ok "model: $c spelling $fl" 'has_flag $MC $fl m1 && [ "$(lline $MC | grep -o -- " $fl m1 " | wc -l)" -eq 1 ]'
+done
+sleep 1
+ok "model: fake claude got --model m1" 'id=$(grep -l "^cli=claude" $SD/*/meta | xargs grep -l "^model=m1" | head -n1); d=${id%/meta}; grep -A1 -x "ARG=--model" $d/fake-claude.log | grep -qx "ARG=m1"'
+
+before=$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l); pb=$($L list-panes -a | wc -l)
+o=$(printf 'q\n' | FORK_HOST_CLI=claude $F open --cli claude --model "--dangerously-skip-permissions" 2>&1); rc=$?
+ok "model: unsafe value rejected" '[ $rc -ne 0 ] && [[ "$o" == *"invalid --model"* ]]'
+ok "model: unsafe leaves no state/pane" '[ "$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l)" -eq "$before" ] && [ "$($L list-panes -a | wc -l)" -eq "$pb" ]'
+ok "model: whitespace rejected" '! printf q | FORK_HOST_CLI=none $F open --cli claude --model "a b" 2>/dev/null'
+ok "model: empty rejected" '! printf q | FORK_HOST_CLI=none $F open --cli claude --model "" 2>/dev/null'
+ok "model: unsafe parent-model rejected" '! printf q | FORK_HOST_CLI=claude $F open --cli claude --parent-model "-x" 2>/dev/null'
+ok "model: unsafe \$FORK_MODEL rejected" '! printf q | FORK_HOST_CLI=none FORK_MODEL="--yolo" $F open --cli claude 2>/dev/null'
+ok "model: rejections left no state" '[ "$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l)" -eq "$before" ]'
+
+mopen M5 FORK_HOST_CLI=claude -- --parent-model claude-opus-5-5
+ok "model: same CLI inherits (no --cli)" 'grep -qx cli=claude $SD/$M5/meta && has_flag $M5 --model claude-opus-5-5'
+mopen M6 FORK_HOST_CLI=claude -- --cli codex --parent-model claude-opus-5-5
+ok "model: cross-CLI no inheritance" 'no_model_flag $M6 && grep -qx "model=" $SD/$M6/meta'
+mopen M7 FORK_HOST_CLI=claude FORK_MODEL=haiku -- --parent-model claude-opus-5-5
+ok "model: env beats inheritance" 'has_flag $M7 --model haiku && ! lline $M7 | grep -q claude-opus'
+mopen M8 FORK_HOST_CLI=none -- --cli claude --parent-model claude-opus-5-5
+ok "model: FORK_HOST_CLI=none no inheritance" 'no_model_flag $M8'
+mopen M9 FORK_HOST_CLI=opencode -- --cli opencode --parent-model gpt-5
+ok "model: opencode bare id ignored" 'no_model_flag $M9'
+mopen M10 FORK_HOST_CLI=opencode -- --cli opencode --parent-model openai/gpt-5
+ok "model: opencode provider/model inherited" 'has_flag $M10 -m openai/gpt-5'
+mopen M11 FORK_HOST_CLI=opencode -- --cli opencode --model gpt-5
+ok "model: opencode explicit bare id passed" 'has_flag $M11 -m gpt-5'
+
+l=$($F list)
+ok "list: MODEL header" 'echo "$l" | head -n1 | grep -Eq "^ID +STATUS +CLI +MODEL +PANE +QUESTION"'
+ok "list: model haiku row" 'echo "$l" | grep -Eq "^$M1 +[a-z]+ +claude +haiku +%[0-9]+ "'
+ok "list: model default row" 'echo "$l" | grep -Eq "^$M2 +[a-z]+ +claude +default +%[0-9]+ "'
 $F close --all >/dev/null
 
 # unknown cli / empty brief
