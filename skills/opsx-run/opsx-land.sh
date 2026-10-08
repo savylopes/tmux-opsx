@@ -154,19 +154,28 @@ esac
 
 # `isComplete` above only means the artifacts exist; it is true even with tasks
 # still unchecked. Count the checkboxes directly, the same way apply tracks them.
+# Read tasks.md from the change branch: the applier ticks boxes there, and the
+# target's copy stays as proposed until the merge brings the ticks over.
 tasks_file="openspec/changes/$CHANGE/tasks.md"
-if [ -f "$tasks_file" ]; then
-  remaining=$(grep -cE '^[[:space:]]*-[[:space:]]*\[[[:space:]]*\]' "$tasks_file" 2>/dev/null || true)
+tasks_src="$BRANCH:$tasks_file"
+if ! tasks_text=$(git show "$tasks_src" 2>/dev/null); then
+  tasks_src="$tasks_file"
+  tasks_text=$(cat "$tasks_file" 2>/dev/null) || tasks_text=""
+  [ -f "$tasks_file" ] || tasks_src=""
+fi
+if [ -n "$tasks_src" ]; then
+  unchecked=$(printf '%s\n' "$tasks_text" | grep -nE '^[[:space:]]*-[[:space:]]*\[[[:space:]]*\]' || true)
+  remaining=$(printf '%s' "$unchecked" | grep -c . || true)
   remaining=${remaining:-0}
   if [ "$remaining" -gt 0 ]; then
-    grep -nE '^[[:space:]]*-[[:space:]]*\[[[:space:]]*\]' "$tasks_file" | head -10 | sed 's/^/  /'
+    printf '%s\n' "$unchecked" | head -10 | sed 's/^/  /'
     if [ "$FORCE_TASKS" -eq 1 ]; then
-      warn "$remaining task(s) still unchecked in $tasks_file — continuing (--force-tasks)"
+      warn "$remaining task(s) still unchecked in $tasks_src — continuing (--force-tasks)"
     else
-      die "$remaining task(s) still unchecked in $tasks_file — finish them before landing (or pass --force-tasks)."
+      die "$remaining task(s) still unchecked in $tasks_src — finish them before landing (or pass --force-tasks)."
     fi
   else
-    ok "all tasks checked"
+    ok "all tasks checked ($tasks_src)"
   fi
 else
   warn "no $tasks_file — skipping the task check"
