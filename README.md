@@ -305,6 +305,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-preview.sh stop <change>|--all
 ~/.claude/skills/opsx-run/opsx-preview.sh url  <change>|--main
 ~/.claude/skills/opsx-run/opsx-preview.sh list
+~/.claude/skills/opsx-run/opsx-preview.sh prune
 
 ~/.claude/skills/opsx-run/opsx-merge.sh <change> [--into <branch>] [--dry-run]
 ~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--skip-merge] [--force-tasks] [--skip-eval] [--dry-run]
@@ -600,7 +601,9 @@ What happens on `preview`:
 3. **Port.** The change's last port when free, else the first free one in 3100–3999. `PORT` and `HOST=127.0.0.1` are exported to `install` and `cmd`.
 4. **Window.** The app runs in its own tmux window `ox ><change>` (ASCII, so non-UTF-8 clients show it as-is), tagged `@opsx_preview=<change>` (never `@opsx_change`, so it is never mistaken for the agent window), in its own process group; output also goes to `~/.local/state/tmux-opsx/preview/<project>/<change>.log`. The window stays open after the app exits.
 5. **Health.** `http://127.0.0.1:<port><health>` is polled until it answers 2xx/3xx. If the app exits or `timeout` passes first, the last log lines are printed, the app is stopped, and nothing is published.
-6. **Publish** with `expose.sh up <port> --name <change> --project <project>`. A second `preview` while it is healthy just prints the same URL.
+6. **Publish** with `expose.sh up <port> --name <change> --project <project>`. A second `preview` while it is healthy just prints the same URL. Two `preview` runs for the same change never race: the second waits for the first (including its health wait) and then reuses it, and a `preview stop` during a start waits for it and then stops it.
+
+Failure output shows only the current run's log lines. State lives in `~/.local/state/tmux-opsx/preview/<project>/`; `land` (and every `up`/`stop`/`list`) prunes the files of changes whose worktree is gone, and `opsx-preview.sh prune` does it by hand.
 
 `close` and `land` always stop the change's preview (route removed, process group killed, window closed); `close-all` stops every preview in the project. `opsx-preview.sh list` shows what is running.
 

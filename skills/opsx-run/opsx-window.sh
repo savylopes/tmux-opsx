@@ -894,14 +894,45 @@ cmd_send() {
   printf 'sent %s %s:%s\n' "$win" "$sess" "$change"
 }
 
-# Run `opsx-preview.sh stop <change>|--all` from next to this script; output
-# is relayed, failures are ignored.
+# Project directories to stop previews from: $PWD inside a git repository;
+# otherwise the main checkout of each agent window being closed ($1 = change,
+# or --all for every opsx window in the lookup session), found from its pane.
+preview_project_dirs() {
+  local target=$1 sess wins w path common
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    printf '%s\n' "$PWD"; return 0
+  fi
+  sess=$(lookup_session 2>/dev/null) || return 0
+  if [ "$target" = "--all" ]; then
+    wins=$(tmux list-windows -t "$sess" -F '#{window_id} #{@opsx_change}' 2>/dev/null \
+           | awk 'NF>1 && $2!="" { print $1 }')
+  else
+    wins=$(find_window "$sess" "$target" 2>/dev/null)
+  fi
+  for w in $wins; do
+    path=$(tmux display-message -p -t "$w" '#{pane_current_path}' 2>/dev/null)
+    [ -n "$path" ] && [ -d "$path" ] || continue
+    common=$(git -C "$path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || continue
+    dirname -- "$common"
+  done | sort -u
+}
+
+# Run `opsx-preview.sh stop <change>|--all` from next to this script, from
+# the project (see preview_project_dirs); output is relayed, failures are
+# ignored. When no project can be found, say that previews were not stopped.
 stop_previews() {
-  local script out
+  local script out dirs dir
   script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-preview.sh"
   [ -x "$script" ] || return 0
-  out=$("$script" stop "$1" 2>&1) || true
-  [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/# /'
+  dirs=$(preview_project_dirs "$1")
+  if [ -z "$dirs" ]; then
+    printf '# warning: previews were NOT stopped — not inside a git repository and no project found from the windows; run from the project root: %s stop %s\n' "$script" "$1"
+    return 0
+  fi
+  while IFS= read -r dir; do
+    out=$(cd -- "$dir" && "$script" stop "$1" 2>&1) || true
+    [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/# /'
+  done <<< "$dirs"
   return 0
 }
 
@@ -1097,11 +1128,20 @@ preview_project_key() {
 }
 
 # Window id(s) on the whole tmux server tagged @opsx_preview=$1 for this
-# project ($1 = "--all": every preview of this project).
+# project ($1 = "--all": every preview of this project). Fails, with tmux's
+# error on stderr, when the server cannot be asked; no server at all simply
+# means no windows.
 find_preview_windows() {
-  local key
+  local key out
   key=$(preview_project_key)
-  tmux list-windows -a -F '#{window_id}	#{@opsx_preview}	#{@opsx_preview_project}' 2>/dev/null \
+  if ! out=$(tmux list-windows -a -F '#{window_id}	#{@opsx_preview}	#{@opsx_preview_project}' 2>&1); then
+    case "$out" in
+      *"no server running"*|*"No such file or directory"*) return 0 ;;
+    esac
+    printf 'cannot reach the tmux server: %s\n' "$out" >&2
+    return 1
+  fi
+  printf '%s\n' "$out" \
     | awk -F '\t' -v n="$1" -v k="$key" '$2!="" && $3==k && (n=="--all" || $2==n) { print $1 }'
 }
 
@@ -1160,7 +1200,7 @@ cmd_preview_find() {
   local change=${1:-} ids
   [ -n "$change" ] || die "usage: opsx-window.sh preview-find <change>"
   require_tmux
-  ids=$(find_preview_windows "$change")
+  ids=$(find_preview_windows "$change") || exit 1
   [ -n "$ids" ] || exit 1
   printf '%s\n' "$ids"
 }
@@ -1169,13 +1209,19 @@ cmd_preview_kill() {
   local change=${1:-} ids win n=0
   [ -n "$change" ] || die "usage: opsx-window.sh preview-kill <change>|--all"
   require_tmux
-  ids=$(find_preview_windows "$change")
+  local out failed=0
+  ids=$(find_preview_windows "$change") || exit 1
   for win in $ids; do
-    tmux kill-window -t "$win" 2>/dev/null && n=$((n + 1)) \
-      && printf 'closed %s (preview %s)\n' "$win" "$change"
+    if out=$(tmux kill-window -t "$win" 2>&1); then
+      n=$((n + 1))
+      printf 'closed %s (preview %s)\n' "$win" "$change"
+    else
+      printf 'could not close %s (preview %s): %s\n' "$win" "$change" "$out" >&2
+      failed=1
+    fi
   done
-  [ "$n" -gt 0 ] || printf 'no preview window for %s\n' "$change"
-  return 0
+  [ "$n" -gt 0 ] || [ "$failed" -eq 1 ] || printf 'no preview window for %s\n' "$change"
+  [ "$failed" -eq 0 ]
 }
 
 case "${1:-}" in

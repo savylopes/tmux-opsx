@@ -7,6 +7,7 @@
 #   opsx-preview.sh stop <change>|--all    remove the route, kill the app and its window
 #   opsx-preview.sh url  <change>|--main   reprint (and copy) the URL of a running preview
 #   opsx-preview.sh list                   previews recorded for this project
+#   opsx-preview.sh prune                  forget state left by changes whose worktree is gone
 #   opsx-preview.sh help
 #
 # <change> runs from the worktree checked out on branch opsx/<change>; --main
@@ -35,14 +36,28 @@
 # 5 seconds, removes the route and kills the window. A recorded group is only
 # signalled while one of its processes still carries OPSX_PREVIEW=<change> and
 # OPSX_PREVIEW_PROJECT=<project> in its environment (a reused id is left
-# alone). Every path that drops a record also removes the route.
+# alone). Every path that drops a record also removes the route. `stop` with
+# no record still closes a leftover tagged window, and warns (exit 1) when a
+# window could not be closed.
+#
+# One `up` or `stop` per preview at a time: each holds <name>.lock (flock, or
+# a <name>.lockd directory where flock is missing) for its whole run,
+# including the health wait. A second `up` waits for the first and then
+# reuses its preview; a `stop` waits for a starting `up` to finish. The wait
+# is capped by $OPSX_PREVIEW_LOCK_WAIT seconds (default 600).
 #
 # expose.sh: $OPSX_EXPOSE_SH, else ../expose/expose.sh next to this skill,
 # else expose.sh on PATH. Without a configured expose, `up` fails before
 # starting anything and names `install.sh --expose-domain`.
 #
 # State:  ${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/preview/<project>/
-#         <name>.env (record), <name>.log, <name>.launch.sh, <name>.port
+#         <name>.env (record), <name>.log, <name>.launch.sh, <name>.port,
+#         <name>.install.log, <name>.lock, <sha of checkout>.install
+#         Failure tails show only the current run's part of <name>.log; the
+#         log is emptied before a start once it passes 1 MiB. `prune` (run by
+#         land after removing the worktree, and on every up/stop/list) deletes
+#         the files of changes with no record and no worktree, and install
+#         hashes of checkouts that no longer exist.
 #
 # Exit codes: 0 ok (stop with nothing running is ok), 1 failure, 2 usage.
 # `up` and `url` print the URL as the last line of standard output.
@@ -55,12 +70,16 @@ STATE_ROOT=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-opsx/preview
 PORT_MIN=3100
 PORT_MAX=3999
 STOP_GRACE=5
+LOG_MAX_BYTES=1048576
+LOCK_WAIT=${OPSX_PREVIEW_LOCK_WAIT:-600}
+[[ "$LOCK_WAIT" =~ ^[0-9]+$ ]] || LOCK_WAIT=600
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'opsx-preview: warning: %s\n' "$*" >&2; }
 err()  { printf 'opsx-preview: %s\n' "$*" >&2; }
 die()  { err "$1"; exit "${2:-1}"; }
 usage() { awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"; }
+short_usage() { err "usage: opsx-preview.sh up|stop|url <change>|--main, stop --all, list, prune — see: opsx-preview.sh help"; }
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
@@ -147,6 +166,84 @@ write_record() {  # write_record <name> <checkout> <port> <pgid> <window> <log> 
     "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" > "$tmp" && mv -f "$tmp" "$f"
 }
 
+# ---------- per-preview lock ----------
+
+# One up/stop per preview at a time. With flock the lock lives on fd 9 and is
+# dropped when this process exits, however it exits; every child that may
+# outlive us (tmux server, install, expose) is started with 9>&- so it never
+# keeps the lock. Without flock: a <name>.lockd directory holding our pid,
+# taken over once that pid is gone.
+LOCK_KIND=""; LOCK_PATH=""
+use_flock() { [ -z "${OPSX_PREVIEW_NO_FLOCK:-}" ] && command -v flock >/dev/null 2>&1; }
+
+lock_busy_note() {  # lock_busy_note <name> <holder pid>
+  say "preview $1: waiting for another opsx-preview.sh run${2:+ (pid $2)} to finish (up to ${LOCK_WAIT}s)"
+}
+
+lock_acquire() {
+  local name=$1 lf holder="" noted=0 left deadline
+  deadline=$((SECONDS + LOCK_WAIT))
+  if use_flock; then
+    lf=$PROJECT_STATE/$name.lock
+    while :; do
+      exec 9>>"$lf" || die "cannot open $lf"
+      if ! flock -n 9; then
+        holder=$(head -n 1 "$lf" 2>/dev/null)
+        [ "$noted" -eq 1 ] || { lock_busy_note "$name" "$holder"; noted=1; }
+        left=$((deadline - SECONDS)); [ "$left" -gt 0 ] || left=0
+        flock -w "$left" 9 \
+          || die "preview $name is still busy after ${LOCK_WAIT}s (another opsx-preview.sh run${holder:+, pid $holder}) — try again later"
+      fi
+      # prune may have removed the file while we waited on it: only a lock on
+      # the file that is still there counts.
+      [ "$lf" -ef /dev/fd/9 ] && break
+      exec 9>&-
+    done
+    printf '%s\n' "$$" > "$lf"
+    LOCK_KIND=flock; LOCK_PATH=$lf
+    return 0
+  fi
+  lf=$PROJECT_STATE/$name.lockd
+  while ! mkdir "$lf" 2>/dev/null; do
+    holder=$(cat "$lf/pid" 2>/dev/null)
+    if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } \
+       || { [ -z "$holder" ] && [ -n "$(find "$lf" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+      # Its holder is gone without releasing it: take the lock over.
+      mv "$lf" "$lf.stale.$$" 2>/dev/null && rm -rf "$lf.stale.$$"
+      continue
+    fi
+    [ "$noted" -eq 1 ] || { lock_busy_note "$name" "$holder"; noted=1; }
+    [ "$SECONDS" -lt "$deadline" ] \
+      || die "preview $name is still busy after ${LOCK_WAIT}s (another opsx-preview.sh run${holder:+, pid $holder}) — try again later"
+    sleep 0.2
+  done
+  printf '%s\n' "$$" > "$lf/pid"
+  LOCK_KIND=dir; LOCK_PATH=$lf
+  trap lock_release EXIT
+}
+
+# The flock file is unlinked while still held (waiters re-check that they
+# locked the live file), so a stop leaves no lock file behind.
+lock_release() {
+  case "$LOCK_KIND" in
+    flock) rm -f "$LOCK_PATH"; exec 9>&- ;;
+    dir)   rm -rf "$LOCK_PATH" ;;
+  esac
+  LOCK_KIND=""; LOCK_PATH=""
+}
+
+# True when an up/stop of preview $1 holds its lock right now.
+lock_held() {
+  local lf=$PROJECT_STATE/$1.lock holder
+  if [ -d "$PROJECT_STATE/$1.lockd" ]; then
+    holder=$(cat "$PROJECT_STATE/$1.lockd/pid" 2>/dev/null)
+    [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null && return 0
+  fi
+  [ -e "$lf" ] && command -v flock >/dev/null 2>&1 || return 1
+  ( exec 8>>"$lf" && flock -n 8 ) 2>/dev/null && return 1
+  return 0
+}
+
 # ---------- processes, ports, health ----------
 
 group_alive() { [ -n "${1:-}" ] && [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 1 ] && kill -0 -- "-$1" 2>/dev/null; }
@@ -199,12 +296,23 @@ port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
 valid_port() { [[ "${1:-}" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 
+# Ports held by recorded previews of any project: a starting app may not be
+# listening yet, so a free-looking port can still be spoken for.
+recorded_ports() {
+  local f
+  for f in "$STATE_ROOT"/*/*.env; do
+    [ -f "$f" ] && awk -F= '$1=="PORT" { print $2 }' "$f"
+  done
+}
+
 pick_port() {
-  local last=${1:-} p
-  if valid_port "$last" && ! port_in_use "$last"; then
+  local last=${1:-} p taken
+  taken=" $(recorded_ports | tr '\n' ' ') "
+  if valid_port "$last" && [[ "$taken" != *" $last "* ]] && ! port_in_use "$last"; then
     printf '%s' "$last"; return 0
   fi
   for ((p = PORT_MIN; p <= PORT_MAX; p++)); do
+    [[ "$taken" == *" $p "* ]] && continue
     port_in_use "$p" && continue
     printf '%s' "$p"; return 0
   done
@@ -255,7 +363,7 @@ expose_preflight() {
     err "expose is not installed — previews need it: run install.sh --expose-domain <domain>"
     return 1
   fi
-  out=$("$EXPOSE" list --json 2>&1); rc=$?
+  out=$("$EXPOSE" list --json 2>&1 9>&-); rc=$?
   case "$rc" in
     0) return 0 ;;
     3) [ -n "$out" ] && err "$out"
@@ -274,7 +382,7 @@ expose_down() {
   local out
   find_expose
   [ -n "$EXPOSE" ] || return 0
-  out=$("$EXPOSE" down "$1" --project "$PROJECT" 2>&1) && return 0
+  out=$("$EXPOSE" down "$1" --project "$PROJECT" 2>&1 9>&-) && return 0
   warn "could not remove the route for $1${out:+: $(printf '%s' "$out" | tail -n 1)} — remove it with: expose.sh down $1 --project $PROJECT"
   return 0
 }
@@ -284,7 +392,24 @@ strip_osc8() { sed -e 's/\x1b]8;;[^\x07\x1b]*\(\x07\|\x1b\\\)//g'; }
 
 # ---------- windows (all tmux work goes through opsx-window.sh) ----------
 
-win() { ( cd -- "$MAIN_DIR" && "$WINDOW_SH" "$@" ); }
+win() { ( cd -- "$MAIN_DIR" && "$WINDOW_SH" "$@" ) 9>&-; }
+
+# Close every window tagged for preview $1. Returns 1, with a warning, when
+# that could not be done (tmux unreachable, kill-window failed); prints the
+# window helper's "closed ..." lines on stdout. Without tmux there is nothing
+# to close.
+CLOSED_OUT=""
+close_windows() {
+  local out
+  CLOSED_OUT=""
+  command -v tmux >/dev/null 2>&1 || return 0
+  if out=$(win preview-kill "$1" 2>&1); then
+    CLOSED_OUT=$(printf '%s\n' "$out" | grep '^closed ' || true)
+    return 0
+  fi
+  warn "could not close the preview window for $1${out:+: $(printf '%s' "$out" | tail -n 1)} — close the tmux window tagged @opsx_preview=$1 (titled 'ox >$1') by hand"
+  return 1
+}
 
 # preview-find looks across every session for this project's windows, so the
 # answer does not depend on which session the caller is in.
@@ -418,21 +543,22 @@ run_install() {  # run_install <dir> <port>
   key=$(printf '%s' "$dir" | sha256)
   hash_file=$PROJECT_STATE/$key.install
   want=$(install_hash "$dir")
-  [ -f "$hash_file" ] && have=$(cat "$hash_file" 2>/dev/null)
+  [ -f "$hash_file" ] && have=$(head -n 1 "$hash_file" 2>/dev/null)
   if [ "$want" = "$have" ]; then
     say "install: up to date (skipped)"
     return 0
   fi
   log=$PROJECT_STATE/$NAME.install.log
   say "install: $R_INSTALL"
-  ( cd -- "$dir" && PORT=$port HOST=127.0.0.1 bash -c "$R_INSTALL" ) > "$log" 2>&1
+  ( cd -- "$dir" && PORT=$port HOST=127.0.0.1 bash -c "$R_INSTALL" ) > "$log" 2>&1 9>&-
   rc=$?
   if [ "$rc" -ne 0 ]; then
     err "install failed (exit $rc): $R_INSTALL — last lines of $log:"
     tail -n 20 "$log" | sed 's/^/  | /' >&2
     exit "$rc"
   fi
-  printf '%s\n' "$want" > "$hash_file"
+  # Second line: the checkout, so prune can drop hashes of removed worktrees.
+  printf '%s\n%s\n' "$want" "$dir" > "$hash_file"
   say "install: ok"
 }
 
@@ -473,17 +599,21 @@ EOF
 
 # Clean up a failed start: stop the group, remove any route, close the window,
 # drop the record.
+# Byte offset of <name>.log where this run's output starts: failure tails
+# show only what this run wrote, never an earlier run's errors.
+LOG_OFF=0
 abort_start() {
-  local pgid=$1 log=$2 reason=$3
+  local pgid=$1 log=$2 reason=$3 lines
   err "$reason"
   sleep 0.3
-  if [ -s "$log" ]; then
-    err "last lines of $log:"
-    tail -n 20 "$log" | sed 's/^/  | /' >&2
+  lines=$(tail -c "+$((LOG_OFF + 1))" "$log" 2>/dev/null | tail -n 20)
+  if [ -n "$lines" ]; then
+    err "last lines of this run in $log:"
+    printf '%s\n' "$lines" | sed 's/^/  | /' >&2
   fi
   kill_group "$NAME" "$pgid"
   expose_down "$NAME"
-  win preview-kill "$NAME" >/dev/null 2>&1 || true
+  close_windows "$NAME" || true
   rm -f "$(record_file "$NAME")" "$PROJECT_STATE/$NAME.pgid"
   exit 1
 }
@@ -495,6 +625,9 @@ cmd_up() {
   resolve_target "$arg"
   mkdir -p "$PROJECT_STATE" || die "cannot create $PROJECT_STATE"
   chmod 700 "$PROJECT_STATE" 2>/dev/null || true
+  # Held until we exit: a concurrent up waits here and then reuses this
+  # preview instead of starting a second app or tearing this one down.
+  lock_acquire "$NAME"
   f=$(record_file "$NAME")
 
   # Already running: window alive, group alive and healthy -> same URL.
@@ -508,8 +641,14 @@ cmd_up() {
     last_port=$R_PORT
     kill_group "$NAME" "$R_PGID"
     expose_down "$NAME"
-    win preview-kill "$NAME" >/dev/null 2>&1 || true
+    close_windows "$NAME" || true
     rm -f "$f"
+  else
+    # No record: clear what a start killed half-way may have left behind.
+    pgid=$(cat "$PROJECT_STATE/$NAME.pgid" 2>/dev/null || true)
+    group_is_preview "$NAME" "$pgid" && kill_group "$NAME" "$pgid"
+    pgid=""
+    if window_alive "$NAME"; then close_windows "$NAME" || true; fi
   fi
   [ -n "$last_port" ] || last_port=$(cat "$PROJECT_STATE/$NAME.port" 2>/dev/null || true)
 
@@ -529,6 +668,8 @@ cmd_up() {
   pgidf=$PROJECT_STATE/$NAME.pgid
   rm -f "$pgidf"
   : >> "$log"
+  [ "$(wc -c < "$log" | tr -d ' ')" -le "$LOG_MAX_BYTES" ] || : > "$log"
+  LOG_OFF=$(wc -c < "$log" | tr -d ' ')
   write_launch_script "$launch" "$CHECKOUT" "$port" "$log" "$pgidf"
   printf '%s\n' "$port" > "$PROJECT_STATE/$NAME.port"
 
@@ -548,9 +689,11 @@ cmd_up() {
 
   start=$SECONDS
   while :; do
-    if healthy "$port" "$R_HEALTH_PATH"; then break; fi
+    # Alive first: a healthy answer from a process that is not ours (our app
+    # lost the port and is exiting) must not count.
     group_alive "$pgid" \
       || abort_start "$pgid" "$log" "the app exited before http://127.0.0.1:$port$R_HEALTH_PATH became healthy"
+    if healthy "$port" "$R_HEALTH_PATH" && group_alive "$pgid"; then break; fi
     [ $((SECONDS - start)) -lt "$R_TIMEOUT" ] \
       || abort_start "$pgid" "$log" "http://127.0.0.1:$port$R_HEALTH_PATH not healthy after ${R_TIMEOUT}s (timeout)"
     sleep 0.5
@@ -560,7 +703,7 @@ cmd_up() {
   # stdout is parsed for the URL (its last line); stderr (clipboard status,
   # notes) is relayed as is. Both are shown when expose fails.
   errf=$PROJECT_STATE/$NAME.expose.err
-  out=$("$EXPOSE" up "$port" --name "$NAME" --project "$PROJECT" 2>"$errf"); rc=$?
+  out=$("$EXPOSE" up "$port" --name "$NAME" --project "$PROJECT" 2>"$errf" 9>&-); rc=$?
   if [ "$rc" -ne 0 ]; then
     abort_start "$pgid" "$log" "expose.sh up failed (exit $rc): $( { cat "$errf"; printf '%s\n' "$out"; } 2>/dev/null | awk 'NF' | tail -n 3)"
   fi
@@ -574,36 +717,111 @@ cmd_up() {
   say "$url"
 }
 
+# Returns 1 when a window could not be closed (the app and route are still
+# stopped and the record dropped; a later stop retries the window).
 stop_one() {  # stop_one <name>
-  local name=$1 f
+  local name=$1 f pgid rc=0 did=0
+  [ -d "$PROJECT_STATE" ] || { say "no preview running for $name"; return 0; }
+  # Waits for a starting `up` of the same preview, so its app is recorded
+  # (and stopped) rather than left running behind our back.
+  lock_acquire "$name"
   f=$(record_file "$name")
   if ! read_record "$f"; then
-    say "no preview running for $name"
     rm -f "$f"
-    return 0
+    # No record, but a start killed half-way can leave a group and a window.
+    pgid=$(cat "$PROJECT_STATE/$name.pgid" 2>/dev/null || true)
+    if group_is_preview "$name" "$pgid"; then kill_group "$name" "$pgid"; did=1; fi
+    close_windows "$name" || rc=1
+    [ -z "$CLOSED_OUT" ] || did=1
+    rm -f "$PROJECT_STATE/$name.pgid"
+    if [ "$did" -eq 1 ]; then
+      say "stopped leftovers of preview $name (no record)${CLOSED_OUT:+ — $CLOSED_OUT}"
+    else
+      say "no preview running for $name"
+    fi
+    lock_release
+    return "$rc"
   fi
   kill_group "$name" "$R_PGID"
   expose_down "$name"
-  win preview-kill "$name" >/dev/null 2>&1 || true
+  close_windows "$name" || rc=1
   rm -f "$f" "$PROJECT_STATE/$name.pgid"
-  say "stopped preview $name (port ${R_PORT:-?})"
+  if [ "$rc" -eq 0 ]; then
+    say "stopped preview $name (port ${R_PORT:-?})"
+  else
+    say "stopped preview $name (port ${R_PORT:-?}), but its window is still open"
+  fi
+  lock_release
+  return "$rc"
 }
 
 cmd_stop() {
-  local arg=${1:-} f n=0
+  local arg=${1:-} f n=0 rc=0
   [ -n "$arg" ] || die "usage: opsx-preview.sh stop <change>|--all" 2
   if [ "$arg" = "--all" ]; then
     for f in "$PROJECT_STATE"/*.env; do
       [ -f "$f" ] || continue
-      stop_one "$(basename -- "$f" .env)"
+      stop_one "$(basename -- "$f" .env)" || rc=1
       n=$((n + 1))
     done
     [ "$n" -gt 0 ] || say "no previews running in project $PROJECT"
-    return 0
+    return "$rc"
   fi
   if [ "$arg" = "--main" ]; then arg=main; fi
   valid_name "$arg" || die "invalid change name '$arg'" 2
   stop_one "$arg"
+}
+
+# Names that have per-preview files in the project state directory.
+state_names() {
+  local f b
+  for f in "$PROJECT_STATE"/*; do
+    [ -e "$f" ] || continue
+    b=$(basename -- "$f")
+    case "$b" in
+      *.install.log) b=${b%.install.log} ;;
+      *.launch.sh)   b=${b%.launch.sh} ;;
+      *.expose.err)  b=${b%.expose.err} ;;
+      *.env|*.log|*.port|*.pgid|*.lock|*.lockd) b=${b%.*} ;;
+      *) continue ;;
+    esac
+    valid_name "$b" && printf '%s\n' "$b"
+  done | sort -u
+}
+
+# Forget per-change state of changes that have no record, no worktree and no
+# up/stop running, and install hashes of checkouts that are gone. Never
+# touches `main` or a change whose worktree still exists.
+prune_state() {
+  local quiet=${1:-} wts branches name f dir n=0
+  [ -d "$PROJECT_STATE" ] || { [ -n "$quiet" ] || say "nothing to prune in project $PROJECT"; return 0; }
+  # Without a reliable worktree list nothing can be called gone.
+  wts=$(git -C "$MAIN_DIR" worktree list --porcelain 2>/dev/null) || return 0
+  [ -n "$wts" ] || return 0
+  branches=$(printf '%s\n' "$wts" | awk '/^branch refs\/heads\/opsx\//{ print substr($0, 24) }')
+  while IFS= read -r name; do
+    [ -n "$name" ] && [ "$name" != main ] || continue
+    [ -e "$PROJECT_STATE/$name.env" ] && continue
+    printf '%s\n' "$branches" | grep -Fqx -- "$name" && continue
+    lock_held "$name" && continue
+    rm -f "$PROJECT_STATE/$name.log" "$PROJECT_STATE/$name.launch.sh" "$PROJECT_STATE/$name.port" \
+          "$PROJECT_STATE/$name.install.log" "$PROJECT_STATE/$name.pgid" "$PROJECT_STATE/$name.expose.err" \
+          "$PROJECT_STATE/$name.lock"
+    rm -rf "$PROJECT_STATE/$name.lockd"
+    n=$((n + 1))
+    [ -n "$quiet" ] || say "pruned state of $name (no worktree, no record)"
+  done < <(state_names)
+  for f in "$PROJECT_STATE"/*.install; do
+    [ -f "$f" ] || continue
+    dir=$(sed -n 2p "$f" 2>/dev/null)
+    # Hashes written before the checkout line was added are left alone.
+    if [ -n "$dir" ] && [ ! -d "$dir" ]; then
+      rm -f "$f"; n=$((n + 1))
+      [ -n "$quiet" ] || say "pruned install hash of $dir (checkout gone)"
+    fi
+  done
+  [ -n "$quiet" ] || [ "$n" -gt 0 ] || say "nothing to prune in project $PROJECT"
+  return 0
 }
 
 cmd_url() {
@@ -622,7 +840,7 @@ cmd_url() {
     # expose.sh url reprints and copies (OSC 52); fall back to the record.
     # Its stderr (clipboard status) is relayed only when it succeeded.
     errf=$PROJECT_STATE/$name.expose.err
-    out=$("$EXPOSE" url "$name" --project "$PROJECT" 2>"$errf"); rc=$?
+    out=$("$EXPOSE" url "$name" --project "$PROJECT" 2>"$errf" 9>&-); rc=$?
     errout=$(cat "$errf" 2>/dev/null); rm -f "$errf"
     if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
       [ -n "$errout" ] && printf '%s\n' "$errout" >&2
@@ -658,19 +876,23 @@ main() {
   [ $# -gt 0 ] && shift
   case "$cmd" in
     help|-h|--help) usage; exit 0 ;;
-    up|stop|url|list) ;;
-    *) err "unknown subcommand: $cmd"; usage >&2; exit 2 ;;
+    up|stop|url|list|prune) ;;
+    *) err "unknown subcommand: $cmd"; short_usage; exit 2 ;;
   esac
   case "$cmd" in
-    list) [ $# -eq 0 ] || die "list takes no arguments" 2 ;;
-    *)    [ $# -le 1 ] || die "$cmd takes one argument (got: $*)" 2 ;;
+    list|prune) [ $# -eq 0 ] || die "$cmd takes no arguments" 2 ;;
+    *)          [ $# -le 1 ] || die "$cmd takes one argument (got: $*)" 2 ;;
   esac
   resolve_project
   case "$cmd" in
-    up)   cmd_up "$@" ;;
-    stop) cmd_stop "$@" ;;
-    url)  cmd_url "$@" ;;
-    list) cmd_list ;;
+    up|stop|list) prune_state quiet ;;
+  esac
+  case "$cmd" in
+    up)    cmd_up "$@" ;;
+    stop)  cmd_stop "$@" ;;
+    url)   cmd_url "$@" ;;
+    list)  cmd_list ;;
+    prune) prune_state ;;
   esac
 }
 

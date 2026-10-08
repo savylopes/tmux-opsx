@@ -75,9 +75,10 @@ Previews are run by `~/.claude/skills/opsx-run/opsx-preview.sh` — the **only**
 
 ```
 opsx-preview.sh up   <change>|--main     # start or reuse; the URL is the last stdout line
-opsx-preview.sh stop <change>|--all      # exit 0 even when nothing runs
+opsx-preview.sh stop <change>|--all      # exit 0 even when nothing runs; 1 when a window could not be closed
 opsx-preview.sh url  <change>|--main     # non-zero when nothing runs
 opsx-preview.sh list
+opsx-preview.sh prune                    # forget state of changes whose worktree is gone (land runs it)
 ```
 
 Preview windows are titled `ox ><change>` (ASCII, so non-UTF-8 clients show it as-is) and tagged `@opsx_preview=<change>`, never `@opsx_change`, so they are never mistaken for the agent window.

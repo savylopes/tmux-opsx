@@ -461,6 +461,12 @@ else
   fi
 fi
 
+# Forget the preview state (log, launch script, port, install hash) of
+# changes whose worktree is now gone. Silent and never fatal.
+if [ "$DRY_RUN" -eq 0 ] && [ -x "$preview_script" ]; then
+  "$preview_script" prune >/dev/null 2>&1 || true
+fi
+
 if [ "$NO_CLOSE" -eq 1 ]; then
   skip "tmux window kept (--no-close)"
 else

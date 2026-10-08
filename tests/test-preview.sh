@@ -138,6 +138,16 @@ win_tag()   { $L show-options -wv -t "$1" "$2" 2>/dev/null; }
 port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 rec()       { awk -F= -v k="$2" '$1==k{print $2}' "$PS_DIR/$PROJ/$1.env" 2>/dev/null; }
 last()      { printf '%s\n' "$1" | awk 'NF{l=$0} END{print l}'; }
+# Distinct process groups of http.server apps carrying OPSX_PREVIEW=$1 (Linux /proc).
+napps() {
+  local e p
+  for e in /proc/[0-9]*/environ; do
+    tr '\0' '\n' < "$e" 2>/dev/null | grep -qx "OPSX_PREVIEW=$1" || continue
+    p=${e#/proc/}; p=${p%/environ}
+    tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q "http.server" || continue
+    ps -o pgid= -p "$p" 2>/dev/null | tr -d ' '
+  done 2>/dev/null | sort -u | grep -c .
+}
 
 # ---------------------------------------------------------------- scratch repo
 PROJ=shop
@@ -184,6 +194,8 @@ h=$("$P" help); rc=$?
 ok "help lists subcommands"                    '[ $rc -eq 0 ] && for w in up stop url list --main --all preview.yaml; do [[ "$h" == *"$w"* ]] || exit 1; done'
 "$P" bogus >/dev/null 2>&1; rc=$?
 ok "unknown subcommand -> exit 2"              '[ $rc -eq 2 ]'
+eout=$("$P" bogus 2>&1 >/dev/null)
+ok "unknown subcommand -> short hint (QA F6)"  '[ "$(printf "%s\n" "$eout" | wc -l)" -le 2 ] && [[ "$eout" == *"unknown subcommand: bogus"* ]] && [[ "$eout" == *"opsx-preview.sh help"* ]]'
 out=$(pv up add-auth); rc=$?
 ok "no worktree -> non-zero, apply first"      '[ $rc -ne 0 ] && [[ "$out" == *"apply the change first"* ]] && [ "$(nwin add-auth)" -eq 0 ]'
 ok "no worktree -> no expose call"             '! grep -q "^up" "$EXPOSE_LOG"'
@@ -315,6 +327,7 @@ ok "app exits -> no route left (F1)"           '[ ! -e "$SP/routes/broken--shop"
 printf 'cmd: exec sleep 30\ntimeout: 2\n' > "$SP/wt-broken/.opsx/preview.yaml"
 out=$(pv up broken); rc=$?
 ok "health timeout -> non-zero, app stopped"   '[ $rc -ne 0 ] && [[ "$out" == *"timeout"* ]] && [ "$(nwin broken)" -eq 0 ] && ! grep -q "^up .*--name broken" "$EXPOSE_LOG"'
+ok "failure tail: this run only (QA F2)"       '[[ "$out" != *"boom-marker"* ]] && grep -q "boom-marker-2" "$PS_DIR/shop/broken.log"'
 
 # ================================================================ 2.2 recipes
 addwt nocmd
@@ -389,6 +402,91 @@ ok "README example recipe is non-empty"        'grep -q "^cmd:" "$SP/readme-exam
 ok "README example recipe runs with up"        '[ $rc -eq 0 ] && [ "$(last "$out")" = "https://readme--shop.dev.example.com" ]'
 pv stop readme >/dev/null
 
+# ================================================================ QA round: races, teardown, state
+# F1: two `up` at once -> one app, one window, one route, same URL.
+addwt race
+printf 'cmd: python3 -m http.server $PORT --bind 127.0.0.1\n' > "$SP/wt-race/.opsx/preview.yaml"
+: > "$EXPOSE_LOG"
+pv up race > "$SP/race1.out" & r1=$!
+pv up race > "$SP/race2.out" & r2=$!
+wait "$r1"; rc1=$?; wait "$r2"; rc2=$?
+RP=$(rec race PORT)
+ok "concurrent up: both exit 0, same URL"      '[ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ "$(last "$(cat "$SP/race1.out")")" = "https://race--shop.dev.example.com" ] && [ "$(last "$(cat "$SP/race2.out")")" = "https://race--shop.dev.example.com" ]'
+ok "concurrent up: one window, one app, one up" '[ "$(nwin race)" -eq 1 ] && [ "$(napps race)" -eq 1 ] && [ "$(grep -c "^up .*--name race" "$EXPOSE_LOG")" -eq 1 ]'
+ok "concurrent up: second one reused the first" 'cat "$SP/race1.out" "$SP/race2.out" | grep -q "already running"'
+out=$(pv stop race); rc=$?
+sleep 0.3
+ok "concurrent up: stop leaves nothing behind" '[ $rc -eq 0 ] && [ "$(nwin race)" -eq 0 ] && [ "$(napps race)" -eq 0 ] && ! port_open "$RP"'
+
+# F1b: a second up (and a stop) during the first one's health wait waits
+# for it instead of tearing it down.
+printf 'cmd: sleep 2; exec python3 -m http.server $PORT --bind 127.0.0.1\ntimeout: 20\n' > "$SP/wt-race/.opsx/preview.yaml"
+pv up race > "$SP/race1.out" & r1=$!
+sleep 0.8
+out=$(pv up race); rc=$?
+wait "$r1"; rc1=$?
+ok "up during startup waits, then reuses"      '[ $rc1 -eq 0 ] && [ $rc -eq 0 ] && [[ "$out" == *"waiting for another"* ]] && [[ "$out" == *"already running"* ]] && [ "$(nwin race)" -eq 1 ] && [ "$(napps race)" -eq 1 ]'
+pv stop race >/dev/null
+pv up race > "$SP/race1.out" & r1=$!
+sleep 0.8
+out=$(pv stop race); rc=$?
+wait "$r1"
+sleep 0.3
+ok "stop during startup waits, then stops it"  '[ $rc -eq 0 ] && [[ "$out" == *"stopped preview race"* ]] && [ "$(nwin race)" -eq 0 ] && [ "$(napps race)" -eq 0 ] && [ ! -e "$PS_DIR/shop/race.env" ]'
+# Same without flock (the mkdir lock used where flock is missing).
+printf 'cmd: python3 -m http.server $PORT --bind 127.0.0.1\n' > "$SP/wt-race/.opsx/preview.yaml"
+: > "$EXPOSE_LOG"
+OPSX_PREVIEW_NO_FLOCK=1 pv up race > "$SP/race1.out" & r1=$!
+OPSX_PREVIEW_NO_FLOCK=1 pv up race > "$SP/race2.out" & r2=$!
+wait "$r1"; rc1=$?; wait "$r2"; rc2=$?
+ok "concurrent up without flock: one app"      '[ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ "$(nwin race)" -eq 1 ] && [ "$(napps race)" -eq 1 ] && [ "$(grep -c "^up .*--name race" "$EXPOSE_LOG")" -eq 1 ] && [ ! -e "$PS_DIR/shop/race.lockd" ]'
+OPSX_PREVIEW_NO_FLOCK=1 pv stop race >/dev/null
+ok "stop without flock releases the lock"      '[ "$(nwin race)" -eq 0 ] && [ ! -e "$PS_DIR/shop/race.lockd" ]'
+
+# F3: tmux unreachable -> stop warns and fails; a later stop (no record)
+# still closes the leftover window.
+pv up race >/dev/null
+RP=$(rec race PORT)
+# A socket we may not connect to: tmux reports "Permission denied".
+python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' "$SP/dead.sock"
+chmod 000 "$SP/dead.sock"
+out=$(cd "$R" && TMUX="$SP/dead.sock,1,0" "$P" stop race 2>&1); rc=$?
+sleep 0.3
+ok "stop, tmux unreachable -> warning, exit 1" '[ $rc -eq 1 ] && [[ "$out" == *"could not close the preview window for race"* ]] && [[ "$out" == *"its window is still open"* ]] && ! port_open "$RP" && [ "$(nwin race)" -eq 1 ]'
+out=$(pv stop race); rc=$?
+ok "stop without record closes leftover window" '[ $rc -eq 0 ] && [[ "$out" == *"stopped leftovers of preview race"* ]] && [ "$(nwin race)" -eq 0 ]'
+out=$(pv stop race); rc=$?
+ok "stop with nothing left -> no preview running" '[ $rc -eq 0 ] && [[ "$out" == "no preview running for race" ]]'
+
+# F4: close / close --all from outside the project still stops the preview.
+mkdir -p "$SP/outside"
+pv up race >/dev/null
+(cd "$R" && "$W" ensure race --prompt-file "$SP/prompt.txt" --agent-cli fakecli --model default) >/dev/null 2>&1
+out=$(cd "$SP/outside" && "$W" close --all --force 2>&1); rc=$?
+ok "close --all outside the repo stops previews" '[ $rc -eq 0 ] && [ "$(nwin race)" -eq 0 ] && [ ! -e "$PS_DIR/shop/race.env" ] && [ ! -e "$SP/routes/race--shop" ]'
+$L new-window -d -t pt: 'exec sleep 3000'
+pv up race >/dev/null
+(cd "$R" && "$W" ensure race --prompt-file "$SP/prompt.txt" --agent-cli fakecli --model default) >/dev/null 2>&1
+out=$(cd "$SP/outside" && "$W" close race --force 2>&1); rc=$?
+ok "close <c> outside the repo stops its preview" '[ $rc -eq 0 ] && [ "$(nwin race)" -eq 0 ] && [ ! -e "$PS_DIR/shop/race.env" ]'
+pv up race >/dev/null
+out=$(cd "$SP/outside" && "$W" close --all --force 2>&1)
+ok "close --all, no project found -> says so"  '[[ "$out" == *"previews were NOT stopped"* ]] && [ "$(nwin race)" -eq 1 ]'
+pv stop race >/dev/null
+$L new-window -d -t pt: 'exec sleep 3000'
+
+# F5: prune forgets state of changes whose worktree is gone.
+printf 'cmd: python3 -m http.server $PORT --bind 127.0.0.1\ninstall: true\n' > "$SP/wt-race/.opsx/preview.yaml"
+pv up race >/dev/null; pv stop race >/dev/null
+IH_RACE=$PS_DIR/shop/$(printf '%s' "$SP/wt-race" | sha256sum | cut -d' ' -f1).install
+ok "install hash names its checkout"           '[ "$(sed -n 2p "$IH_RACE")" = "$SP/wt-race" ]'
+out=$(pv prune); rc=$?
+ok "prune keeps a change that has a worktree"  '[ $rc -eq 0 ] && [ -e "$PS_DIR/shop/race.log" ] && [ -e "$IH_RACE" ]'
+git -C "$R" worktree remove --force "$SP/wt-race"
+out=$(pv prune); rc=$?
+ok "prune drops files of a removed worktree"   '[ $rc -eq 0 ] && [ -z "$(ls "$PS_DIR/shop/" | grep "^race\.")" ] && [ ! -e "$IH_RACE" ] && [[ "$out" == *"pruned state of race"* ]]'
+ok "prune keeps other previews' state"         '[ -e "$PS_DIR/shop/main.port" ] && [ -e "$PS_DIR/shop/add-auth.log" ]'
+
 # ================================================================ 4.1 close / close-all / land
 out=$(pv up add-auth)
 (cd "$R" && "$W" ensure add-auth --prompt-file "$SP/prompt.txt" --agent-cli fakecli --model default) >/dev/null 2>&1
@@ -420,6 +518,7 @@ out=$(cd "$R" && "$LAND" add-auth 2>&1); rc=$?
 ok "land with preview succeeds"                '[ $rc -eq 0 ] && [[ "$out" == *"Landed add-auth"* ]]'
 ok "land: no preview window, down recorded"    '[ "$(nwin add-auth)" -eq 0 ] && grep -qx "down add-auth --project shop" "$EXPOSE_LOG" && ! port_open "$LP"'
 ok "land: worktree removed"                    '[ ! -d "$SP/wt-add-auth" ]'
+ok "land: preview state pruned (QA F5)"        '[ -z "$(ls "$PS_DIR/shop/" | grep "^add-auth\.")" ]'
 
 # land --dry-run prints the stop call
 R2=$SP/dry; mkdir -p "$R2"; git -C "$R2" init -q -b main
