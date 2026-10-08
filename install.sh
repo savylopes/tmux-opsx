@@ -72,7 +72,9 @@
 #   --skip-memory      Don't install the memory skill, instruction blocks, store, or import
 #   --skip-fork        Don't install the /fork skill
 #   --expose-domain <d>  Set up /expose: publish local ports at https://<name>--<project>.<d>
-#                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9)
+#                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9).
+#                      Use a domain that serves nothing else: the login cookie
+#                      is sent to every host under it
 #   --no-backup        Overwrite existing files without keeping a .bak copy
 #   --uninstall        Remove everything this script installs (except the CLI)
 #   -h, --help         Show this help
@@ -847,7 +849,10 @@ expose_write_caddy_config() {
   cat > "$EXPOSE_CADDY_JSON.tmp" <<JSON || die "cannot write $EXPOSE_CADDY_JSON"
 {
   "admin": {
-    "listen": "unix/$sock"
+    "listen": "unix/$sock",
+    "config": {
+      "persist": false
+    }
   },
   "apps": {
     "http": {
@@ -921,7 +926,8 @@ Environment="HOME=$HOME"
 Environment="XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}"
 Environment="XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}"
 EnvironmentFile=$EXPOSE_ENV
-# Caddy starts from caddy.json alone (no autosave), so a rerun of install.sh
+# Caddy starts from caddy.json alone (autosave is off: "persist": false keeps
+# the owner key and share tokens out of autosave.json), so a rerun of install.sh
 # takes effect on the next start; expose.sh then puts the recorded routes back.
 ExecStart="$CADDY_BIN" run --config "$EXPOSE_CADDY_JSON"
 ExecStartPost=-"$PREFIX/skills/expose/expose.sh" list --json

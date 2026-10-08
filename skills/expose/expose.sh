@@ -39,6 +39,8 @@
 #                             links keep working
 #   up --public               no login (webhooks, OAuth callbacks); up again
 #                             without it requires a login again
+# The owner cookie is sent to every host under the domain, so use a domain
+# (e.g. dev.example.com) that serves nothing but /expose.
 # The owner key lives in ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/expose.key
 # (mode 600, created on first use) and is printed only by `url --with-key`.
 #
@@ -97,13 +99,16 @@ normalise() {
     | LC_ALL=C tr -s '-' | sed 's/^-*//; s/-*$//'
 }
 
-sha6() {
+# sha256 of $1 as 64 hex characters.
+sha256hex() {
   if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$1" | sha256sum | cut -c1-6
+    printf '%s' "$1" | sha256sum | cut -c1-64
   else
-    printf '%s' "$1" | shasum -a 256 | cut -c1-6
+    printf '%s' "$1" | shasum -a 256 | cut -c1-64
   fi
 }
+
+sha6() { sha256hex "$1" | cut -c1-6; }
 
 # Cut $1 to at most $2 characters and append -<hash of $3>, never leaving '--'.
 cut_with_hash() {
@@ -277,18 +282,23 @@ json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')";
 LOGIN_PAGE='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Login required</title></head><body style="font-family: system-ui, sans-serif; max-width: 28rem; margin: 4rem auto; padding: 0 1rem; color: #222; line-height: 1.5"><h1 style="font-size: 1.4rem">Login required</h1><form method="get" action=""><label for="opsx_key">Owner key</label><br><input id="opsx_key" name="opsx_key" type="password" autocomplete="current-password" required style="width: 100%; padding: .5rem; margin: .5rem 0; box-sizing: border-box"><button type="submit" style="padding: .5rem 1rem">Log in</button></form><p>Got this link from someone? It may have expired or been revoked — ask them for a new one.</p></body></html>'
 
 # route_json <label> <port> <public 0|1> [<id>:<recipient>:<expires|never>:<token> ...]
-# Prints the full route for one exposure. A public route matches the host and
-# proxies. Otherwise the route holds a subroute: owner login link -> 302 with
-# the owner cookie; each share link -> 302 with its host-only cookie; a valid
-# owner or share cookie -> strip both cookies, proxy; anything else -> 401
-# login page. Its "group" is a fingerprint of the rest, so reconcile can tell
-# an outdated route (pre-auth, rotated key, revoked or pruned token).
+# Prints the full route for one exposure. A public route matches the host,
+# strips both cookies and proxies. Otherwise the route holds a subroute: owner
+# login link -> 302 with the owner cookie; each share link -> 302 with its
+# host-only cookie; a valid owner or share cookie -> strip both cookies,
+# proxy; anything else -> 401 login page. Its "group" is the full sha256 of
+# the rest, so reconcile can tell an outdated route (pre-auth, rotated key,
+# revoked or pruned token).
 route_json() {
   local label=$1 port=$2 public=$3; shift 3
-  local host="$label.$DOMAIN" proxy body sub="" auth sh id rec exp tok expr cookie
+  local host="$label.$DOMAIN" proxy strip body sub="" auth sh id rec exp tok expr cookie
   proxy='{"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:'"$port"'"}]}'
+  # Removes opsx_auth and opsx_share from the Cookie header. Every route, the
+  # public ones included, applies it: the owner cookie is sent to every host
+  # under the domain and must never reach an app.
+  strip='{"handler":"headers","request":{"replace":{"Cookie":[{"search_regexp":"(^|;) *opsx_(auth|share)=[^;]*","replace":""},{"search_regexp":"^[; ]+","replace":""}]}}}'
   if [ "$public" = 1 ]; then
-    body='"match":[{"host":["'"$host"'"]}],"handle":['"$proxy"'],"terminal":true}'
+    body='"match":[{"host":["'"$host"'"]}],"handle":['"$strip"','"$proxy"'],"terminal":true}'
   else
     sub='{"match":[{"query":{"opsx_key":["'"$OWNER_KEY"'"]}}],"handle":[{"handler":"static_response","status_code":302,"headers":{"Location":["https://'"$host"'{http.request.uri.path}"],"Cache-Control":["no-store"],"Set-Cookie":["opsx_auth='"$OWNER_KEY"'; Domain='"$DOMAIN"'; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=Lax"]}}],"terminal":true}'
     auth='{"header_regexp":{"Cookie":{"pattern":"(^|;) *opsx_auth='"$OWNER_KEY"' *(;|$)"}}}'
@@ -304,11 +314,11 @@ route_json() {
       sub="$sub"',{"match":[{"query":{"opsx_share":["'"$tok"'"]}'"$expr"'}],"handle":[{"handler":"static_response","status_code":302,"headers":{"Location":["https://'"$host"'{http.request.uri.path}"],"Cache-Control":["no-store"],"Set-Cookie":["'"$cookie"'"]}}],"terminal":true}'
       auth="$auth"',{"header_regexp":{"Cookie":{"pattern":"(^|;) *opsx_share='"$tok"' *(;|$)"}}'"$expr"'}'
     done
-    sub="$sub"',{"match":['"$auth"'],"handle":[{"handler":"headers","request":{"replace":{"Cookie":[{"search_regexp":"(^|;) *opsx_(auth|share)=[^;]*","replace":""},{"search_regexp":"^[; ]+","replace":""}]}}},'"$proxy"'],"terminal":true}'
+    sub="$sub"',{"match":['"$auth"'],"handle":['"$strip"','"$proxy"'],"terminal":true}'
     sub="$sub"',{"handle":[{"handler":"static_response","status_code":401,"headers":{"Content-Type":["text/html; charset=utf-8"],"Cache-Control":["no-store"]},"body":'"$(json_str "$LOGIN_PAGE")"'}]}'
     body='"match":[{"host":["'"$host"'"]}],"handle":[{"handler":"subroute","routes":['"$sub"']}],"terminal":true}'
   fi
-  printf '{"@id":"expose-%s","group":"expose-fp-%s",%s' "$label" "$(sha6 "$body")" "$body"
+  printf '{"@id":"expose-%s","group":"expose-fp-%s",%s' "$label" "$(sha256hex "$body")" "$body"
 }
 
 # route_for_record — route_json for the record last read by read_record.
@@ -557,7 +567,10 @@ copy_url() {
     return 0
   fi
   if recover_tmux_env && command -v tmux >/dev/null 2>&1; then
-    if tmux set-buffer -w -- "$url" 2>/dev/null || tmux set-buffer -- "$url" 2>/dev/null; then
+    # Through stdin, never argv: the link may carry the owner key or a share
+    # token, and process arguments are visible to every local user.
+    if printf '%s' "$url" | tmux load-buffer -w - 2>/dev/null \
+       || printf '%s' "$url" | tmux load-buffer - 2>/dev/null; then
       err "copied to the tmux buffer (forwarded to the clipboard via OSC 52 when tmux set-clipboard is on)"
       return 0
     fi
@@ -707,6 +720,7 @@ cmd_url() {
   if [ "$with_key" -eq 1 ]; then
     printf 'owner login link for %s: opening it once logs this browser in to every *.%s URL for 30 days. Do not share it; for others use: expose.sh share %s\n' "$R_URL" "$DOMAIN" "$R_NAME"
     [ "$R_PUBLIC" = 1 ] && printf 'note: %s is public (--public); it needs no login.\n' "$R_URL"
+    err "note: the login cookie holds the owner key and is sent to every host under $DOMAIN — use a domain that serves nothing but /expose"
     print_url "$R_URL/?opsx_key=$OWNER_KEY"
     return 0
   fi

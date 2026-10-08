@@ -8,7 +8,7 @@ trigger: /expose
 
 Turn `127.0.0.1:<port>` into an HTTPS URL under the wildcard domain set up by `install.sh --expose-domain <domain>`. The URL is `https://<name>--<project>.<domain>`.
 
-**Exposed URLs require a login.** The proxy answers 401 with a small login page unless the request carries the owner cookie (set by the owner login link, valid on every exposed host for 30 days) or a share cookie (set by a share link, valid on that one host until it expires or is revoked). Both cookies are removed before the request reaches the app. `--public` turns the login off for one exposure (webhooks, OAuth callbacks); only then does `up` print a public-URL warning, which you must pass on.
+**Exposed URLs require a login.** The proxy answers 401 with a small login page unless the request carries the owner cookie (set by the owner login link, valid on every exposed host for 30 days) or a share cookie (set by a share link, valid on that one host until it expires or is revoked). Both cookies are removed before the request reaches the app, on `--public` routes too. The owner cookie goes to every host under the domain, so the domain should serve nothing but `/expose`. `--public` turns the login off for one exposure (webhooks, OAuth callbacks); only then does `up` print a public-URL warning, which you must pass on.
 
 **Apps must listen on `127.0.0.1`.** `up` refuses (exit 2) a port that something listens on at `0.0.0.0`, `[::]` or another non-loopback address, since that is reachable at `<server-ip>:<port>` without the login.
 

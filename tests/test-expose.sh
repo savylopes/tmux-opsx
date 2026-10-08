@@ -304,7 +304,7 @@ done
 
 # ---- route fingerprint + reconcile (fake admin) ----
 fp1=$(group_of web--shop)
-ok "route has a fingerprint group" '[[ "$fp1" =~ ^expose-fp-[0-9a-f]{6}$ ]]'
+ok "route has a fingerprint group (full sha256)" '[[ "$fp1" =~ ^expose-fp-[0-9a-f]{64}$ ]]'
 # Hand-insert a pre-auth route (no group, flat reverse_proxy) in place of web's.
 adm_post() { curl -sS --unix-socket "$SOCK" -X POST -H 'Content-Type: application/json' --data-binary "$2" "http://127.0.0.1$1" >/dev/null; }
 curl -sS --unix-socket "$SOCK" -X DELETE "http://127.0.0.1/id/expose-web--shop" >/dev/null
@@ -459,6 +459,8 @@ else
   o=$(RE up "$WEB2P" --name hook --project shop --public 2>/dev/null)
   ok "--public: cookie-less request reaches the app, output says public" '[ "$(rq hook--shop /)" = 200 ] && grep -q "^app web2 " "$RC/body" && printf "%s\n" "$o" | grep -qi "public with no authentication"'
   ok "--public: list ACCESS public" 'RE list | grep -Eq "^hook .* public$"'
+  rq hook--shop / -H "Cookie: sid=1; opsx_auth=$RK; opsx_share=zzzzzzzzzzzzzzzzzzzzzzzz; theme=dark" >/dev/null
+  ok "--public: owner and share cookies stripped, others kept" 'grep -qx "app web2 cookie=\[sid=1; theme=dark\]" "$RC/body"'
   RE up "$WEB2P" --name hook --project shop >/dev/null 2>&1
   ok "up again without --public: 401, ACCESS login" '[ "$(rq hook--shop /)" = 401 ] && RE list | grep -Eq "^hook .* login$"'
   RE down hook --project shop >/dev/null
@@ -640,6 +642,7 @@ if command -v jq >/dev/null 2>&1; then
   J="$CFG/caddy.json"
   ok "caddy.json: only :443" '[ "$(jq -c "[.apps.http.servers[].listen[]]" "$J")" = "[\":443\"]" ] && [ "$(jq -r ".apps.http.servers.expose.automatic_https.disable_redirects" "$J")" = true ]'
   ok "caddy.json: wildcard subject + cloudflare DNS" '[ "$(jq -r ".apps.tls.automation.policies[0].subjects[0]" "$J")" = "*.dev.example.com" ] && [ "$(jq -r ".apps.tls.automation.policies[0].issuers[0].challenges.dns.provider.name" "$J")" = cloudflare ]'
+  ok "caddy.json: no autosave (admin.config.persist false)" '[ "$(jq -r ".admin.config.persist" "$J")" = false ]'
   ok "caddy.json: unix admin socket in mode-700 dir" 'a=$(jq -r ".admin.listen" "$J"); [[ "$a" == unix/* ]] && [ "$(dirname "${a#unix/}")" = "$STD" ] && [ "$(stat -c %a "$STD")" = 700 ]'
 fi
 ok "systemd unit written under user config" 'grep -q "^ExecStart=.* run --config" "$CFG/tmux-opsx-caddy.service" && ! grep -q -- "--resume" "$CFG/tmux-opsx-caddy.service" && grep -q "^ExecStartPost=-.*/expose/expose.sh\" list" "$CFG/tmux-opsx-caddy.service" && grep -q "^AmbientCapabilities=CAP_NET_BIND_SERVICE" "$CFG/tmux-opsx-caddy.service" && grep -q "^EnvironmentFile=$CFG/expose.env" "$CFG/tmux-opsx-caddy.service"'
