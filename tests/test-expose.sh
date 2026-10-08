@@ -355,7 +355,8 @@ fi
 # ---- --public (fake admin view) ----
 o=$($E up 3000 --name hook --project shop --public 2>/dev/null); rc=$?
 ok "up --public: exit 0, says public with no authentication" '[ $rc -eq 0 ] && printf "%s\n" "$o" | grep -qi "public with no authentication" && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://hook--shop.dev.example.com" ]'
-ok "up --public: flat route, PUBLIC=1 recorded" '! adm /id/expose-hook--shop | grep -q subroute && [ "$(dial_of hook--shop)" = "127.0.0.1:3000" ] && grep -qx "PUBLIC=1" "$RD/hook--shop.env"'
+ok "up --public: route proxies to the port, PUBLIC=1 recorded" '[ "$(dial_of hook--shop)" = "127.0.0.1:3000" ] && grep -qx "PUBLIC=1" "$RD/hook--shop.env"'
+ok "up --public: route has no 401 login page" '! adm /id/expose-hook--shop | grep -q "\"status_code\":401"'
 l=$($E list)
 ok "list ACCESS public/login" 'printf "%s\n" "$l" | grep -Eq "^hook .* public$" && printf "%s\n" "$l" | grep -Eq "^web .* login$"'
 o=$($E share hook --project shop 2>&1); rc=$?
@@ -363,6 +364,14 @@ ok "share of a public exposure refused, no token" '[ $rc -ne 0 ] && ! grep -q "^
 $E up 3000 --name hook --project shop >/dev/null 2>&1
 ok "up again without --public: login route, PUBLIC dropped" 'adm /id/expose-hook--shop | grep -q subroute && ! grep -q "^PUBLIC=" "$RD/hook--shop.env"'
 $E down hook --project shop >/dev/null
+
+# ---- key rotate when the proxy refuses a route (fake admin) ----
+printf 'expose-web--shop\n' > "$SOCK.refuse"
+o=$($E key rotate 2>&1); rc=$?
+rm -f "$SOCK.refuse"
+ok "key rotate with a refused route: non-zero exit, names the route and the old key" '[ $rc -ne 0 ] && printf "%s\n" "$o" | grep -q "web--shop" && printf "%s\n" "$o" | grep -qi "old key" && ! printf "%s\n" "$o" | grep -q "^rotated the owner key:"'
+$E list >/dev/null 2>&1
+ok "after the proxy accepts again, the next call rebuilds the route" 'adm /id/expose-web--shop | grep -q "$(cat "$XDG_CONFIG_HOME/tmux-opsx/expose.key")"'
 
 # =====================================================================
 # Real Caddy: the same expose.sh against a scratch Caddy (the installed
@@ -461,6 +470,17 @@ else
   ok "--public: list ACCESS public" 'RE list | grep -Eq "^hook .* public$"'
   rq hook--shop / -H "Cookie: sid=1; opsx_auth=$RK; opsx_share=zzzzzzzzzzzzzzzzzzzzzzzz; theme=dark" >/dev/null
   ok "--public: owner and share cookies stripped, others kept" 'grep -qx "app web2 cookie=\[sid=1; theme=dark\]" "$RC/body"'
+  : > "$RC/app-web2.log"
+  code=$(rq hook--shop "/cb?opsx_key=$RK"); sc=$(hdr Set-Cookie)
+  ok "--public: owner login link caught by the proxy (302 + owner cookie), app never sees the key" '[ "$code" = 302 ] && [ "$(hdr Location)" = https://hook--shop.ex.test/cb ] && [[ "$sc" == "opsx_auth=$RK;"* ]] && ! grep -q opsx_key "$RC/app-web2.log"'
+  code=$(rq hook--shop "/cb?x=1&opsx_key=wrongwrongwrongwrongwrong")
+  ok "--public: a wrong opsx_key is dropped by a 302 without a cookie, app not reached" '[ "$code" = 302 ] && [ "$(hdr Location)" = https://hook--shop.ex.test/cb ] && [ -z "$(hdr Set-Cookie)" ] && ! grep -q opsx_key "$RC/app-web2.log"'
+  code=$(rq hook--shop "/cb?opsx_share=zzzzzzzzzzzzzzzzzzzzzzzz")
+  ok "--public: an opsx_share query is dropped by a 302, app not reached" '[ "$code" = 302 ] && [ -z "$(hdr Set-Cookie)" ] && ! grep -q opsx_share "$RC/app-web2.log"'
+  code=$(rq hook--shop "/cb?event=push")
+  ok "--public: other queries reach the app untouched" '[ "$code" = 200 ] && grep -qx "/cb?event=push" "$RC/app-web2.log"'
+  o=$(RE url hook --project shop --with-key 2>/dev/null)
+  ok "--public: url --with-key says the proxy keeps the key from the app" 'printf "%s\n" "$o" | grep -q "app never sees it"'
   RE up "$WEB2P" --name hook --project shop >/dev/null 2>&1
   ok "up again without --public: 401, ACCESS login" '[ "$(rq hook--shop /)" = 401 ] && RE list | grep -Eq "^hook .* login$"'
   RE down hook --project shop >/dev/null
@@ -664,6 +684,17 @@ ok "rerun without token exits 0 and keeps t1" '[ $rc -eq 0 ] && grep -qx "CLOUDF
 ok "rerun leaves identical files (no .bak, no duplicates)" '[ "$sum_before" = "$sum_after" ]'
 run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" --
 ok "later run without the flag leaves expose untouched" 'grep -qx "CLOUDFLARE_API_TOKEN=secret-t1" "$CFG/expose.env" && [ "$(n_expose_dirs)" -eq 6 ]'
+
+# An old Caddy autosave holding expose routes (and so keys) is removed on
+# rerun; one that is not ours is left alone.
+AS=$IH/.config/caddy/autosave.json; mkdir -p "$(dirname "$AS")"
+printf '{"apps":{"http":{"servers":{"expose":{"routes":[{"@id":"expose-web--shop","handle":[{"handler":"static_response","headers":{"Set-Cookie":["opsx_auth=k"]}}]}]}}}}}\n' > "$AS"
+run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" -- --expose-domain dev.example.com; rc=$?
+ok "rerun removes an old autosave.json holding expose routes" '[ $rc -eq 0 ] && [ ! -e "$AS" ]'
+printf '{"apps":{"http":{"servers":{"mine":{"routes":[]}}}}}\n' > "$AS"
+run_install OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/caddy-ok/caddy" -- --expose-domain dev.example.com
+ok "rerun keeps an autosave.json that is not ours" '[ -f "$AS" ]'
+rm -f "$AS"
 
 # F1: rerun with another domain while the proxy runs (unit "installed" in a
 # scratch systemd dir): the new caddy.json is loaded, routes move to the new domain.

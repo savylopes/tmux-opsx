@@ -901,6 +901,21 @@ JSON
   replace_if_changed "$EXPOSE_CADDY_JSON"
   [ "$existed" -eq 1 ] && [ "$REPLACED" -eq 1 ] && EXPOSE_CONFIG_CHANGED=1
   ok "$(tilde "$EXPOSE_CADDY_JSON") (*.$EXPOSE_DOMAIN on :443, admin socket $(tilde "$EXPOSE_SOCK"))"
+  expose_remove_autosave
+}
+
+# An earlier build ran Caddy with autosave on, so autosave.json may still hold
+# routes with the owner key and share tokens. Delete it when it is ours (it
+# names an expose route or the opsx cookies); leave any other Caddy's alone.
+expose_remove_autosave() {
+  local f=${XDG_CONFIG_HOME:-$HOME/.config}/caddy/autosave.json
+  [ -f "$f" ] || return 0
+  grep -qE '"expose-fp-|opsx_(auth|key|share)' "$f" 2>/dev/null || return 0
+  if rm -f "$f"; then
+    ok "removed $(tilde "$f") (an old Caddy autosave that held expose routes and keys)"
+  else
+    warn "cannot remove $(tilde "$f"); it may hold the owner key — delete it by hand"
+  fi
 }
 
 expose_unit_user() {

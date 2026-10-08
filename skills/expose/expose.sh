@@ -282,8 +282,11 @@ json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')";
 LOGIN_PAGE='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Login required</title></head><body style="font-family: system-ui, sans-serif; max-width: 28rem; margin: 4rem auto; padding: 0 1rem; color: #222; line-height: 1.5"><h1 style="font-size: 1.4rem">Login required</h1><form method="get" action=""><label for="opsx_key">Owner key</label><br><input id="opsx_key" name="opsx_key" type="password" autocomplete="current-password" required style="width: 100%; padding: .5rem; margin: .5rem 0; box-sizing: border-box"><button type="submit" style="padding: .5rem 1rem">Log in</button></form><p>Got this link from someone? It may have expired or been revoked — ask them for a new one.</p></body></html>'
 
 # route_json <label> <port> <public 0|1> [<id>:<recipient>:<expires|never>:<token> ...]
-# Prints the full route for one exposure. A public route matches the host,
-# strips both cookies and proxies. Otherwise the route holds a subroute: owner
+# Prints the full route for one exposure. Every route holds a subroute. A
+# public one: owner login link -> 302 with the owner cookie; any other
+# opsx_key or opsx_share query -> 302 to the path without the query (a key or
+# token never reaches a public app, whose request log may be read by others);
+# anything else -> strip both cookies, proxy. A private one: owner
 # login link -> 302 with the owner cookie; each share link -> 302 with its
 # host-only cookie; a valid owner or share cookie -> strip both cookies,
 # proxy; anything else -> 401 login page. Its "group" is the full sha256 of
@@ -297,10 +300,12 @@ route_json() {
   # public ones included, applies it: the owner cookie is sent to every host
   # under the domain and must never reach an app.
   strip='{"handler":"headers","request":{"replace":{"Cookie":[{"search_regexp":"(^|;) *opsx_(auth|share)=[^;]*","replace":""},{"search_regexp":"^[; ]+","replace":""}]}}}'
+  sub='{"match":[{"query":{"opsx_key":["'"$OWNER_KEY"'"]}}],"handle":[{"handler":"static_response","status_code":302,"headers":{"Location":["https://'"$host"'{http.request.uri.path}"],"Cache-Control":["no-store"],"Set-Cookie":["opsx_auth='"$OWNER_KEY"'; Domain='"$DOMAIN"'; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=Lax"]}}],"terminal":true}'
   if [ "$public" = 1 ]; then
-    body='"match":[{"host":["'"$host"'"]}],"handle":['"$strip"','"$proxy"'],"terminal":true}'
+    sub="$sub"',{"match":[{"query":{"opsx_key":["*"]}},{"query":{"opsx_share":["*"]}}],"handle":[{"handler":"static_response","status_code":302,"headers":{"Location":["https://'"$host"'{http.request.uri.path}"],"Cache-Control":["no-store"]}}],"terminal":true}'
+    sub="$sub"',{"handle":['"$strip"','"$proxy"']}'
+    body='"match":[{"host":["'"$host"'"]}],"handle":[{"handler":"subroute","routes":['"$sub"']}],"terminal":true}'
   else
-    sub='{"match":[{"query":{"opsx_key":["'"$OWNER_KEY"'"]}}],"handle":[{"handler":"static_response","status_code":302,"headers":{"Location":["https://'"$host"'{http.request.uri.path}"],"Cache-Control":["no-store"],"Set-Cookie":["opsx_auth='"$OWNER_KEY"'; Domain='"$DOMAIN"'; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=Lax"]}}],"terminal":true}'
     auth='{"header_regexp":{"Cookie":{"pattern":"(^|;) *opsx_auth='"$OWNER_KEY"' *(;|$)"}}}'
     for sh in "$@"; do
       IFS=: read -r id rec exp tok <<<"$sh"
@@ -458,8 +463,11 @@ prune_expired() {
 # Re-add every recorded route that the proxy lost (e.g. after a restart) or
 # that differs from what its record now requires (fingerprint mismatch: a
 # pre-auth route, a rotated key, a changed or pruned share token).
+# Labels whose route the proxy refused are collected in RECONCILE_FAILED.
+RECONCILE_FAILED=()
 reconcile() {
   local ids f route fp
+  RECONCILE_FAILED=()
   fetch_routes
   ids=$(live_ids)
   while IFS= read -r f; do
@@ -470,10 +478,14 @@ reconcile() {
     if ! printf '%s\n' "$ids" | grep -qx "expose-$R_LABEL"; then
       if add_route "$R_LABEL" "$route"; then
         err "restored $R_URL -> 127.0.0.1:$R_PORT (the proxy had lost it)"
+      else
+        RECONCILE_FAILED+=("$R_LABEL")
       fi
     elif [[ "$LIVE_ROUTES" != *"\"group\":\"$fp\""* ]]; then
       if add_route "$R_LABEL" "$route"; then
         err "updated the route for $R_URL (it was out of date)"
+      else
+        RECONCILE_FAILED+=("$R_LABEL")
       fi
     fi
   done < <(records)
@@ -719,7 +731,7 @@ cmd_url() {
   find_record "$arg"
   if [ "$with_key" -eq 1 ]; then
     printf 'owner login link for %s: opening it once logs this browser in to every *.%s URL for 30 days. Do not share it; for others use: expose.sh share %s\n' "$R_URL" "$DOMAIN" "$R_NAME"
-    [ "$R_PUBLIC" = 1 ] && printf 'note: %s is public (--public); it needs no login.\n' "$R_URL"
+    [ "$R_PUBLIC" = 1 ] && printf 'note: %s is public (--public); it needs no login. The proxy still takes the key out of the link, so the app never sees it.\n' "$R_URL"
     err "note: the login cookie holds the owner key and is sent to every host under $DOMAIN — use a domain that serves nothing but /expose"
     print_url "$R_URL/?opsx_key=$OWNER_KEY"
     return 0
@@ -830,8 +842,13 @@ cmd_key_rotate() {
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     read_record "$f" || continue
-    [ "$R_PUBLIC" = 1 ] || n=$((n + 1))
+    n=$((n + 1))
   done < <(records)
+  if [ "${#RECONCILE_FAILED[@]}" -gt 0 ]; then
+    err "rotated the owner key in $KEY_FILE, but the proxy refused to rebuild ${#RECONCILE_FAILED[@]} route(s): ${RECONCILE_FAILED[*]}"
+    err "those routes may still accept the OLD key (or be offline) — fix the proxy, then run any expose.sh command (e.g. expose.sh list) to retry, or take them down with: expose.sh down <name>"
+    exit 1
+  fi
   printf 'rotated the owner key: every device is logged out and old login links no longer work (%s route(s) rebuilt; share links still work).\n' "$n"
   printf 'log in again on each device with: expose.sh url <name> --with-key\n'
 }
