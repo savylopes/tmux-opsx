@@ -39,6 +39,7 @@ cleanup() {
     esac
     [[ "$g" =~ ^[0-9]+$ ]] && [ "$g" -gt 1 ] && kill -KILL -- "-$g" 2>/dev/null
   done
+  [ -n "${ADMIN_PID:-}" ] && kill "$ADMIN_PID" 2>/dev/null
   $L kill-server 2>/dev/null
   rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK_NAME"
   rm -rf "$SP"
@@ -191,7 +192,7 @@ ok "preview-kill with nothing -> exit 0"       '(cd "$R" && "$W" preview-kill ra
 # ================================================================ 2.1 CLI
 ok "bash -n"                                   'bash -n "$P"'
 h=$("$P" help); rc=$?
-ok "help lists subcommands"                    '[ $rc -eq 0 ] && for w in up stop url list --main --all preview.yaml; do [[ "$h" == *"$w"* ]] || exit 1; done'
+ok "help lists subcommands"                    '[ $rc -eq 0 ] && for w in up stop url share list --main --all --for --ttl --list --revoke preview.yaml; do [[ "$h" == *"$w"* ]] || exit 1; done'
 "$P" bogus >/dev/null 2>&1; rc=$?
 ok "unknown subcommand -> exit 2"              '[ $rc -eq 2 ]'
 eout=$("$P" bogus 2>&1 >/dev/null)
@@ -487,6 +488,47 @@ out=$(pv prune); rc=$?
 ok "prune drops files of a removed worktree"   '[ $rc -eq 0 ] && [ -z "$(ls "$PS_DIR/shop/" | grep "^race\.")" ] && [ ! -e "$IH_RACE" ] && [[ "$out" == *"pruned state of race"* ]]'
 ok "prune keeps other previews' state"         '[ -e "$PS_DIR/shop/main.port" ] && [ -e "$PS_DIR/shop/add-auth.log" ]'
 
+# ================================================================ share + bind refusal (real expose.sh, fake admin)
+# The real expose.sh against tests/fake-caddy-admin.py on a private socket.
+mkdir -p "$XDG_CONFIG_HOME/tmux-opsx"; chmod 700 "$XDG_CONFIG_HOME/tmux-opsx"
+printf 'EXPOSE_DOMAIN=dev.example.com\n' > "$XDG_CONFIG_HOME/tmux-opsx/expose.env"
+ASOCK=$SP/admin.sock
+python3 "$REPO/tests/fake-caddy-admin.py" "$ASOCK" & ADMIN_PID=$!
+for _ in $(seq 1 50); do [ -S "$ASOCK" ] && break; sleep 0.1; done
+REAL_E=$REPO/skills/expose/expose.sh
+rpv() { ( cd "$R" && OPSX_EXPOSE_SH=$REAL_E OPSX_EXPOSE_ADMIN=$ASOCK "$P" "$@" ) 2>&1; }
+rex() { OPSX_EXPOSE_ADMIN=$ASOCK "$REAL_E" "$@" 2>/dev/null; }
+addwt shareme
+out=$(rpv up shareme); rc=$?
+ok "real expose: preview up"                    '[ $rc -eq 0 ] && [ "$(last "$out")" = "https://shareme--shop.dev.example.com" ]'
+out=$(rpv share shareme --for Acme); rc=$?
+ok "share: exit 0, last line is the share link" '[ $rc -eq 0 ] && [[ "$(last "$out")" =~ ^https://shareme--shop\.dev\.example\.com/\?opsx_share=[A-Za-z0-9_-]{22,}$ ]]'
+out=$(rpv share shareme --list); rc=$?
+ok "share --list passes through"                '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -Eq "^acme +[0-9a-f]{6} "'
+out=$(rpv share shareme --ttl 3weeks); rc=$?
+ok "share relays expose exit code (bad ttl -> 2)" '[ $rc -eq 2 ] && [[ "$out" == *3weeks* ]]'
+out=$(rpv share shareme --revoke acme); rc=$?
+ok "share --revoke passes through"              '[ $rc -eq 0 ] && [[ "$out" == *"revoked"* ]] && ! grep -q "^SHARE=" "$XDG_STATE_HOME/tmux-opsx/expose/routes/shareme--shop.env"'
+out=$(rpv share nosuch --for acme); rc=$?
+ok "share with no preview: non-zero, says no preview running, no token" '[ $rc -ne 0 ] && [[ "$out" == *"no preview running"* ]] && ! grep -rqs "^SHARE=" "$XDG_STATE_HOME/tmux-opsx/expose/routes/"'
+out=$(rpv share shareme --name x); rc=$?
+ok "share: unknown option -> exit 2"            '[ $rc -eq 2 ]'
+rpv stop shareme >/dev/null
+if [ "$(uname -s)" = Linux ] && command -v ss >/dev/null 2>&1; then
+  addwt wild
+  mkdir -p "$SP/wt-wild/.opsx"
+  printf 'cmd: python3 -m http.server $PORT --bind 0.0.0.0\ntimeout: 20\n' > "$SP/wt-wild/.opsx/preview.yaml"
+  out=$(rpv up wild); rc=$?
+  ok "0.0.0.0 recipe: non-zero, 127.0.0.1 and 0.0.0.0 in the output" '[ $rc -ne 0 ] && [[ "$out" == *"127.0.0.1"* ]] && [[ "$out" == *"0.0.0.0"* ]]'
+  ok "0.0.0.0 recipe: no window, no record, no exposure" '[ "$(nwin wild)" -eq 0 ] && [ ! -e "$PS_DIR/shop/wild.env" ] && ! rex list | grep -q "^wild "'
+  WP=$(cat "$PS_DIR/shop/wild.port" 2>/dev/null)
+  ok "0.0.0.0 recipe: app stopped"              '[ -n "$WP" ] && ! port_open "$WP"'
+else
+  echo "note: not Linux or no ss; bind refusal untested here"
+fi
+kill "$ADMIN_PID" 2>/dev/null; wait "$ADMIN_PID" 2>/dev/null
+rm -f "$XDG_CONFIG_HOME/tmux-opsx/expose.env"
+
 # ================================================================ 4.1 close / close-all / land
 out=$(pv up add-auth)
 (cd "$R" && "$W" ensure add-auth --prompt-file "$SP/prompt.txt" --agent-cli fakecli --model default) >/dev/null 2>&1
@@ -535,8 +577,10 @@ ok "land without preview: unchanged result"    '[ $rc -eq 0 ] && [[ "$out" == *"
 SK=$REPO/skills/opsx-run/SKILL.md
 ok "skill: preview usage lines"                'grep -q "^/opsx-run <change> preview " "$SK" && grep -q "^/opsx-run <change> preview stop" "$SK" && grep -q "^/opsx-run <change> preview url" "$SK"'
 ok "skill: preview reserved + main checkout"   'grep -q "\*\*\`preview\`\*\* as the first token" "$SK" && grep -q "main checkout" "$SK"'
-ok "skill: Actions row runs it inline"         'grep -q "^| \`preview\` / \`preview stop\` / \`preview url\` | Runs \`opsx-preview.sh up" "$SK"'
-ok "skill: qa + validate prompts start preview" '[ "$(grep -c "opsx-preview.sh up <change>\` from \`<cwd>\`. On exit 0 pass its last stdout line to ops-qa as \`PREVIEW_URL\`" "$SK")" -eq 2 ]'
+ok "skill: Actions row runs it inline"         'grep -q "^| \`preview\` / \`preview stop\` / \`preview url\` / \`preview share\` | Runs \`opsx-preview.sh up" "$SK"'
+ok "skill: qa + validate prompts start preview, then share" '[ "$(grep -c "opsx-preview.sh up <change>\` from \`<cwd>\`, then on exit 0 \`<skills>/opsx-run/opsx-preview.sh share <change> --for ops-qa --ttl 1d\`. On exit 0 of both pass the share command.s last stdout line (a share link) to ops-qa as \`PREVIEW_URL\`" "$SK")" -eq 2 ]'
+ok "skill: preview share documented"           'grep -q "^/opsx-run <change> preview share" "$SK" && grep -q "^opsx-preview.sh share" "$SK"'
+ok "ops-qa: opens PREVIEW_URL first, keeps the browser context" 'grep -q "open it \*\*first\*\*" "$REPO/agents/opsx-qa.md" && grep -q "keep the same browser context" "$REPO/agents/opsx-qa.md"'
 ok "skill: close / close-all stop previews"    'grep -q "^/opsx-run <change> close .*stop its preview" "$SK" && grep -q "close --all\` also stops every preview" "$SK"'
 
 # ================================================================ 4.3 ops-qa + install
@@ -550,7 +594,8 @@ out=$(cd "$REPO" && env -u CLAUDE_CONFIG_DIR -u CODEX_HOME -u GEMINI_HOME -u OPE
         --skip-commands --skip-mcp --skip-memory --skip-fork --no-backup 2>&1); rc=$?
 ok "install.sh (scratch HOME) succeeds"        '[ $rc -eq 0 ]'
 ok "install.sh ships opsx-preview.sh"          'for d in .claude/skills .cursor/skills .agents/skills .codex/skills .config/opencode/skills .gemini/skills; do [ -x "$IH/$d/opsx-run/opsx-preview.sh" ] || exit 1; done'
-ok "ops-qa converted for all five CLIs"        'for f in .claude/agents/opsx-qa.md .cursor/agents/opsx-qa.md .codex/agents/ops-qa.toml .config/opencode/agents/ops-qa.md .gemini/agents/opsx-qa.md; do grep -q "PREVIEW_URL" "$IH/$f" || exit 1; done'
+ok "ops-qa converted for all five CLIs"        'for f in .claude/agents/opsx-qa.md .cursor/agents/opsx-qa.md .codex/agents/ops-qa.toml .config/opencode/agents/ops-qa.md .gemini/agents/opsx-qa.md; do grep -q "PREVIEW_URL" "$IH/$f" && grep -q "keep the same browser context" "$IH/$f" || exit 1; done'
+ok "installed opsx-run skill: QA prompts share the preview" 'for d in .claude/skills .cursor/skills .agents/skills .codex/skills .config/opencode/skills .gemini/skills; do [ "$(grep -c "opsx-preview.sh share <change> --for ops-qa --ttl 1d" "$IH/$d/opsx-run/SKILL.md")" -eq 2 ] || exit 1; done'
 
 ok "shellcheck (if installed)"                 '! command -v shellcheck >/dev/null || shellcheck "$P" "$W" "$LAND" "$0"'
 

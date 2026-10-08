@@ -8,7 +8,9 @@ Caddy without --resume). Supports the subset of the admin API expose.sh uses:
   GET    /config/<path>   read a value (null when the leaf key is missing)
   POST   /config/<path>   append to an array, or set a missing/object key
   DELETE /config/<path>   remove a key or array item
-  GET    /id/<id>         read the object whose "@id" is <id>
+  GET    /id/<id>         read the object whose "@id" is <id>, verbatim (every
+                          field kept as posted, including a route's "group",
+                          which expose.sh uses as its route fingerprint)
   DELETE /id/<id>         remove the object whose "@id" is <id>
   POST   /load            replace the whole config (like `caddy reload`)
 Like Caddy, a change that would leave two objects with the same "@id" is
