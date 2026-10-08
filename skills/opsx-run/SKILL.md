@@ -80,7 +80,7 @@ opsx-preview.sh url  <change>|--main     # non-zero when nothing runs
 opsx-preview.sh list
 ```
 
-Preview windows are titled `ox ▶<change>` and tagged `@opsx_preview=<change>`, never `@opsx_change`, so they are never mistaken for the agent window.
+Preview windows are titled `ox ><change>` (ASCII, so non-UTF-8 clients show it as-is) and tagged `@opsx_preview=<change>`, never `@opsx_change`, so they are never mistaken for the agent window.
 
 The saved eval suite is run by `~/.claude/skills/opsx-run/opsx-eval.sh` (no LLM; `--help` for options). ops-eval calls it; `land` calls it for the regression gate; you can run it by hand or in CI:
 

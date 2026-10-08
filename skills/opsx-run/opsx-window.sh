@@ -21,12 +21,18 @@
 #   opsx-window.sh preview-kill  <change>|--all
 #
 # Preview windows (used by opsx-preview.sh, never by hand): preview-start opens
-# a window titled `ox ▶<change>` that runs `bash <file>` (no keys are typed),
-# keeps it open after the app exits (remain-on-exit), and tags it
-# @opsx_preview=<change>. It never carries @opsx_change, so ensure/send/close
-# lookups and `close --all` never mistake it for the agent window. `close`
-# stops the change's preview first (`close --all` stops every preview in the
-# project) through opsx-preview.sh next to this script, ignoring failures.
+# a window titled `ox ><change>` that runs `bash <file>` (no keys are
+# typed), keeps it open after the app exits (remain-on-exit), and tags it
+# @opsx_preview=<change> and @opsx_preview_project=<main checkout path>. It
+# never carries @opsx_change, so ensure/send/close lookups and `close --all`
+# never mistake it for the agent window. Previews belong to the project, not
+# to a session: preview-find (prints every matching window id, one per line)
+# and preview-kill look across all sessions of the tmux server for windows
+# with this project's tag, so they work from any session or from outside tmux.
+# `close` stops the change's preview first (`close --all` stops every preview
+# in the project) through opsx-preview.sh next to this script, ignoring
+# failures; a `close` that will refuse to close the caller's own window leaves
+# the preview running.
 #
 # Window status (distinct `ox` title + dark pane + muted bar colors).
 # Lookups use @opsx_change, so renaming does not break ensure/send/close.
@@ -917,18 +923,22 @@ cmd_close() {
     [ -n "$change" ] || die "usage: opsx-window.sh close <change> [--force] | close --all [--force]"
   fi
 
+  require_tmux
+  local sess here targets closed=0 skipped_self=0 total
+  here=$(current_window)
+
   # Stop the preview first (route, app process group, window). Never fatal:
   # a missing or failing opsx-preview.sh must not block closing the window.
+  # Skipped when this close is about to refuse closing the caller's own
+  # window, so a refused close changes nothing.
   if [ "$all" -eq 1 ]; then
     stop_previews --all
-  else
+  elif [ "$force" -eq 1 ] || [ -z "$here" ] \
+       || [ "$(find_window "$(lookup_session 2>/dev/null)" "$change" 2>/dev/null)" != "$here" ]; then
     stop_previews "$change"
   fi
 
-  require_tmux
-  local sess here targets closed=0 skipped_self=0 total
   sess=$(lookup_session) || exit 1
-  here=$(current_window)
 
   if [ "$all" -eq 1 ]; then
     # Only windows this script stamped — never the user's own windows that
@@ -1074,12 +1084,28 @@ cmd_list() {
 
 # ---------- preview windows (driven by opsx-preview.sh) ----------
 
-# Window id(s) tagged @opsx_preview=$2 in session $1 ($2 = "--all": every one).
-find_preview_windows() {
-  tmux list-windows -t "$1" -F '#{window_id} #{@opsx_preview}' 2>/dev/null \
-    | awk -v n="$2" 'NF>1 && $2!="" && (n=="--all" || $2==n) { print $1 }'
+# Project key of a preview window: the main checkout's absolute path (the
+# parent of the git common dir), $PWD outside a repository. opsx-preview.sh
+# runs us from the main checkout, so this matches its idea of the project.
+preview_project_key() {
+  local common
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+  if [ -z "$common" ]; then
+    common=$(git rev-parse --git-common-dir 2>/dev/null) && common=$(cd -- "$common" 2>/dev/null && pwd) || common=""
+  fi
+  if [ -n "$common" ]; then dirname -- "$common"; else pwd; fi
 }
 
+# Window id(s) on the whole tmux server tagged @opsx_preview=$1 for this
+# project ($1 = "--all": every preview of this project).
+find_preview_windows() {
+  local key
+  key=$(preview_project_key)
+  tmux list-windows -a -F '#{window_id}	#{@opsx_preview}	#{@opsx_preview_project}' 2>/dev/null \
+    | awk -F '\t' -v n="$1" -v k="$key" '$2!="" && $3==k && (n=="--all" || $2==n) { print $1 }'
+}
+
+# Same rule as valid_name in opsx-preview.sh; this script checks its own input.
 valid_preview_name() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 }
@@ -1102,7 +1128,8 @@ cmd_preview_start() {
 
   require_tmux
   local sess win title run created=""
-  title="ox ▶$change"
+  # ASCII marker: a non-UTF-8 client would show ▶ as `_`, like the agent badges.
+  title="ox >$change"
   run=$(printf 'bash %q' "$script")
   if inside_tmux; then
     sess=$(current_session) || exit 1
@@ -1121,6 +1148,7 @@ cmd_preview_start() {
   fi
   tmux set-option -w -t "$win" remain-on-exit on >/dev/null 2>&1 || true
   tmux set-option -w -t "$win" @opsx_preview "$change" >/dev/null 2>&1
+  tmux set-option -w -t "$win" @opsx_preview_project "$(preview_project_key)" >/dev/null 2>&1
   tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1 || true
   tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1 || true
   printf 'created %s %s:%s%s\n' "$win" "$sess" "$title" "$created"
@@ -1129,26 +1157,24 @@ cmd_preview_start() {
 }
 
 cmd_preview_find() {
-  local change=${1:-} sess id
+  local change=${1:-} ids
   [ -n "$change" ] || die "usage: opsx-window.sh preview-find <change>"
   require_tmux
-  sess=$(lookup_session) || exit 1
-  id=$(find_preview_windows "$sess" "$change" | head -1)
-  [ -n "$id" ] || exit 1
-  printf '%s\n' "$id"
+  ids=$(find_preview_windows "$change")
+  [ -n "$ids" ] || exit 1
+  printf '%s\n' "$ids"
 }
 
 cmd_preview_kill() {
-  local change=${1:-} sess ids win n=0
+  local change=${1:-} ids win n=0
   [ -n "$change" ] || die "usage: opsx-window.sh preview-kill <change>|--all"
   require_tmux
-  sess=$(lookup_session) || exit 1
-  ids=$(find_preview_windows "$sess" "$change")
+  ids=$(find_preview_windows "$change")
   for win in $ids; do
     tmux kill-window -t "$win" 2>/dev/null && n=$((n + 1)) \
-      && printf 'closed %s %s (preview %s)\n' "$win" "$sess" "$change"
+      && printf 'closed %s (preview %s)\n' "$win" "$change"
   done
-  [ "$n" -gt 0 ] || printf 'no preview window for %s in session %s\n' "$change" "$sess"
+  [ "$n" -gt 0 ] || printf 'no preview window for %s\n' "$change"
   return 0
 }
 

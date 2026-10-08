@@ -598,7 +598,7 @@ What happens on `preview`:
 1. **Recipe.** `.opsx/preview.yaml` in the checkout, else detection (below), else an error asking for `.opsx/preview.yaml`.
 2. **Install**, only when the install command or a lockfile changed since the last successful install in that checkout.
 3. **Port.** The change's last port when free, else the first free one in 3100–3999. `PORT` and `HOST=127.0.0.1` are exported to `install` and `cmd`.
-4. **Window.** The app runs in its own tmux window `ox ▶<change>`, tagged `@opsx_preview=<change>` (never `@opsx_change`, so it is never mistaken for the agent window), in its own process group; output also goes to `~/.local/state/tmux-opsx/preview/<project>/<change>.log`. The window stays open after the app exits.
+4. **Window.** The app runs in its own tmux window `ox ><change>` (ASCII, so non-UTF-8 clients show it as-is), tagged `@opsx_preview=<change>` (never `@opsx_change`, so it is never mistaken for the agent window), in its own process group; output also goes to `~/.local/state/tmux-opsx/preview/<project>/<change>.log`. The window stays open after the app exits.
 5. **Health.** `http://127.0.0.1:<port><health>` is polled until it answers 2xx/3xx. If the app exits or `timeout` passes first, the last log lines are printed, the app is stopped, and nothing is published.
 6. **Publish** with `expose.sh up <port> --name <change> --project <project>`. A second `preview` while it is healthy just prints the same URL.
 

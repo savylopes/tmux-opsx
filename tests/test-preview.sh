@@ -133,7 +133,7 @@ export TMUX TMUX_PANE
 pass=0; fail=0
 ok(){ if eval "$2"; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 
-nwin()      { $L list-windows -t pt -F '#{@opsx_preview}' | grep -cx "$1"; }
+nwin()      { $L list-windows -a -F '#{@opsx_preview}' | grep -cx "$1"; }
 win_tag()   { $L show-options -wv -t "$1" "$2" 2>/dev/null; }
 port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 rec()       { awk -F= -v k="$2" '$1==k{print $2}' "$PS_DIR/$PROJ/$1.env" 2>/dev/null; }
@@ -160,7 +160,8 @@ WID=$(awk '/^created /{print $2}' <<<"$out")
 ok "preview-start creates a window"            '[ "$rc" -eq 0 ] && [ -n "$WID" ]'
 ok "window tagged @opsx_preview"               '[ "$(win_tag "$WID" @opsx_preview)" = rawprev ]'
 ok "window has no @opsx_change"                '[ -z "$(win_tag "$WID" @opsx_change)" ]'
-ok "window title ox ▶<change>"                 '[ "$($L display -p -t "$WID" "#{window_name}")" = "ox ▶rawprev" ]'
+ok "window title ox ><change> (ASCII)"         '[ "$($L display -p -t "$WID" "#{window_name}")" = "ox >rawprev" ]'
+ok "window tagged with the project path"       '[ "$(win_tag "$WID" @opsx_preview_project)" = "$R" ]'
 ok "remain-on-exit on, rename off"             '[ "$(win_tag "$WID" remain-on-exit)" = on ] && [ "$(win_tag "$WID" automatic-rename)" = off ]'
 sleep 0.5
 ok "script ran without send-keys"              '$L capture-pane -p -t "$WID" | grep -q preview-script-ran'
@@ -227,6 +228,29 @@ out=$(pv up add-auth); rc=$?
 ok "stale record -> cleaned and restarted"     '[ $rc -eq 0 ] && [[ "$out" == *"stale record"* ]] && [ "$(last "$out")" = "$URL1" ] && [ "$(nwin add-auth)" -eq 1 ]'
 ok "restart reuses the last port"              '[ "$(rec add-auth PORT)" = "$PORT1" ]'
 
+# F2: preview state is per project, not per tmux session.
+$L new-session -d -s pt2 -x 160 -y 40 'exec sleep 3000'
+PANE_B=$($L display -p -t pt2 '#{pane_id}')
+WA=$(rec add-auth WINDOW_ID)
+out=$(TMUX_PANE=$PANE_B pv up add-auth); rc=$?
+ok "up from another session -> already running" '[ $rc -eq 0 ] && [[ "$out" == *"already running"* ]] && [ "$(last "$out")" = "$URL1" ] && [ "$(rec add-auth WINDOW_ID)" = "$WA" ] && [ "$(nwin add-auth)" -eq 1 ]'
+out=$(TMUX_PANE=$PANE_B pv url add-auth); rc=$?
+ok "url from another session"                  '[ $rc -eq 0 ] && [ "$(last "$out")" = "$URL1" ]'
+# A leftover preview window (listed first in the session) must not turn a
+# healthy preview into a "stale" one.
+(cd "$R" && "$W" preview-start add-auth --cwd "$R" --script "$SP/raw.sh") >/dev/null
+$L swap-window -d -s "$($L list-windows -a -F '#{window_id} #{@opsx_preview}' | awk '$2=="add-auth"{print $1}' | grep -vx "$WA" | head -1)" -t pt:0
+ok "leftover window listed before the live one" '[ "$($L list-windows -a -F "#{window_id} #{@opsx_preview}" | awk "\$2==\"add-auth\"{print \$1; exit}")" != "$WA" ]'
+out=$(pv up add-auth); rc=$?
+ok "leftover window -> still already running"  '[ $rc -eq 0 ] && [[ "$out" == *"already running"* ]] && [ "$(rec add-auth WINDOW_ID)" = "$WA" ]'
+out=$(TMUX_PANE=$PANE_B pv stop add-auth); rc=$?
+ok "stop from another session removes windows" '[ $rc -eq 0 ] && [ "$(nwin add-auth)" -eq 0 ] && [ ! -e "$SP/routes/add-auth--shop" ]'
+$L kill-session -t pt2
+out=$(pv up add-auth); rc=$?
+ok "up again after cross-session stop"         '[ $rc -eq 0 ] && [ "$(last "$out")" = "$URL1" ] && [ "$(nwin add-auth)" -eq 1 ]'
+ok "launch script exports OPSX_PREVIEW_PROJECT" 'grep -q "OPSX_PREVIEW_PROJECT=shop" "$PS_DIR/shop/add-auth.launch.sh"'
+ok "up relays expose stderr (clipboard status)" '[[ "$out" == *"copied to clipboard (fake)"* ]]'
+
 G=$(rec add-auth PGID)
 out=$(pv stop add-auth); rc=$?
 sleep 0.3
@@ -239,6 +263,37 @@ out=$(pv stop add-auth); rc=$?
 ok "second stop exits 0"                       '[ $rc -eq 0 ]'
 out=$(pv url add-auth); rc=$?
 ok "url with nothing running -> non-zero"      '[ $rc -ne 0 ]'
+
+# F1: a failed restart must not leave the old route behind.
+pv up add-auth >/dev/null
+kill -KILL -- "-$(rec add-auth PGID)"; sleep 0.5
+cp "$SP/wt-add-auth/.opsx/preview.yaml" "$SP/f1-recipe.yaml"
+printf 'cmd: exit 1\ntimeout: 10\n' > "$SP/wt-add-auth/.opsx/preview.yaml"
+: > "$EXPOSE_LOG"
+out=$(pv up add-auth); rc=$?
+ok "failed restart -> non-zero"                '[ $rc -ne 0 ] && [[ "$out" == *"stale record"* ]] && [[ "$out" == *"exited before"* ]]'
+ok "failed restart -> old route removed"       '[ ! -e "$SP/routes/add-auth--shop" ] && grep -qx "down add-auth --project shop" "$EXPOSE_LOG" && ! grep -q "^up " "$EXPOSE_LOG"'
+out=$(pv stop add-auth); rc=$?
+ok "stop after failed restart -> no route"     '[ $rc -eq 0 ] && [ ! -e "$SP/routes/add-auth--shop" ] && [ "$(nwin add-auth)" -eq 0 ]'
+cp "$SP/f1-recipe.yaml" "$SP/wt-add-auth/.opsx/preview.yaml"
+# A failed first start also removes a route left by an earlier run.
+printf '4000\n' > "$SP/routes/broken--shop"
+
+# F3: a recorded group id that now belongs to someone else is never signalled.
+( setsid sleep 300 </dev/null >/dev/null 2>&1 & )
+sleep 0.3
+FG=$(ps -A -o pid=,pgid=,args= | awk '$3=="sleep" && $4=="300" && $1==$2 {print $1; exit}')
+mkdir -p "$PS_DIR/shop"
+printf 'NAME=add-auth\nCHECKOUT=%s\nPORT=3999\nPGID=%s\nWINDOW_ID=@999\nLOG=/dev/null\nURL=https://x\nHEALTH=/\n' "$SP/wt-add-auth" "$FG" > "$PS_DIR/shop/add-auth.env"
+out=$(pv stop add-auth); rc=$?
+ok "stop: foreign group id left alone"         '[ -n "$FG" ] && [ $rc -eq 0 ] && kill -0 "$FG" 2>/dev/null && [[ "$out" == *"no longer belongs"* ]]'
+printf 'NAME=add-auth\nCHECKOUT=%s\nPORT=3999\nPGID=%s\nWINDOW_ID=@999\nLOG=/dev/null\nURL=https://x\nHEALTH=/\n' "$SP/wt-add-auth" "$FG" > "$PS_DIR/shop/add-auth.env"
+out=$(pv list)
+ok "list: foreign group id reads as dead"      'grep -E "^add-auth +3999 +dead " <<<"$out" >/dev/null'
+out=$(pv up add-auth); rc=$?
+ok "stale up: foreign group id left alone"     '[ $rc -eq 0 ] && kill -0 "$FG" 2>/dev/null && [ "$(rec add-auth PGID)" != "$FG" ]'
+pv stop add-auth >/dev/null
+[ -n "$FG" ] && kill -KILL "$FG" 2>/dev/null
 
 # --main
 out=$(pv up --main); rc=$?
@@ -256,6 +311,7 @@ printf 'cmd: "echo boom-marker-1; echo boom-marker-2; exit 1"\ntimeout: 20\n' > 
 out=$(pv up broken); rc=$?
 ok "app exits -> non-zero with log lines"      '[ $rc -ne 0 ] && [[ "$out" == *"boom-marker-2"* ]] && [[ "$out" == *"exited before"* ]]'
 ok "app exits -> no expose up, no window"      '! grep -q "^up .*--name broken" "$EXPOSE_LOG" && [ "$(nwin broken)" -eq 0 ] && [ ! -e "$PS_DIR/shop/broken.env" ]'
+ok "app exits -> no route left (F1)"           '[ ! -e "$SP/routes/broken--shop" ]'
 printf 'cmd: exec sleep 30\ntimeout: 2\n' > "$SP/wt-broken/.opsx/preview.yaml"
 out=$(pv up broken); rc=$?
 ok "health timeout -> non-zero, app stopped"   '[ $rc -ne 0 ] && [[ "$out" == *"timeout"* ]] && [ "$(nwin broken)" -eq 0 ] && ! grep -q "^up .*--name broken" "$EXPOSE_LOG"'
@@ -338,6 +394,13 @@ out=$(pv up add-auth)
 (cd "$R" && "$W" ensure add-auth --prompt-file "$SP/prompt.txt" --agent-cli fakecli --model default) >/dev/null 2>&1
 out=$(cd "$R" && "$W" close add-auth 2>&1); rc=$?
 ok "close <change> stops its preview"          '[ $rc -eq 0 ] && [ "$(nwin add-auth)" -eq 0 ] && [ ! -e "$PS_DIR/shop/add-auth.env" ] && [ ! -e "$SP/routes/add-auth--shop" ]'
+# A close that refuses to close the caller's own window leaves the preview up.
+pv up add-auth >/dev/null
+(cd "$R" && "$W" ensure add-auth --prompt-file "$SP/prompt.txt" --agent-cli fakecli --model default) >/dev/null 2>&1
+AP=$($L list-windows -a -F '#{pane_id} #{@opsx_change}' | awk '$2=="add-auth"{print $1; exit}')
+out=$(cd "$R" && TMUX_PANE=$AP "$W" close add-auth 2>&1); rc=$?
+ok "refused self-close keeps the preview"      '[ -n "$AP" ] && [ $rc -eq 0 ] && [[ "$out" == *"skipped"* ]] && [ "$(nwin add-auth)" -eq 1 ] && [ -e "$PS_DIR/shop/add-auth.env" ]'
+(cd "$R" && "$W" close add-auth) >/dev/null 2>&1
 pv up add-auth >/dev/null; pv up --main >/dev/null
 (cd "$R" && "$W" ensure add-auth --prompt-file "$SP/prompt.txt" --agent-cli fakecli --model default) >/dev/null 2>&1
 out=$(cd "$R" && "$W" close --all --force 2>&1); rc=$?

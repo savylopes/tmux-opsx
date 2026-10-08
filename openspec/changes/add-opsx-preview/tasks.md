@@ -2,7 +2,7 @@
 
 ## 1. Preview windows in opsx-window.sh
 
-- [x] 1.1 Add `preview-start <change> --cwd <dir> --script <file>` (`new-window -d -P` running `bash <file>`, no send-keys, `remain-on-exit on`, tag `@opsx_preview=<change>`, title `ox ▶<change>`, rename off), plus `preview-find <change>` and `preview-kill <change>|--all`, using the existing session resolution, and document them in the header usage; verify on a private tmux server (`tmux -L`) in a new `tests/test-preview.sh` that the window gets the tag, has no `@opsx_change`, and that `find_window`/`close --all` still match only agent windows
+- [x] 1.1 Add `preview-start <change> --cwd <dir> --script <file>` (`new-window -d -P` running `bash <file>`, no send-keys, `remain-on-exit on`, tag `@opsx_preview=<change>`, title `ox ><change>`, rename off), plus `preview-find <change>` and `preview-kill <change>|--all`, using the existing session resolution, and document them in the header usage; verify on a private tmux server (`tmux -L`) in a new `tests/test-preview.sh` that the window gets the tag, has no `@opsx_change`, and that `find_window`/`close --all` still match only agent windows
 
 ## 2. opsx-preview.sh core
 
