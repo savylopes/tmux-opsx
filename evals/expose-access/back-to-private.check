@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Back to private
+# level: L2
+# requirement: Public opt-out
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app hook
+x up "$APP_PORT" --name hook --public >/dev/null 2>&1 || fail "up --public failed"
+req hook--shop /; [ "$CODE" = 200 ] || fail "setup: public route got $CODE"
+x up "$APP_PORT" --name hook >/dev/null 2>&1 || fail "second up failed"
+req hook--shop /; echo "no cookie -> $CODE"
+[ "$CODE" = 401 ] || fail "expected 401, got $CODE"
+echo OK

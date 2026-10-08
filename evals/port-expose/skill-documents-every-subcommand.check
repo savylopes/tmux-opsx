@@ -6,6 +6,7 @@ set -u
 . "$EVAL_ROOT/evals/_lib/expose.sh"
 configure_expose
 f="$HOME/.claude/skills/expose/SKILL.md"; [ -f "$f" ] || fail "no installed $f"
-for w in up down list url; do grep -qw -- "$w" "$f" || fail "SKILL.md does not document $w"; echo "has $w"; done
-for o in --name --project; do grep -q -- "$o" "$f" || fail "SKILL.md does not document $o"; echo "has $o"; done
+for w in up down list url share; do grep -qw -- "$w" "$f" || fail "SKILL.md does not document $w"; echo "has $w"; done
+grep -Eq 'key rotate' "$f" || fail "SKILL.md does not document key rotate"; echo "has key rotate"
+for o in --name --project --public --with-key --for --ttl --list --revoke; do grep -qE -- "$o([^a-z-]|$)" "$f" || fail "SKILL.md does not document $o"; echo "has $o"; done
 echo OK

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Created once
+# level: L2
+# requirement: Owner key
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup
+k="$CFG_DIR/expose.key"; rm -f "$k"   # precondition: no expose.key
+x list >/dev/null; echo "first list exit $?"
+[ -f "$k" ] || fail "expose.key not created by the first list"
+m=$(stat -c %a "$k"); echo "mode $m"; [ "$m" = 600 ] || fail "mode is $m, expected 600"
+a=$(cat "$k"); echo "length ${#a}"
+printf '%s' "$a" | grep -Eqx '[A-Za-z0-9_-]+' || fail "key has characters outside [A-Za-z0-9_-]"
+[ ${#a} -ge 22 ] || fail "key too short for 128 bits: ${#a} chars"
+x list >/dev/null; b=$(cat "$k")
+[ "$a" = "$b" ] || fail "key changed after the second list"
+m=$(stat -c %a "$k"); [ "$m" = 600 ] || fail "mode after second call is $m"
+echo OK

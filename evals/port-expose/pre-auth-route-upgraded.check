@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Pre-auth route upgraded
+# level: L2
+# requirement: Routes survive a proxy restart
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app web
+x up "$APP_PORT" --name web >/dev/null || fail "up failed"
+# replace web's live route with a flat pre-auth one (same @id and host, plain reverse_proxy)
+admin_get /config/apps/http/servers/expose/routes > "$EVAL_TMP/routes.json"
+idx=$(jq --arg h "web--shop.$DOMAIN" '[to_entries[]|select([.value.match[]?.host[]?]|index($h))|.key][0]' "$EVAL_TMP/routes.json")
+[ "$idx" != null ] || fail "setup: no route for web"
+jq --argjson i "$idx" --arg d "127.0.0.1:$APP_PORT" '.[$i]|{"@id":.["@id"],match:.match,handle:[{handler:"reverse_proxy",upstreams:[{dial:$d}]}],terminal:true}' "$EVAL_TMP/routes.json" > "$EVAL_TMP/flat.json"
+"$REAL_CURL" -sf --unix-socket "$OPSX_EXPOSE_ADMIN" -X PATCH -H 'Content-Type: application/json' -d @"$EVAL_TMP/flat.json" \
+  "http://127.0.0.1/config/apps/http/servers/expose/routes/$idx" >/dev/null || fail "setup: cannot patch the route"
+req web--shop /; echo "pre-auth route, no cookie -> $CODE"; [ "$CODE" = 200 ] || fail "setup: flat route did not forward ($CODE)"
+x list >/dev/null; echo "list exit $?"
+req web--shop /; echo "after list, no cookie -> $CODE"; [ "$CODE" = 401 ] || fail "expected 401, got $CODE"
+echo OK

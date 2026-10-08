@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Link works on its host
+# level: L2
+# requirement: Share link scope
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app web
+x up "$APP_PORT" --name web >/dev/null || fail "up failed"
+tstart=$(date +%s); t=$(x share web --for acme --ttl 1d | tail -n1 | sed -n 's/.*opsx_share=//p'); [ -n "$t" ] || fail "no share link"
+req web--shop "/?opsx_share=$t"; echo "follow link -> $CODE"; set_cookies | sed "s/$t/<token>/"
+[ "$CODE" = 302 ] || fail "expected 302, got $CODE"
+loc=$(printf '%s\n' "$HDRS" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
+case $loc in /|https://web--shop.$DOMAIN/) ;; *) fail "Location '$loc' is not the path without the query";; esac
+sc=$(set_cookies | grep "opsx_share=$t"); [ -n "$sc" ] || fail "no opsx_share cookie"
+printf '%s' "$sc" | grep -iq 'domain=' && fail "share cookie has a Domain attribute (not host-only)"
+for a in 'Path=/' Secure HttpOnly 'SameSite=Lax' 'Expires='; do printf '%s' "$sc" | grep -iq -- "$a" || fail "cookie lacks $a"; done
+exp=$(printf '%s' "$sc" | grep -io 'expires=[^;]*' | cut -d= -f2-); e=$(date -d "$exp" +%s 2>/dev/null) || fail "unparseable Expires '$exp'"
+d=$(( e - $(date +%s) - 86400 )); echo "Expires $exp (now+1d ${d}s)"; [ ${d#-} -le 120 ] || fail "Expires is not the token's 1d expiry"
+req web--shop / -H "Cookie: opsx_share=$t"; echo "with cookie -> $CODE $BODY"
+[ "$CODE" = 200 ] && [ "$BODY" = app:web ] || fail "cookie did not reach the app"
+echo OK

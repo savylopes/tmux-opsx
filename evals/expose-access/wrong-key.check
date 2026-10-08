@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Wrong key
+# level: L2
+# requirement: Owner login link
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app web
+x up "$APP_PORT" --name web >/dev/null || fail "up failed"
+req web--shop "/?opsx_key=wrong"; echo "?opsx_key=wrong -> $CODE"; set_cookies
+[ "$CODE" = 401 ] || fail "expected 401, got $CODE"
+[ -z "$(set_cookies)" ] || fail "a cookie was set"
+echo OK

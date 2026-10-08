@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / No preview
+# level: L2
+# requirement: Share a preview
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+trap '_preview_cleanup; _expose_cleanup' EXIT
+# real expose.sh against the independent fake Caddy admin (no real proxy, DNS or TLS)
+configure_expose; start_admin "$(caddy_json)"; export OPSX_EXPOSE_SH="$EXPOSE_SH"
+xl() { "$EXPOSE_SH" list --json; }
+mk_repo; mk_worktree; recipe "$WT" "$HTTP_CMD"
+snap() { find "$STATE_DIR" "$CFG_DIR" -type f ! -name '*lock*' ! -name '*.sock' -exec sha1sum {} + 2>/dev/null | sort; }
+( cd "$REPO" && "$EXPOSE_SH" list >/dev/null 2>&1 ); before=$(snap)
+pv share add-auth; echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "share exited 0 with no preview"
+printf '%s' "$out" | grep -Eiq 'no preview|not running|isn.t running' || fail "output does not say no preview is running"
+case "$out" in *opsx_share=*) fail "a share link was printed";; esac
+after=$(snap); [ "$before" = "$after" ] || { diff <(echo "$before") <(echo "$after"); fail "expose state changed (token created?)"; }
+echo OK

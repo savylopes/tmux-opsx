@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Login link sets owner cookie
+# level: L2
+# requirement: Owner login link
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup; start_app web; WP=$APP_PORT; start_app api; AP=$APP_PORT
+x up "$WP" --name web >/dev/null || fail "up web failed"
+x up "$AP" --name api >/dev/null || fail "up api failed"
+k=$(owner_key); [ -n "$k" ] || fail "no owner key"
+req web--shop "/admin?opsx_key=$k"; echo "login link -> $CODE"; printf '%s\n' "$HDRS" | tr -d '\r' | grep -iE '^(location|set-cookie):' | sed "s/$k/<key>/g"
+[ "$CODE" = 302 ] || fail "expected 302, got $CODE"
+loc=$(printf '%s\n' "$HDRS" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
+case $loc in /admin|https://web--shop.$DOMAIN/admin) ;; *) fail "Location is '$loc', expected /admin";; esac
+sc=$(set_cookies | grep -i "opsx_auth=$k")
+[ -n "$sc" ] || fail "no Set-Cookie opsx_auth=<key>"
+printf '%s' "$sc" | grep -iqE "domain=\.?$DOMAIN(;|$| )" || fail "cookie lacks Domain=$DOMAIN"
+for a in 'Path=/' Secure HttpOnly 'SameSite=Lax' 'Max-Age=2592000'; do
+  printf '%s' "$sc" | grep -iq -- "$a" || fail "cookie lacks $a"
+done
+req api--shop / -H "Cookie: opsx_auth=$k"; echo "api with cookie -> $CODE $BODY"
+[ "$CODE" = 200 ] && [ "$BODY" = app:api ] || fail "cookie did not reach the api app"
+echo OK

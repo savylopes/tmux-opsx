@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Unknown exposure
+# level: L2
+# requirement: Share links
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup
+x list >/dev/null
+snap() { find "$STATE_DIR" "$CFG_DIR" -type f ! -name '*lock*' ! -name '*.sock' -exec sha1sum {} + 2>/dev/null | sort; }
+before=$(snap)
+o=$(x share nosuch 2>&1); rc=$?; echo "exit $rc: $o"
+[ "$rc" -ne 0 ] || fail "share nosuch exited 0"
+case "$o" in *opsx_share=*) fail "a share link was printed";; esac
+after=$(snap); [ "$before" = "$after" ] || { diff <(echo "$before") <(echo "$after"); fail "state changed"; }
+grep -rs 'opsx_share\|SHARE' "$STATE_DIR" | grep -i nosuch && fail "token stored for nosuch"
+echo OK

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / App binds 0.0.0.0
+# level: L2
+# requirement: Publicly bound app fails the preview
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+trap '_preview_cleanup; _expose_cleanup' EXIT
+# real expose.sh against the independent fake Caddy admin (no real proxy, DNS or TLS)
+configure_expose; start_admin "$(caddy_json)"; export OPSX_EXPOSE_SH="$EXPOSE_SH"
+xl() { "$EXPOSE_SH" list --json; }
+mk_repo; mk_worktree; recipe "$WT" 'cmd: python3 -m http.server $PORT --bind 0.0.0.0' "timeout: 30"
+pv up add-auth; echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "preview up exited 0"
+printf '%s' "$out" | grep -qF 127.0.0.1 || fail "output lacks 127.0.0.1"
+printf '%s' "$out" | grep -qF 0.0.0.0 || echo "note: output does not name the address 0.0.0.0"
+i=0; while [ -n "$(preview_windows add-auth)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+[ -z "$(preview_windows add-auth)" ] || fail "an @opsx_preview=add-auth window remains"
+j=$(cd "$REPO" && xl); echo "expose list: $j"
+echo "$j" | jq -e 'all(.[]; .name != "add-auth")' >/dev/null || fail "expose.sh list has an add-auth entry"
+echo OK

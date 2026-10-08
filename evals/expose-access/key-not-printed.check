@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: expose-access / Key not printed
+# level: L2
+# requirement: Owner key
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"; . "$EVAL_ROOT/evals/_lib/proxy.sh"
+proxy_setup
+o1=$(x up 3000 --name web 2>&1); echo "up exit $?"; echo "$o1"
+o2=$(x url web 2>&1); echo "url exit $?"; echo "$o2"
+k=$(owner_key); [ -n "$k" ] || fail "no owner key after up"
+case "$o1" in *"$k"*) fail "up output contains the owner key";; esac
+case "$o2" in *"$k"*) fail "url output contains the owner key";; esac
+echo OK

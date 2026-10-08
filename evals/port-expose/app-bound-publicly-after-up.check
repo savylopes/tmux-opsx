@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: port-expose / App bound publicly after up
+# level: L2
+# requirement: List exposures
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+export OPSX_EXPOSE_NO_COPY=1
+free_port() { python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
+PIDS=""; trap 'for p in $PIDS; do kill $p 2>/dev/null; done; _expose_cleanup' EXIT
+listen() {  # listen <addr> <port>: plain TCP listener
+  python3 -I -c 'import socket,sys,time;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind((sys.argv[1],int(sys.argv[2])));s.listen();time.sleep(600)' "$1" "$2" & PIDS="$PIDS $!"
+  local i; for i in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$2") 2>/dev/null && return 0; sleep 0.1; done; fail "setup: listener on $1:$2 did not start"
+}
+P=$(free_port)
+o=$(x up "$P" --name late 2>&1); rc=$?; echo "up exit $rc"; echo "$o"; [ "$rc" -eq 0 ] || fail "up with nothing listening failed"
+listen 0.0.0.0 "$P"
+l=$(x list); echo "$l"
+hdr=$(echo "$l" | head -1); col=$(echo "$hdr" | awk '{for(i=1;i<=NF;i++) if($i=="BIND") print i}')
+[ -n "$col" ] || fail "no BIND column"
+b=$(echo "$l" | awk -v c="$col" '$1=="late"{print $c}'); [ "$b" = PUBLIC ] || fail "late BIND is '$b', expected PUBLIC"
+j=$(x list --json); echo "$j"
+echo "$j" | jq -e '[.[]|select(.name=="late" and .bind=="public")]|length==1' >/dev/null || fail "json lacks bind public for late"
+echo OK
