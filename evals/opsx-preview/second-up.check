@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Second up
+# level: L2
+# requirement: Already running
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree; recipe "$WT" "$HTTP_CMD" "timeout: 30"; expose_configure
+pv up add-auth; echo "up#1 exit $rc"; echo "$out"; u1=$(last_line)
+[ "$rc" -eq 0 ] || fail "first up failed"
+pv up add-auth; echo "up#2 exit $rc"; echo "$out"; u2=$(last_line)
+[ "$rc" -eq 0 ] || fail "second up failed"
+[ "$u1" = "$u2" ] || fail "URLs differ: '$u1' vs '$u2'"
+n=$(preview_windows add-auth | awk 'NF' | wc -l); echo "@opsx_preview=add-auth windows: $n"
+[ "$n" -eq 1 ] || fail "expected one preview window, got $n"
+echo OK

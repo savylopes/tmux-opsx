@@ -16,6 +16,23 @@
 #   opsx-window.sh detect-model [--model <id>]
 #   opsx-window.sh mark   <change> <busy|done|fail|idle>   # title badge + status color
 #   opsx-window.sh list
+#   opsx-window.sh preview-start <change> --cwd <dir> --script <file>
+#   opsx-window.sh preview-find  <change>
+#   opsx-window.sh preview-kill  <change>|--all
+#
+# Preview windows (used by opsx-preview.sh, never by hand): preview-start opens
+# a window titled `ox ><change>` that runs `bash <file>` (no keys are
+# typed), keeps it open after the app exits (remain-on-exit), and tags it
+# @opsx_preview=<change> and @opsx_preview_project=<main checkout path>. It
+# never carries @opsx_change, so ensure/send/close lookups and `close --all`
+# never mistake it for the agent window. Previews belong to the project, not
+# to a session: preview-find (prints every matching window id, one per line)
+# and preview-kill look across all sessions of the tmux server for windows
+# with this project's tag, so they work from any session or from outside tmux.
+# `close` stops the change's preview first (`close --all` stops every preview
+# in the project) through opsx-preview.sh next to this script, ignoring
+# failures; a `close` that will refuse to close the caller's own window leaves
+# the preview running.
 #
 # Window status (distinct `ox` title + dark pane + muted bar colors).
 # Lookups use @opsx_change, so renaming does not break ensure/send/close.
@@ -557,6 +574,8 @@ resolve_model() {
 }
 
 # Shell command that reads the prompt inside the new window's cwd.
+# The $(cat …) is expanded later by the window's shell, not here.
+# shellcheck disable=SC2016
 build_launch_cmd() {
   local prompt_file=$1 cli=$2 model=${3:-} model_flag="" codex_model_flag="" oc_model_flag="" gemini_model_flag=""
   if [ -n "$model" ]; then
@@ -875,6 +894,48 @@ cmd_send() {
   printf 'sent %s %s:%s\n' "$win" "$sess" "$change"
 }
 
+# Project directories to stop previews from: $PWD inside a git repository;
+# otherwise the main checkout of each agent window being closed ($1 = change,
+# or --all for every opsx window in the lookup session), found from its pane.
+preview_project_dirs() {
+  local target=$1 sess wins w path common
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    printf '%s\n' "$PWD"; return 0
+  fi
+  sess=$(lookup_session 2>/dev/null) || return 0
+  if [ "$target" = "--all" ]; then
+    wins=$(tmux list-windows -t "$sess" -F '#{window_id} #{@opsx_change}' 2>/dev/null \
+           | awk 'NF>1 && $2!="" { print $1 }')
+  else
+    wins=$(find_window "$sess" "$target" 2>/dev/null)
+  fi
+  for w in $wins; do
+    path=$(tmux display-message -p -t "$w" '#{pane_current_path}' 2>/dev/null)
+    [ -n "$path" ] && [ -d "$path" ] || continue
+    common=$(git -C "$path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || continue
+    dirname -- "$common"
+  done | sort -u
+}
+
+# Run `opsx-preview.sh stop <change>|--all` from next to this script, from
+# the project (see preview_project_dirs); output is relayed, failures are
+# ignored. When no project can be found, say that previews were not stopped.
+stop_previews() {
+  local script out dirs dir
+  script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-preview.sh"
+  [ -x "$script" ] || return 0
+  dirs=$(preview_project_dirs "$1")
+  if [ -z "$dirs" ]; then
+    printf '# warning: previews were NOT stopped — not inside a git repository and no project found from the windows; run from the project root: %s stop %s\n' "$script" "$1"
+    return 0
+  fi
+  while IFS= read -r dir; do
+    out=$(cd -- "$dir" && "$script" stop "$1" 2>&1) || true
+    [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/# /'
+  done <<< "$dirs"
+  return 0
+}
+
 cmd_close() {
   local change="" all=0 force=0 keep_session=0
   while [ $# -gt 0 ]; do
@@ -895,8 +956,20 @@ cmd_close() {
 
   require_tmux
   local sess here targets closed=0 skipped_self=0 total
-  sess=$(lookup_session) || exit 1
   here=$(current_window)
+
+  # Stop the preview first (route, app process group, window). Never fatal:
+  # a missing or failing opsx-preview.sh must not block closing the window.
+  # Skipped when this close is about to refuse closing the caller's own
+  # window, so a refused close changes nothing.
+  if [ "$all" -eq 1 ]; then
+    stop_previews --all
+  elif [ "$force" -eq 1 ] || [ -z "$here" ] \
+       || [ "$(find_window "$(lookup_session 2>/dev/null)" "$change" 2>/dev/null)" != "$here" ]; then
+    stop_previews "$change"
+  fi
+
+  sess=$(lookup_session) || exit 1
 
   if [ "$all" -eq 1 ]; then
     # Only windows this script stamped — never the user's own windows that
@@ -1037,7 +1110,118 @@ cmd_list() {
   # The opsx column marks windows this script created (see tag_window).
   # status comes from @opsx_status (busy|fail|idle; done is stored as idle).
   tmux list-windows -t "$sess" \
-    -F '#{window_id}	#{?@opsx_change,opsx,-}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
+    -F '#{window_id}	#{?@opsx_change,opsx,#{?@opsx_preview,preview,-}}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
+}
+
+# ---------- preview windows (driven by opsx-preview.sh) ----------
+
+# Project key of a preview window: the main checkout's absolute path (the
+# parent of the git common dir), $PWD outside a repository. opsx-preview.sh
+# runs us from the main checkout, so this matches its idea of the project.
+preview_project_key() {
+  local common
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=""
+  if [ -z "$common" ]; then
+    common=$(git rev-parse --git-common-dir 2>/dev/null) && common=$(cd -- "$common" 2>/dev/null && pwd) || common=""
+  fi
+  if [ -n "$common" ]; then dirname -- "$common"; else pwd; fi
+}
+
+# Window id(s) on the whole tmux server tagged @opsx_preview=$1 for this
+# project ($1 = "--all": every preview of this project). Fails, with tmux's
+# error on stderr, when the server cannot be asked; no server at all simply
+# means no windows.
+find_preview_windows() {
+  local key out
+  key=$(preview_project_key)
+  if ! out=$(tmux list-windows -a -F '#{window_id}	#{@opsx_preview}	#{@opsx_preview_project}' 2>&1); then
+    case "$out" in
+      *"no server running"*|*"No such file or directory"*) return 0 ;;
+    esac
+    printf 'cannot reach the tmux server: %s\n' "$out" >&2
+    return 1
+  fi
+  printf '%s\n' "$out" \
+    | awk -F '\t' -v n="$1" -v k="$key" '$2!="" && $3==k && (n=="--all" || $2==n) { print $1 }'
+}
+
+# Same rule as valid_name in opsx-preview.sh; this script checks its own input.
+valid_preview_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
+cmd_preview_start() {
+  local change=${1:-} cwd="$PWD" script=""
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cwd)    cwd=${2:-}; shift 2 ;;
+      --script) script=${2:-}; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  [ -n "$change" ] || die "usage: opsx-window.sh preview-start <change> --cwd <dir> --script <file>"
+  valid_preview_name "$change" || die "invalid preview name '$change'"
+  [ -n "$script" ] || die "--script is required"
+  [ -f "$script" ] || die "script not found: $script"
+  [ -d "$cwd" ] || die "cwd not found: $cwd"
+
+  require_tmux
+  local sess win title run created=""
+  # ASCII marker: a non-UTF-8 client would show ▶ as `_`, like the agent badges.
+  title="ox >$change"
+  run=$(printf 'bash %q' "$script")
+  if inside_tmux; then
+    sess=$(current_session) || exit 1
+  else
+    sess=$(project_session_name "$PWD")
+    if ! session_exists "$sess"; then
+      win=$(tmux new-session -d -s "$sess" -n "$title" -c "$cwd" -P -F '#{window_id}' \
+            "$run" 2>&1) || die "failed to create session '$sess': $win"
+      created=" session=created"
+    fi
+  fi
+  if [ -z "$created" ]; then
+    # Started with a command, never send-keys: nothing is typed into any pane.
+    win=$(tmux new-window -d -t "$sess:" -n "$title" -c "$cwd" -P -F '#{window_id}' \
+          "$run" 2>&1) || die "failed to create window: $win"
+  fi
+  tmux set-option -w -t "$win" remain-on-exit on >/dev/null 2>&1 || true
+  tmux set-option -w -t "$win" @opsx_preview "$change" >/dev/null 2>&1
+  tmux set-option -w -t "$win" @opsx_preview_project "$(preview_project_key)" >/dev/null 2>&1
+  tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1 || true
+  tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1 || true
+  printf 'created %s %s:%s%s\n' "$win" "$sess" "$title" "$created"
+  [ -n "$created" ] && printf '# attach with: tmux attach -t %s\n' "$sess"
+  return 0
+}
+
+cmd_preview_find() {
+  local change=${1:-} ids
+  [ -n "$change" ] || die "usage: opsx-window.sh preview-find <change>"
+  require_tmux
+  ids=$(find_preview_windows "$change") || exit 1
+  [ -n "$ids" ] || exit 1
+  printf '%s\n' "$ids"
+}
+
+cmd_preview_kill() {
+  local change=${1:-} ids win n=0
+  [ -n "$change" ] || die "usage: opsx-window.sh preview-kill <change>|--all"
+  require_tmux
+  local out failed=0
+  ids=$(find_preview_windows "$change") || exit 1
+  for win in $ids; do
+    if out=$(tmux kill-window -t "$win" 2>&1); then
+      n=$((n + 1))
+      printf 'closed %s (preview %s)\n' "$win" "$change"
+    else
+      printf 'could not close %s (preview %s): %s\n' "$win" "$change" "$out" >&2
+      failed=1
+    fi
+  done
+  [ "$n" -gt 0 ] || [ "$failed" -eq 1 ] || printf 'no preview window for %s\n' "$change"
+  [ "$failed" -eq 0 ]
 }
 
 case "${1:-}" in
@@ -1049,8 +1233,11 @@ case "${1:-}" in
   detect-cli)   shift; cmd_detect_cli "$@" ;;
   detect-model) shift; cmd_detect_model "$@" ;;
   list)         shift; cmd_list "$@" ;;
+  preview-start) shift; cmd_preview_start "$@" ;;
+  preview-find)  shift; cmd_preview_find "$@" ;;
+  preview-kill)  shift; cmd_preview_kill "$@" ;;
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|list)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|list|preview-start|preview-find|preview-kill)" ;;
 esac

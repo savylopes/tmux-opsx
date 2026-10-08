@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+# scenario: opsx-preview / QA prompts start the preview
+# level: L2
+# requirement: ops-qa uses the preview
+# Installs into a scratch HOME and reads the installed opsx-run/SKILL.md and ops-qa agent.
+import os, re, subprocess, sys
+sys.dont_write_bytecode = True
+root, tmp = os.environ["EVAL_ROOT"], os.environ["EVAL_TMP"]
+home = os.path.join(tmp, "home")
+env = dict(os.environ, HOME=home, CLAUDE_CONFIG_DIR=os.path.join(home, ".claude"),
+           CODEX_HOME=os.path.join(home, ".codex"), XDG_CONFIG_HOME=os.path.join(home, ".config"),
+           XDG_STATE_HOME=os.path.join(home, ".local/state"))
+for k in ("TMUX", "TMUX_PANE"):
+    env.pop(k, None)
+def fail(m):
+    print("FAIL: " + m); sys.exit(1)
+r = subprocess.run(["./install.sh", "--skip-openspec", "--skip-graphify", "--skip-commands",
+                    "--skip-mcp", "--skip-memory", "--skip-fork", "--no-backup"],
+                   cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                   stderr=subprocess.STDOUT, text=True, start_new_session=True)
+print("install exit %d" % r.returncode); print("\n".join(r.stdout.splitlines()[-10:]))
+if r.returncode != 0:
+    fail("install.sh failed")
+skill = os.path.join(home, ".claude/skills/opsx-run/SKILL.md")
+agents = [os.path.join(home, ".claude/agents", f) for f in ("opsx-qa.md", "ops-qa.md")]
+agent = next((a for a in agents if os.path.exists(a)), None)
+if not os.path.exists(skill): fail("installed SKILL.md missing: " + skill)
+if not agent: fail("installed ops-qa definition missing in ~/.claude/agents")
+txt = open(skill, encoding="utf-8").read().splitlines()
+def prompt(name):
+    for i, l in enumerate(txt):
+        if re.match(r"^\*\*%s\*\*(\s|$)" % re.escape(name), l):
+            out = []
+            for m in txt[i + 1:]:
+                if m.startswith(">"): out.append(m.lstrip(">").strip())
+                elif out or m.strip(): break
+            if out: return "\n".join(out)
+    fail("no '**%s**' prompt in installed SKILL.md" % name)
+for name in ("qa", "validate"):
+    body = prompt(name)
+    hit = [l for l in body.splitlines() if "opsx-preview.sh up <change>" in l]
+    print("%s prompt: %s" % (name, hit))
+    if not hit: fail("%s prompt does not run `opsx-preview.sh up <change>`" % name)
+    pre = body.find("opsx-preview.sh up <change>")
+    q = [m.start() for m in re.finditer(r"ops-qa", body)]
+    if not any(i > pre for i in q): fail("%s prompt: preview is not run before ops-qa" % name)
+    if not re.search(r"(URL|last (stdout )?line)[^\n]*ops-qa|ops-qa[^\n]*URL", body, re.I) or "PREVIEW_URL" not in body:
+        fail("%s prompt does not pass the preview URL to ops-qa" % name)
+a = open(agent, encoding="utf-8").read()
+m = re.search(r"[^\n]*PREVIEW_URL[^\n]*(not|never|don't|do not)[^\n]*(start|run)[^\n]*(server|app)[^\n]*", a, re.I)
+print("ops-qa: %s" % (m.group(0) if m else None))
+if not m: fail("ops-qa definition does not say to use a given preview URL instead of starting the app")
+print("OK")

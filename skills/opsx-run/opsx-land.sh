@@ -15,7 +15,8 @@
 #   --skip-eval        Don't run the eval regression gate (see below)
 #   --no-close         Leave the tmux window open
 #   --keep-branch      Don't delete the change branch
-#   --keep-worktree    Don't remove the change's worktree
+#   --keep-worktree    Don't remove the change's worktree (its preview, if
+#                      any, is still stopped)
 #   --dry-run          Print what would happen, change nothing
 #   -h, --help         Show this help
 #
@@ -191,7 +192,7 @@ restore_stash() {
   local idx
   idx=$(git stash list --format='%gd %s' 2>/dev/null \
         | awk -v m="$STASH_MSG" 'index($0, m) { sub(/:.*/, "", $1); print $1; exit }')
-  idx=${idx:-stash@{0}}
+  idx=${idx:-'stash@{0}'}
   if git stash pop "$idx" >/dev/null 2>&1; then
     ok "restored stash ($idx)"
   else
@@ -341,7 +342,7 @@ else
   merge_args=("$CHANGE" --into "$TARGET" --branch "$BRANCH" --stay)
   [ "$DRY_RUN" -eq 1 ] && merge_args+=(--dry-run)
   "$merge_script" "${merge_args[@]}" || exit $?
-  MERGE_COMMIT=$([ "$DRY_RUN" -eq 1 ] && echo "(dry run)" || git rev-parse --short HEAD)
+  if [ "$DRY_RUN" -eq 1 ]; then MERGE_COMMIT="(dry run)"; else MERGE_COMMIT=$(git rev-parse --short HEAD); fi
 fi
 
 if [ "$EVAL_GATE" -eq 1 ]; then
@@ -413,6 +414,21 @@ fi
 # ---------------------------------------------------------------- cleanup
 step "Cleaning up"
 
+# Stop the change's preview (route, app process group, window) before its
+# worktree goes away. Never fatal; no preview is the normal case.
+preview_script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-preview.sh"
+if [ -x "$preview_script" ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '  %swould run:%s %s stop %s\n' "$D" "$N" "$preview_script" "$CHANGE"
+  else
+    out=$("$preview_script" stop "$CHANGE" 2>&1) || true
+    case "$out" in
+      ''|'no preview running for '*) ;;
+      *) printf '%s\n' "$out" | sed 's/^/  /' ;;
+    esac
+  fi
+fi
+
 if [ "$KEEP_WORKTREE" -eq 1 ]; then
   skip "worktree kept (--keep-worktree)"
 else
@@ -443,6 +459,12 @@ else
   else
     warn "could not delete $BRANCH — delete it by hand once you are happy: git branch -d $BRANCH"
   fi
+fi
+
+# Forget the preview state (log, launch script, port, install hash) of
+# changes whose worktree is now gone. Silent and never fatal.
+if [ "$DRY_RUN" -eq 0 ] && [ -x "$preview_script" ]; then
+  "$preview_script" prune >/dev/null 2>&1 || true
 fi
 
 if [ "$NO_CLOSE" -eq 1 ]; then

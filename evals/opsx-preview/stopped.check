@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Stopped
+# level: L2
+# requirement: Stop and URL
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree; recipe "$WT" "$HTTP_CMD" "timeout: 30"; expose_configure
+pv up add-auth; echo "up exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "up failed"
+w=$(preview_windows add-auth); port=$(route_port add-auth--shop); echo "window $w port $port"
+pv stop add-auth; echo "stop#1 exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "stop exited $rc"
+[ -z "$(preview_windows add-auth)" ] || fail "preview window still present"
+T list-windows -a -F '#{window_id}' | grep -qx "$w" && fail "window $w still exists"
+expose_has add-auth && fail "expose.sh list still has add-auth: $(expose_list_json)"
+pv stop add-auth; echo "stop#2 exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "second stop exited $rc"
+if [ -n "$port" ] && http_get "$port" >/dev/null; then echo "note: something still answers on $port"; fi
+echo OK

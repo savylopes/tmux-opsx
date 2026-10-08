@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Preview started
+# level: L2
+# requirement: Start a preview
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree; recipe "$WT" "$HTTP_CMD" "timeout: 30"; expose_configure dev.example.com
+pv up add-auth
+echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "expected exit 0"
+[ "$(last_line)" = "https://add-auth--shop.dev.example.com" ] || fail "last line '$(last_line)'"
+port=$(route_port add-auth--shop); echo "route add-auth--shop -> 127.0.0.1:$port"
+[ -n "$port" ] || fail "expose.sh up was not called for name add-auth project shop: $(cat "$FAKE_EXPOSE_DIR/calls.log")"
+body=$(http_get "$port" index.html); echo "GET 127.0.0.1:$port/index.html -> $body"
+[ "$body" = "worktree-add-auth" ] || fail "the routed port does not serve the app from the worktree"
+echo OK

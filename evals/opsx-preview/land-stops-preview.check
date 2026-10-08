@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Land stops preview
+# level: L2
+# requirement: Teardown with the change
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+command -v openspec >/dev/null || { echo "openspec CLI not on PATH"; exit 77; }
+mk_repo; mk_worktree; recipe "$WT" "$HTTP_CMD" "timeout: 30"; expose_configure
+pv up add-auth; echo "up exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "preview did not start"
+[ -n "$(preview_windows add-auth)" ] || fail "fixture: no preview window after up"
+# --no-close so only land's own teardown is exercised (not opsx-window.sh close)
+lout=$(cd "$REPO" && env -u EVAL_ENV_FILE -u EVAL_ROOT -u EVAL_TMP setsid -w "$LAND" add-auth --no-close </dev/null 2>&1); lrc=$?
+echo "land exit $lrc"; echo "$lout"
+[ "$lrc" -eq 0 ] || fail "land did not complete (exit $lrc)"
+T list-windows -a -F '#{window_id} preview=#{@opsx_preview}'
+[ -z "$(preview_windows add-auth)" ] || fail "an @opsx_preview=add-auth window remains"
+expose_has add-auth && fail "expose.sh list still has add-auth: $(expose_list_json)"
+echo OK

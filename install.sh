@@ -25,7 +25,7 @@
 #                                   -> ~/.codex/skills/opsx-run/    (Codex home)
 #                                   -> ~/.config/opencode/skills/opsx-run/  (OpenCode)
 #                                   -> ~/.gemini/skills/opsx-run/  (Gemini CLI)
-#      (opsx-window.sh + opsx-merge.sh + opsx-land.sh + opsx-eval.sh)
+#      (opsx-window.sh + opsx-merge.sh + opsx-land.sh + opsx-eval.sh + opsx-preview.sh)
 #   6. browser-use MCP             -> ~/.gemini/settings.json
 #                                   -> ~/.codex/config.toml
 #                                   -> ~/.config/opencode/opencode.json{,c}
@@ -638,10 +638,12 @@ install_opsx_run_skill() {
   install_file "$SRC/skills/opsx-run/opsx-merge.sh"  "$dest/opsx-merge.sh"
   install_file "$SRC/skills/opsx-run/opsx-land.sh"   "$dest/opsx-land.sh"
   install_file "$SRC/skills/opsx-run/opsx-eval.sh"   "$dest/opsx-eval.sh"
+  install_file "$SRC/skills/opsx-run/opsx-preview.sh" "$dest/opsx-preview.sh"
   chmod +x "$dest/opsx-window.sh" || die "cannot chmod +x $dest/opsx-window.sh"
   chmod +x "$dest/opsx-merge.sh"  || die "cannot chmod +x $dest/opsx-merge.sh"
   chmod +x "$dest/opsx-land.sh"   || die "cannot chmod +x $dest/opsx-land.sh"
   chmod +x "$dest/opsx-eval.sh"   || die "cannot chmod +x $dest/opsx-eval.sh"
+  chmod +x "$dest/opsx-preview.sh" || die "cannot chmod +x $dest/opsx-preview.sh"
   ok "/opsx-run -> $dest ($label)"
 }
 
@@ -1723,6 +1725,7 @@ step "Installing the ops-applier, ops-qa, ops-reviewer, ops-security, and ops-ev
 [ -f "$SRC/agents/opsx-security.md" ] || die "missing $SRC/agents/opsx-security.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-eval.md" ] || die "missing $SRC/agents/opsx-eval.md — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-eval.sh" ] || die "missing $SRC/skills/opsx-run/opsx-eval.sh — run this script from the repo checkout"
+[ -f "$SRC/skills/opsx-run/opsx-preview.sh" ] || die "missing $SRC/skills/opsx-run/opsx-preview.sh — run this script from the repo checkout"
 install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
 ok "ops-applier -> $PREFIX/agents/opsx-applier.md (Claude Code)"
 install_cursor_agent "$SRC/agents/opsx-applier.md" "$CURSOR_AGENTS_DIR/opsx-applier.md"
@@ -1890,11 +1893,13 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$PREFIX/skills/opsx-run/opsx-merge.sh" \
          "$PREFIX/skills/opsx-run/opsx-land.sh" \
          "$PREFIX/skills/opsx-run/opsx-eval.sh" \
+         "$PREFIX/skills/opsx-run/opsx-preview.sh" \
          "$CURSOR_SKILLS_DIR/SKILL.md" \
          "$CURSOR_SKILLS_DIR/opsx-window.sh" \
          "$CURSOR_SKILLS_DIR/opsx-merge.sh" \
          "$CURSOR_SKILLS_DIR/opsx-land.sh" \
          "$CURSOR_SKILLS_DIR/opsx-eval.sh" \
+         "$CURSOR_SKILLS_DIR/opsx-preview.sh" \
          "$AGENTS_SKILLS_DIR/SKILL.md" \
          "$AGENTS_SKILLS_DIR/opsx-window.sh" \
          "$CODEX_SKILLS_DIR/SKILL.md" \
@@ -2033,7 +2038,7 @@ if [ -n "$EXPOSE_DOMAIN" ]; then
     warn "missing: $EXPOSE_CADDY_JSON"; FAIL=1
   fi
 fi
-for sh in opsx-window.sh opsx-merge.sh opsx-land.sh opsx-eval.sh; do
+for sh in opsx-window.sh opsx-merge.sh opsx-land.sh opsx-eval.sh opsx-preview.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
   [ -x "$AGENTS_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex ~/.agents)"; FAIL=1; }

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / No expose
+# level: L2
+# requirement: Not configured
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree
+recipe "$WT" "install: touch $EVAL_TMP/installed" "$HTTP_CMD"   # no expose_configure
+pv up add-auth; echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+printf '%s\n' "$out" | grep -qF 'install.sh --expose-domain' || fail "message lacks 'install.sh --expose-domain'"
+[ -z "$(preview_windows add-auth)" ] || fail "a preview window was created"
+[ "$(T list-windows -a | wc -l)" -eq 1 ] || fail "a window was created: $(T list-windows -a)"
+[ ! -e "$EVAL_TMP/installed" ] || fail "install ran before the expose check"
+# the same with no expose.sh at all
+export OPSX_EXPOSE_SH="$EVAL_TMP/nonexistent-expose.sh"
+pv up add-auth; echo "no expose.sh: exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit when expose.sh is missing"
+printf '%s\n' "$out" | grep -qF 'install.sh --expose-domain' || fail "message lacks 'install.sh --expose-domain' (expose.sh missing)"
+[ -z "$(preview_windows add-auth)" ] || fail "a preview window was created (expose.sh missing)"
+echo OK

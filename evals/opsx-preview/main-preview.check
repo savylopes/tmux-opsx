@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Main preview
+# level: L2
+# requirement: Preview the main checkout
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; recipe "$REPO" "$HTTP_CMD" "timeout: 30"; expose_configure dev.example.com
+pv up --main
+echo "exit $rc"; echo "$out"
+[ "$(last_line)" = "https://main--shop.dev.example.com" ] || fail "last line '$(last_line)'"
+port=$(route_port main--shop); echo "route main--shop -> $port"
+body=$(http_get "$port" index.html); echo "GET -> $body"
+[ "$body" = "main-checkout" ] || fail "route does not serve the main checkout"
+echo OK

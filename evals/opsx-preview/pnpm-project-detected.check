@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / pnpm project detected
+# level: L2
+# requirement: Detected recipe
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+# fake pnpm: logs its argv, serves the checkout on --port for `run dev`
+mkdir -p "$EVAL_TMP/bin"
+# the log path is baked in: the app runs in a tmux window whose env may not carry ours
+cat > "$EVAL_TMP/bin/pnpm" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$EVAL_TMP/pnpm.log"
+if [ "\$1" = run ] && [ "\$2" = dev ]; then
+  p=""; while [ \$# -gt 0 ]; do [ "\$1" = --port ] && p=\$2; shift; done
+  exec python3 -m http.server "\$p" --bind 127.0.0.1
+fi
+exit 0
+SH
+chmod +x "$EVAL_TMP/bin/pnpm"; export PATH="$EVAL_TMP/bin:$PATH" PNPM_LOG="$EVAL_TMP/pnpm.log"
+mk_repo; mk_worktree
+printf '{"name":"shop","scripts":{"dev":"vite"}}\n' > "$WT/package.json"
+printf 'lockfileVersion: 9.0\n' > "$WT/pnpm-lock.yaml"
+git -C "$WT" add -A; git -C "$WT" commit -qm pkg
+expose_configure
+pv up add-auth
+echo "exit $rc"; echo "$out"; echo "--- pnpm calls"; cat "$PNPM_LOG" 2>/dev/null
+printf '%s\n' "$out" | grep -i 'detect' | grep -qi 'pnpm' || fail "output does not name the detected recipe (pnpm)"
+port=$(route_port add-auth--shop)
+[ -n "$port" ] || fail "no route published"
+grep -qx "run dev --port $port" "$PNPM_LOG" || fail "app not started with 'pnpm run dev --port $port'"
+[ "$rc" -eq 0 ] || fail "expected exit 0"
+echo OK
