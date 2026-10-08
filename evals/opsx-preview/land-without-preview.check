@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Land without preview
+# level: L2
+# requirement: Teardown with the change
+# Lands the same fixture twice: with opsx-run as it was before this change
+# (parent of the commit that added opsx-preview.sh) and with the current one,
+# and compares the results (exit code, branches, worktrees, merged tree).
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+command -v openspec >/dev/null || { echo "openspec CLI not on PATH"; exit 77; }
+add=$(git -C "$EVAL_ROOT" log --diff-filter=A --format=%H -- skills/opsx-run/opsx-preview.sh | tail -1)
+[ -n "$add" ] || { echo "cannot find the commit that added opsx-preview.sh"; exit 77; }
+BASE="$EVAL_TMP/base"; mkdir -p "$BASE"
+git -C "$EVAL_ROOT" archive "$add^" skills/opsx-run | tar -x -C "$BASE" || { echo "cannot extract baseline"; exit 77; }
+echo "baseline: $add^"
+expose_configure
+land_with() {  # land_with <land script> -> state summary on stdout
+  rm -rf "$REPO" "$WT"; mk_repo; mk_worktree
+  local o r
+  o=$(cd "$REPO" && env -u EVAL_ENV_FILE -u EVAL_ROOT -u EVAL_TMP setsid -w "$1" add-auth --no-close </dev/null 2>&1); r=$?
+  printf '%s\n' "$o" > "$EVAL_TMP/out.$2"
+  echo "exit=$r"
+  echo "head=$(g rev-parse --abbrev-ref HEAD)"
+  echo "branches=$(g for-each-ref --format='%(refname:short)' refs/heads | tr '\n' ' ')"
+  echo "worktrees=$(g worktree list --porcelain | grep -c '^worktree')"
+  echo "wt-dir=$( [ -d "$WT" ] && echo present || echo gone)"
+  echo "tree=$(g rev-parse 'HEAD^{tree}')"
+  echo "dirty=$(g status --porcelain | wc -l)"
+}
+before=$(land_with "$BASE/skills/opsx-run/opsx-land.sh" base)
+after=$(land_with "$LAND" new)
+echo "--- before this change"; echo "$before"
+echo "--- with this change";   echo "$after"
+echo "--- output diff (informational)"; diff "$EVAL_TMP/out.base" "$EVAL_TMP/out.new"
+[ "$before" = "$after" ] || fail "landing without a preview gives a different result than before this change"
+echo OK

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / QA fallback
+# level: L2
+# requirement: ops-qa uses the preview
+# Not an agent run: checks the two deterministic halves of the fallback.
+# (1) with expose not configured, `opsx-preview.sh up add-auth` (what the qa
+#     prompt runs first) exits non-zero; (2) the qa prompt then dispatches ops-qa
+#     with no preview URL, and ops-qa starts the app as before.
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree; recipe "$WT" "$HTTP_CMD"   # expose not configured
+pv up add-auth; echo "opsx-preview.sh up exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "preview succeeded although expose is not configured"
+[ -z "$(preview_windows add-auth)" ] || fail "a preview window was created"
+SKILL="$EVAL_ROOT/skills/opsx-run/SKILL.md"
+qa=$(awk '/^\*\*qa\*\*/{f=1;next} f&&/^>/{print;s=1;next} f&&s{exit}' "$SKILL")
+echo "--- qa prompt"; echo "$qa"
+printf '%s\n' "$qa" | grep -qiE 'otherwise[^.]*(none|no preview|reason)' || fail "qa prompt has no non-zero-exit branch"
+printf '%s\n' "$qa" | grep -qiE 'ops-qa start the app as before|start(s)? the app as before' || fail "qa prompt does not let ops-qa start the app as before"
+agent=$(ls "$EVAL_ROOT"/agents/opsx-qa.md "$EVAL_ROOT"/agents/ops-qa.md 2>/dev/null | head -1)
+fb=$(grep -iE 'no `?PREVIEW_URL|none — ' "$agent"); echo "--- ops-qa: $fb"
+printf '%s\n' "$fb" | grep -qiE 'start the app|old behaviour|as before' || fail "ops-qa definition has no fallback to starting the app"
+echo OK

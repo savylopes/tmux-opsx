@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Install not repeated
+# level: L2
+# requirement: Install step
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree
+printf 'lockfileVersion: 9.0\n' > "$WT/pnpm-lock.yaml"
+recipe "$WT" "install: echo ran >> $EVAL_TMP/install.count" "$HTTP_CMD" "timeout: 30"
+expose_configure
+pv up add-auth; echo "up#1 exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "first up failed"
+pv stop add-auth; echo "stop exit $rc"; echo "$out"
+pv up add-auth; echo "up#2 exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "second up failed"
+n=$(wc -l < "$EVAL_TMP/install.count" 2>/dev/null || echo 0); echo "install ran $n time(s)"
+[ "$n" -eq 1 ] || fail "expected the install command to run once, ran $n"
+echo OK

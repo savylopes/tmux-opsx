@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / No worktree
+# level: L2
+# requirement: Start a preview
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; g branch opsx/add-auth   # branch exists, but no worktree checks it out
+recipe "$REPO" "$HTTP_CMD"; expose_configure
+pv up add-auth
+echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+printf '%s\n' "$out" | grep -qi 'apply' || fail "message does not say to apply the change first"
+[ -z "$(preview_windows add-auth)" ] || fail "a preview window was created"
+[ -z "$(ls "$FAKE_EXPOSE_DIR/routes")" ] || fail "a route was created: $(ls "$FAKE_EXPOSE_DIR/routes")"
+grep -q '^expose.sh up' "$FAKE_EXPOSE_DIR/calls.log" 2>/dev/null && fail "expose.sh up was called"
+[ "$(T list-windows -a | wc -l)" -eq 1 ] || fail "windows were created: $(T list-windows -a)"
+echo OK

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Window tagged separately
+# level: L2
+# requirement: Preview window
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree; recipe "$WT" "$HTTP_CMD" "timeout: 30"; expose_configure
+# the change's agent window, tagged the way opsx-window.sh tags agent windows
+agent=$(T new-window -d -P -F '#{window_id}' -t shop: -n add-auth -c "$WT" 'exec sleep 86400')
+T set-option -w -t "$agent" @opsx_change add-auth
+echo "agent window $agent"
+pv up add-auth; echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "preview did not start"
+T list-windows -a -F '#{window_id} #{window_name} change=#{@opsx_change} preview=#{@opsx_preview}'
+wins=$(preview_windows add-auth)
+[ "$(printf '%s\n' "$wins" | awk 'NF' | wc -l)" -eq 1 ] || fail "expected exactly one @opsx_preview=add-auth window, got: $wins"
+[ "$wins" != "$agent" ] || fail "the preview tag was put on the agent window"
+[ -z "$(win_opt "$wins" @opsx_change)" ] || fail "preview window $wins carries @opsx_change=$(win_opt "$wins" @opsx_change)"
+st=$(cd "$REPO" && "$WINDOW" status add-auth --lines 3 2>&1); src=$?
+echo "opsx-window.sh status add-auth (exit $src):"; echo "$st"
+[ "$src" -eq 0 ] || fail "opsx-window.sh status add-auth failed"
+printf '%s\n' "$st" | grep -qF "$agent" || fail "status lookup for add-auth does not name the agent window $agent"
+printf '%s\n' "$st" | grep -qF "$wins" && fail "status lookup for add-auth found the preview window $wins"
+echo OK

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Nothing to detect
+# level: L2
+# requirement: Detected recipe
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree
+printf '{"name":"shop","scripts":{"build":"vite build"}}\n' > "$WT/package.json"   # no dev script
+git -C "$WT" add -A; git -C "$WT" commit -qm pkg
+expose_configure
+pv up add-auth
+echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+printf '%s\n' "$out" | grep -q '\.opsx/preview\.yaml' || fail "message does not ask for .opsx/preview.yaml"
+[ -z "$(preview_windows add-auth)" ] || fail "a preview window was created"
+[ "$(T list-windows -a | wc -l)" -eq 1 ] || fail "a window was created"
+[ -z "$(ls "$FAKE_EXPOSE_DIR/routes")" ] || fail "a route was created"
+echo OK

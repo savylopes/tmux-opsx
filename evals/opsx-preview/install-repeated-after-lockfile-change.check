@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Install repeated after lockfile change
+# level: L2
+# requirement: Install step
+# Uses the detected pnpm recipe so "the lockfile" is unambiguous (pnpm-lock.yaml).
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mkdir -p "$EVAL_TMP/bin"
+# the log path is baked in: the app runs in a tmux window whose env may not carry ours
+cat > "$EVAL_TMP/bin/pnpm" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$EVAL_TMP/pnpm.log"
+if [ "\$1" = run ] && [ "\$2" = dev ]; then
+  p=""; while [ \$# -gt 0 ]; do [ "\$1" = --port ] && p=\$2; shift; done
+  exec python3 -m http.server "\$p" --bind 127.0.0.1
+fi
+exit 0
+SH
+chmod +x "$EVAL_TMP/bin/pnpm"; export PATH="$EVAL_TMP/bin:$PATH" PNPM_LOG="$EVAL_TMP/pnpm.log"
+mk_repo; mk_worktree
+printf '{"name":"shop","scripts":{"dev":"vite"}}\n' > "$WT/package.json"
+printf 'lockfileVersion: 9.0\n' > "$WT/pnpm-lock.yaml"
+git -C "$WT" add -A; git -C "$WT" commit -qm pkg
+expose_configure
+installs() { grep -c '^install' "$PNPM_LOG" 2>/dev/null || echo 0; }
+pv up add-auth; echo "up#1 exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "first up failed"
+pv stop add-auth; echo "stop exit $rc"
+printf 'lockfileVersion: 9.0\npackages: {}\n' > "$WT/pnpm-lock.yaml"
+before=$(grep -n '^run dev' "$PNPM_LOG" | tail -1 | cut -d: -f1)
+pv up add-auth; echo "up#2 exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "second up failed"
+echo "--- pnpm calls"; cat -n "$PNPM_LOG"
+[ "$(installs)" -eq 2 ] || fail "expected 2 installs (lockfile changed), got $(installs)"
+# the second install must come before the second start
+li=$(grep -n '^install' "$PNPM_LOG" | tail -1 | cut -d: -f1)
+ld=$(grep -n '^run dev' "$PNPM_LOG" | tail -1 | cut -d: -f1)
+[ "$li" -gt "$before" ] && [ "$li" -lt "$ld" ] || fail "second install did not run before the second start"
+echo OK

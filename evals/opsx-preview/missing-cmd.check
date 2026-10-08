@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Missing cmd
+# level: L2
+# requirement: Declared recipe
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree
+recipe "$WT" "install: touch $EVAL_TMP/installed" "health: /"; expose_configure
+pv up add-auth
+echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+printf '%s\n' "$out" | grep -qw 'cmd' || fail "message does not name cmd"
+[ -z "$(preview_windows add-auth)" ] || fail "a preview window was created"
+[ "$(T list-windows -a | wc -l)" -eq 1 ] || fail "a window was created: $(T list-windows -a)"
+[ -z "$(ls "$FAKE_EXPOSE_DIR/routes")" ] || fail "a route was created"
+[ ! -e "$EVAL_TMP/installed" ] || fail "install ran although cmd is missing (something started)"
+echo OK

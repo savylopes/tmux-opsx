@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / App never healthy
+# level: L2
+# requirement: Health wait
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree
+recipe "$WT" 'cmd: echo "boom-7f3a: cannot bind" >&2; exit 3' "timeout: 30"; expose_configure
+start=$(date +%s)
+pv up add-auth; echo "exit $rc after $(( $(date +%s) - start ))s"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+printf '%s\n' "$out" | grep -q 'boom-7f3a' || fail "the app's last output lines were not printed"
+l=$(expose_list_json); echo "expose.sh list --json: $l"
+expose_has add-auth && fail "expose.sh list has an entry for add-auth"
+echo OK

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Recipe used
+# level: L2
+# requirement: Declared recipe
+set -u
+. "$EVAL_ROOT/evals/_lib/preview.sh"
+mk_repo; mk_worktree
+# the spec's exact cmd, plus a probe written before it (same bash -c) to see PORT/HOST
+recipe "$WT" "cmd: echo \"PORT=\$PORT HOST=\$HOST PWD=\$PWD\" > $EVAL_TMP/env.seen; python3 -m http.server \$PORT --bind 127.0.0.1" "timeout: 30"
+expose_configure
+pv up add-auth
+echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "preview did not become healthy (exit $rc)"
+seen=$(cat "$EVAL_TMP/env.seen" 2>/dev/null); echo "cmd saw: $seen"
+port=$(route_port add-auth--shop)
+[ -n "$port" ] || fail "no route published"
+[ "$seen" = "PORT=$port HOST=127.0.0.1 PWD=$WT" ] || fail "expected 'PORT=$port HOST=127.0.0.1 PWD=$WT'"
+[ "$(http_get "$port" index.html)" = "worktree-add-auth" ] || fail "app not answering on PORT $port"
+echo OK
