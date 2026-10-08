@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Rerun keeps token
+# level: L2
+# requirement: Token intake
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose
+out=$(OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install dev.example.com); rc=$?
+echo "rerun exit $rc"; echo "$out" | tail -10
+[ "$rc" -eq 0 ] || fail "rerun without a token exited $rc"
+grep -Eq "^[A-Z_]*TOKEN[A-Z_]*=[\"']?t1[\"']?$" "$ENV_FILE" || fail "stored token is no longer t1"
+echo OK

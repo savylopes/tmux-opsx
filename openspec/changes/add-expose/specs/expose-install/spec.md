@@ -18,7 +18,7 @@ Defines how `install.sh` sets up public port exposure when, and only when, the u
 - **THEN** its output contains `--expose-domain`
 
 ### Requirement: Domain validation
-The domain SHALL be a lowercase DNS name of at least two labels, each label made of `[a-z0-9-]` and not starting or ending with `-`. A leading `*.` SHALL be stripped. An invalid domain SHALL make install.sh exit non-zero before it installs anything.
+The domain SHALL be lowercased, and a leading `*.` stripped, before it is validated and stored. The result SHALL be a DNS name of at least two labels, each label made of `[a-z0-9-]` and not starting or ending with `-`. `expose.sh` SHALL likewise lowercase a hand-edited `EXPOSE_DOMAIN` before validating it. An invalid domain SHALL make install.sh exit non-zero before it installs anything.
 
 #### Scenario: Wildcard prefix accepted
 - **WHEN** `install.sh --expose-domain '*.dev.example.com'` runs

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Binary reused
+# level: L2
+# requirement: Caddy proxy
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+bin="$HOME/.local/share/tmux-opsx/bin/caddy"
+mkdir -p "$(dirname "$bin")"; cp "$FAKE_CADDY" "$bin"; chmod +x "$bin"
+sum=$(sha256sum "$bin")
+for run in 1 2; do
+  out=$(CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 expose_install dev.example.com); rc=$?
+  echo "run $run exit $rc"; echo "$out" | grep -i caddy
+  [ "$rc" -eq 0 ] || fail "install.sh exited $rc"
+done
+echo "--- shim log"; cat "$SHIM_LOG"
+if grep -Ei '^(curl|wget) .*(caddyserver|download)' "$SHIM_LOG"; then fail "a Caddy binary download was attempted"; fi
+[ "$(sha256sum "$bin")" = "$sum" ] || fail "installed caddy binary was replaced"
+echo OK

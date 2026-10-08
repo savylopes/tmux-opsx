@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Copied through tmux
+# level: L2
+# requirement: URL handoff to the terminal
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+command -v tmux >/dev/null || { echo "tmux not installed"; exit 77; }
+sock="evx-$$"
+T() { tmux -L "$sock" -f /dev/null "$@"; }
+T new-session -d -s ev -x 120 -y 30 'exec sleep 600' || fail "cannot start private tmux server"
+trap 'T kill-server 2>/dev/null; _expose_cleanup' EXIT
+T set -g set-clipboard off   # keep OSC 52 inside the private server
+T new-window -t ev "cd '$EVAL_TMP/shop' && '$EXPOSE_SH' up 3000 --name web > '$EVAL_TMP/o.txt' 2>&1; echo \$? > '$EVAL_TMP/rc'; sleep 30"
+for _ in $(seq 100); do [ -s "$EVAL_TMP/rc" ] && break; sleep 0.1; done
+[ -s "$EVAL_TMP/rc" ] || fail "expose.sh did not finish inside tmux"
+echo "exit $(cat "$EVAL_TMP/rc")"; cat -v "$EVAL_TMP/o.txt"
+b=$(T show-buffer 2>&1); echo "newest buffer: $b"
+[ "$b" = "https://web--shop.dev.example.com" ] || fail "newest paste buffer is not the URL"
+echo OK

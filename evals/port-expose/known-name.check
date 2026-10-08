@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Known name
+# level: L2
+# requirement: Reprint a URL
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+x up 3000 --name web --project shop >/dev/null || fail "up failed"
+cd "$EVAL_TMP" || exit 1
+o=$(x url web --project shop); rc=$?; echo "exit $rc"; echo "$o"
+[ "$rc" -eq 0 ] || fail "url exited $rc"
+[ "$(printf '%s\n' "$o" | tail -n1)" = "https://web--shop.dev.example.com" ] || fail "last line is not the URL"
+echo OK

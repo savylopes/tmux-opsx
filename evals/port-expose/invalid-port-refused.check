@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Invalid port refused
+# level: L2
+# requirement: Publish a local port
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+for p in 70000 abc 443; do
+  out=$(x up "$p" 2>&1); rc=$?
+  echo "up $p -> exit $rc: $out"
+  [ "$rc" -ne 0 ] || fail "up $p exited 0"
+  echo "$out" | grep -q -- "$p" || fail "error for $p does not name the port"
+done
+n=$(admin_get /config/ | jq '[.apps.http.servers[]?.routes[]?] | length'); echo "routes: $n"
+[ "$n" -eq 0 ] || fail "a route was created"
+f=$(find "$STATE_DIR" -type f 2>/dev/null); [ -z "$f" ] || fail "state records created: $f"
+echo OK

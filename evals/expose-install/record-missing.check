@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Record missing
+# level: L2
+# requirement: DNS check
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+out=$(CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install dev.example.com); rc=$?
+echo "install exit $rc"; echo "$out" | tail -12
+grep '^getent' "$SHIM_LOG"
+echo "$out" | grep -F '*.dev.example.com' | grep -Eiq 'record|dns' || fail "no warning about the missing *.dev.example.com record"
+[ "$rc" -eq 0 ] || fail "install.sh exited $rc, expected 0"
+echo OK

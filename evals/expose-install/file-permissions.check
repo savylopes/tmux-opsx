@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: expose-install / File permissions
+# level: L2
+# requirement: Config storage
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+tok=tokA-secret-91827 tok2=tokB-secret-55512
+o1=$(CLOUDFLARE_API_TOKEN=$tok OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install dev.example.com) || { echo "$o1" | tail; fail "first install failed"; }
+# a second run with a new token exercises overwrite (backups / temp files)
+o2=$(CLOUDFLARE_API_TOKEN=$tok2 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install dev.example.com) || { echo "$o2" | tail; fail "second install failed"; }
+ls -la "$CFG_DIR"
+m=$(stat -c %a "$ENV_FILE"); [ "$m" = 600 ] || fail "expose.env mode $m, expected 600"
+dm=$(stat -c %a "$CFG_DIR"); case $dm in 700|500) ;; *) fail "config dir mode $dm is readable by others";; esac
+grep -q 'dev.example.com' "$ENV_FILE" || fail "expose.env lacks the domain"
+grep -q "$tok2" "$ENV_FILE" || fail "expose.env lacks the token"
+other=$(grep -rlE "$tok|$tok2" "$CFG_DIR" | grep -vx "$ENV_FILE")
+[ -z "$other" ] || fail "token found in other files: $other"
+echo OK

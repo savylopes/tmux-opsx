@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Distinct long names stay distinct
+# level: L2
+# requirement: Label length limit
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+base=$(printf 'q%.0s' $(seq 60))
+n1="${base}aaaaaaaaaa" n2="${base}bbbbbbbbbb"
+h1=$(x up 3000 --name "$n1" --project shop | tail -n1); h2=$(x up 3001 --name "$n2" --project shop | tail -n1)
+echo "1: $h1"; echo "2: $h2"
+case $h1 in https://*) ;; *) fail "first up gave no URL";; esac
+case $h2 in https://*) ;; *) fail "second up gave no URL";; esac
+[ "$h1" != "$h2" ] || fail "two different names got the same hostname"
+echo OK

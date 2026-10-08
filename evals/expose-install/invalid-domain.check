@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Invalid domain
+# level: L2
+# requirement: Domain validation
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+out=$(CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install 'not a domain'); rc=$?
+echo "install exit $rc"; echo "$out" | tail -10
+[ "$rc" -ne 0 ] || fail "expected non-zero exit for an invalid domain"
+echo "$out" | grep -q 'not a domain' || fail "error output does not name the domain"
+nothing_installed
+echo OK

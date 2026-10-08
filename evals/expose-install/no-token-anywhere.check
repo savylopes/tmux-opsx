@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: expose-install / No token anywhere
+# level: L2
+# requirement: Token intake
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+out=$(OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install dev.example.com); rc=$?
+echo "install exit $rc"; echo "$out" | tail -10
+[ "$rc" -ne 0 ] || fail "expected non-zero exit with no token"
+echo "$out" | grep -q 'CLOUDFLARE_API_TOKEN' || fail "message does not name CLOUDFLARE_API_TOKEN"
+nothing_installed
+echo OK

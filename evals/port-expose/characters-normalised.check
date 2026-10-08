@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Characters normalised
+# level: L2
+# requirement: Hostname label
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+out=$(x up 8080 --name "My_App" --project "Foo.Bar"); rc=$?
+echo "exit $rc"; echo "$out"
+last=$(printf '%s\n' "$out" | tail -n1)
+[ "$last" = "https://my-app--foo-bar.dev.example.com" ] || fail "label is not my-app--foo-bar (got '$last')"
+echo OK

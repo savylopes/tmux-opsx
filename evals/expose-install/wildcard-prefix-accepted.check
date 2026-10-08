@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Wildcard prefix accepted
+# level: L2
+# requirement: Domain validation
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+out=$(CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$FAKE_CADDY" expose_install '*.dev.example.com'); rc=$?
+echo "install exit $rc"; echo "$out" | tail -10
+[ "$rc" -eq 0 ] || fail "install.sh exited $rc"
+[ -f "$ENV_FILE" ] || fail "no $ENV_FILE"
+grep -n 'example' "$ENV_FILE"
+grep -Eq "=[\"']?dev\.example\.com[\"']?$" "$ENV_FILE" || fail "stored domain is not dev.example.com"
+if grep -q '\*' "$ENV_FILE"; then fail "stored domain still has the *. prefix"; fi
+echo OK

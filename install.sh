@@ -46,6 +46,19 @@
 #                                   -> ~/.config/opencode/skills/fork/
 #                                   -> ~/.gemini/skills/fork/
 #      (fork.sh; fork state lives in ~/.local/state/agent-forks/, never touched here)
+#   9. the /expose skill + proxy   ONLY with --expose-domain <domain>:
+#                                   -> ~/.claude/skills/expose/  (and the other five
+#                                      skill dirs, like /fork; expose.sh)
+#                                   -> ~/.config/tmux-opsx/expose.env (domain + Cloudflare
+#                                      token, mode 600, never backed up)
+#                                   -> ~/.config/tmux-opsx/caddy.json (*.<domain> on :443,
+#                                      wildcard cert via DNS-01, admin API on a unix socket)
+#                                   -> ~/.config/tmux-opsx/tmux-opsx-caddy.service (Linux)
+#                                   -> ~/.local/share/tmux-opsx/bin/caddy (with caddy-dns/cloudflare)
+#      The token comes from $CLOUDFLARE_API_TOKEN or a hidden prompt, never from a
+#      flag. No sudo: a non-root run prints the one systemd command to run; a root
+#      run enables the unit itself. DNS is never changed — add a DNS-only
+#      *.<domain> record pointing at this host yourself.
 #
 # Window CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex),
 # OpenCode (opencode), and Gemini CLI (gemini). At least one must be on PATH.
@@ -58,6 +71,8 @@
 #   --skip-mcp         Don't install the browser-use MCP server
 #   --skip-memory      Don't install the memory skill, instruction blocks, store, or import
 #   --skip-fork        Don't install the /fork skill
+#   --expose-domain <d>  Set up /expose: publish local ports at https://<name>--<project>.<d>
+#                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9)
 #   --no-backup        Overwrite existing files without keeping a .bak copy
 #   --uninstall        Remove everything this script installs (except the CLI)
 #   -h, --help         Show this help
@@ -77,6 +92,7 @@ SKIP_COMMANDS=0
 SKIP_MCP=0
 SKIP_MEMORY=0
 SKIP_FORK=0
+EXPOSE_DOMAIN=""
 BACKUP=1
 UNINSTALL=0
 NPM_PKG="@fission-ai/openspec"
@@ -105,12 +121,28 @@ while [ $# -gt 0 ]; do
     --skip-mcp)      SKIP_MCP=1; shift ;;
     --skip-memory)   SKIP_MEMORY=1; shift ;;
     --skip-fork)     SKIP_FORK=1; shift ;;
+    --expose-domain) [ $# -ge 2 ] || die "--expose-domain needs a domain"
+                     EXPOSE_DOMAIN=$2; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift 2 ;;
+    --expose-domain=*) EXPOSE_DOMAIN=${1#--expose-domain=}; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift ;;
     --no-backup)     BACKUP=0; shift ;;
     --uninstall)     UNINSTALL=1; shift ;;
     -h|--help)       usage ;;
     *) die "unknown option: $1 (try --help)" ;;
   esac
 done
+
+# --expose-domain: strip a leading '*.', lowercase, then require a DNS name of
+# at least two labels. Checked here, before anything is installed.
+if [ -n "$EXPOSE_DOMAIN" ]; then
+  EXPOSE_DOMAIN_ARG=$EXPOSE_DOMAIN
+  EXPOSE_DOMAIN=${EXPOSE_DOMAIN#\*.}
+  EXPOSE_DOMAIN=${EXPOSE_DOMAIN%.}
+  EXPOSE_DOMAIN=$(printf '%s' "$EXPOSE_DOMAIN" | LC_ALL=C tr 'A-Z' 'a-z')
+  if ! [[ "$EXPOSE_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] \
+     || [ "${#EXPOSE_DOMAIN}" -gt 200 ]; then
+    die "invalid --expose-domain '$EXPOSE_DOMAIN_ARG': use a DNS name like dev.example.com (labels of a-z, 0-9 and '-', not starting or ending with '-')"
+  fi
+fi
 
 # Skill files belong in the invoking user's home. sudo drops ~/.local/bin from
 # PATH and sets HOME=/root, which makes both the prefix and CLI checks wrong.
@@ -328,12 +360,15 @@ PYHOOK
 }
 
 # Move $dest.tmp over $dest, keeping a timestamped backup, unless identical.
+# Sets REPLACED=1 when $dest was changed or created, 0 when it was identical.
 replace_if_changed() {
   local dest=$1
+  REPLACED=0
   if [ -f "$dest" ] && cmp -s "$dest" "$dest.tmp"; then
     rm -f "$dest.tmp"
     return 0
   fi
+  REPLACED=1
   if [ -e "$dest" ] && [ "$BACKUP" -eq 1 ]; then
     cp "$dest" "$dest.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
   fi
@@ -453,7 +488,8 @@ install_file() {
   mkdir -p "$(dirname "$dest")" || die "cannot create $(dirname "$dest")"
   if [ -e "$dest" ] && [ "$BACKUP" -eq 1 ]; then
     if ! cmp -s "$src" "$dest"; then
-      local bak="$dest.bak.$(date +%Y%m%d%H%M%S)"
+      local bak
+      bak="$dest.bak.$(date +%Y%m%d%H%M%S)"
       cp "$dest" "$bak" || die "cannot back up $dest"
       note "backed up existing $(basename "$dest") -> $(basename "$bak")"
     fi
@@ -493,6 +529,11 @@ CODEX_FORK_SKILLS_DIR=$CODEX_HOME_DIR/skills/fork
 AGENTS_FORK_SKILLS_DIR=$HOME/.agents/skills/fork
 OPENCODE_FORK_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/fork
 GEMINI_FORK_SKILLS_DIR=$GEMINI_HOME_DIR/skills/fork
+CURSOR_EXPOSE_SKILLS_DIR=$HOME/.cursor/skills/expose
+CODEX_EXPOSE_SKILLS_DIR=$CODEX_HOME_DIR/skills/expose
+AGENTS_EXPOSE_SKILLS_DIR=$HOME/.agents/skills/expose
+OPENCODE_EXPOSE_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/expose
+GEMINI_EXPOSE_SKILLS_DIR=$GEMINI_HOME_DIR/skills/expose
 CODEX_AGENTS_MD=$CODEX_HOME_DIR/AGENTS.md
 OPENCODE_AGENTS_MD=$OPENCODE_CONFIG_DIR/AGENTS.md
 GEMINI_MD=$GEMINI_HOME_DIR/GEMINI.md
@@ -625,9 +666,430 @@ install_fork_skill() {
   ok "/fork -> $dest ($label)"
 }
 
+# Install the /expose skill (SKILL.md + expose.sh) into one dest dir.
+install_expose_skill() {
+  local dest=$1 label=$2
+  install_file "$SRC/skills/expose/SKILL.md"  "$dest/SKILL.md"
+  install_file "$SRC/skills/expose/expose.sh" "$dest/expose.sh"
+  chmod +x "$dest/expose.sh" || die "cannot chmod +x $dest/expose.sh"
+  ok "/expose -> $dest ($label)"
+}
+
+# ---------- /expose: token, Caddy, base config, service, DNS check ----------
+EXPOSE_CONFIG_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/tmux-opsx
+EXPOSE_ENV=$EXPOSE_CONFIG_DIR/expose.env
+EXPOSE_CADDY_JSON=$EXPOSE_CONFIG_DIR/caddy.json
+EXPOSE_UNIT_NAME=tmux-opsx-caddy
+EXPOSE_UNIT=$EXPOSE_CONFIG_DIR/$EXPOSE_UNIT_NAME.service
+EXPOSE_STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-opsx/expose
+EXPOSE_SOCK=$EXPOSE_STATE_DIR/caddy-admin.sock
+EXPOSE_BIN_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/tmux-opsx/bin
+EXPOSE_SYSTEMD_DIR=${OPSX_SYSTEMD_DIR:-/etc/systemd/system}
+EXPOSE_TOKEN=""
+EXPOSE_TOKEN_SOURCE=""
+CADDY_BIN=""
+# Set by a rerun that changes an existing setup (see expose_apply_changes).
+EXPOSE_OLD_DOMAIN=""
+EXPOSE_CONFIG_CHANGED=0
+EXPOSE_TOKEN_CHANGED=0
+
+tilde() { printf '%s' "$1" | sed "s|^$HOME|~|"; }
+
+# Value of KEY in a KEY=VALUE file, without sourcing it.
+env_file_get() {
+  local file=$1 key=$2 k v
+  [ -f "$file" ] || return 1
+  while IFS='=' read -r k v || [ -n "$k" ]; do
+    if [ "$k" = "$key" ]; then printf '%s' "$v"; return 0; fi
+  done < "$file"
+  return 1
+}
+
+# Pick the Cloudflare token: $CLOUDFLARE_API_TOKEN, else a hidden prompt on a
+# terminal, else the stored one. Never a command-line argument, never printed.
+expose_token_intake() {
+  local stored="" tok=""
+  stored=$(env_file_get "$EXPOSE_ENV" CLOUDFLARE_API_TOKEN 2>/dev/null) || stored=""
+  if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    tok=$CLOUDFLARE_API_TOKEN
+    EXPOSE_TOKEN_SOURCE="from \$CLOUDFLARE_API_TOKEN"
+  elif [ -t 0 ]; then
+    if [ -n "$stored" ]; then
+      printf '  Cloudflare API token for %s (Zone:DNS:Edit; empty keeps the stored one): ' "$EXPOSE_DOMAIN" >&2
+    else
+      printf '  Cloudflare API token for %s (Zone:DNS:Edit on that zone): ' "$EXPOSE_DOMAIN" >&2
+    fi
+    IFS= read -rs tok || tok=""
+    printf '\n' >&2
+    if [ -n "$tok" ]; then
+      EXPOSE_TOKEN_SOURCE="entered at the prompt"
+    elif [ -n "$stored" ]; then
+      tok=$stored
+      EXPOSE_TOKEN_SOURCE="kept the stored token"
+    fi
+  elif [ -n "$stored" ]; then
+    tok=$stored
+    EXPOSE_TOKEN_SOURCE="kept the stored token"
+  fi
+  unset CLOUDFLARE_API_TOKEN
+  [ -n "$tok" ] || die "--expose-domain needs a Cloudflare API token: set CLOUDFLARE_API_TOKEN (scoped to Zone:DNS:Edit for the zone of $EXPOSE_DOMAIN), or run install.sh from a terminal to be prompted. Nothing was installed."
+  [[ "$tok" =~ ^[A-Za-z0-9._-]+$ ]] || die "the Cloudflare API token contains unexpected characters (allowed: A-Z a-z 0-9 . _ -). Nothing was installed."
+  EXPOSE_TOKEN=$tok
+}
+
+# Ask Cloudflare whether the token is valid. The Authorization header goes to
+# curl on stdin (-H @-), so the token never appears on a command line.
+# /user/tokens/verify only knows user tokens (My Profile > API Tokens);
+# account-owned tokens need OPSX_EXPOSE_SKIP_VERIFY=1.
+expose_verify_token() {
+  local api=${OPSX_CLOUDFLARE_API:-https://api.cloudflare.com/client/v4} resp
+  if [ "${OPSX_EXPOSE_SKIP_VERIFY:-0}" = 1 ]; then
+    note "skipped the Cloudflare token check (OPSX_EXPOSE_SKIP_VERIFY=1)"
+    return 0
+  fi
+  if ! resp=$(printf 'Authorization: Bearer %s\n' "$EXPOSE_TOKEN" \
+              | curl -sS --max-time 20 -H @- "$api/user/tokens/verify" 2>/dev/null); then
+    die "could not reach the Cloudflare API to verify the token ($api). Check the network, or set OPSX_EXPOSE_SKIP_VERIFY=1 to skip the check. Nothing was installed."
+  fi
+  if printf '%s' "$resp" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true' \
+     && printf '%s' "$resp" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"active"'; then
+    ok "Cloudflare API token is valid ($EXPOSE_TOKEN_SOURCE)"
+  else
+    die "the Cloudflare API token is invalid (Cloudflare rejected it, or it is not active). Create a user API token under My Profile > API Tokens, scoped to Zone:DNS:Edit for the zone of $EXPOSE_DOMAIN. Account-owned tokens (Manage Account > API Tokens) cannot be checked through /user/tokens/verify; to use one anyway, set OPSX_EXPOSE_SKIP_VERIFY=1. Nothing was installed."
+  fi
+}
+
+# Write expose.env (mode 600, mode-700 dir) through a temp file + mv; no .bak.
+expose_write_env() {
+  local tmp old_token=""
+  if [ -f "$EXPOSE_ENV" ]; then
+    EXPOSE_OLD_DOMAIN=$(env_file_get "$EXPOSE_ENV" EXPOSE_DOMAIN 2>/dev/null) || EXPOSE_OLD_DOMAIN=""
+    old_token=$(env_file_get "$EXPOSE_ENV" CLOUDFLARE_API_TOKEN 2>/dev/null) || old_token=""
+    [ "$old_token" = "$EXPOSE_TOKEN" ] || EXPOSE_TOKEN_CHANGED=1
+  fi
+  mkdir -p "$EXPOSE_CONFIG_DIR" || die "cannot create $EXPOSE_CONFIG_DIR"
+  chmod 700 "$EXPOSE_CONFIG_DIR" || die "cannot chmod 700 $EXPOSE_CONFIG_DIR"
+  tmp=$( umask 077; mktemp "$EXPOSE_CONFIG_DIR/.expose.env.XXXXXX" ) || die "cannot create a temp file in $EXPOSE_CONFIG_DIR"
+  if ! ( umask 077
+         printf '# tmux-opsx /expose — written by install.sh --expose-domain. Mode 600; keep it private.\n'
+         printf 'EXPOSE_DOMAIN=%s\n' "$EXPOSE_DOMAIN"
+         printf 'EXPOSE_ADMIN_SOCKET=%s\n' "$EXPOSE_SOCK"
+         printf 'CLOUDFLARE_API_TOKEN=%s\n' "$EXPOSE_TOKEN" ) > "$tmp" \
+     || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$EXPOSE_ENV"; then
+    rm -f "$tmp"
+    die "cannot write $EXPOSE_ENV"
+  fi
+  ok "$(tilde "$EXPOSE_ENV") (domain $EXPOSE_DOMAIN, token $EXPOSE_TOKEN_SOURCE, mode 600)"
+}
+
+caddy_has_cloudflare() {
+  "$1" list-modules 2>/dev/null | grep -Eq '^[[:space:]]*dns\.providers\.cloudflare([[:space:]]|$)'
+}
+
+# Use $OPSX_CADDY_BIN, or a previously installed Caddy with the Cloudflare DNS
+# module, or download one from Caddy's build endpoint.
+expose_get_caddy() {
+  local os arch extra="" url tmp
+  if [ -n "${OPSX_CADDY_BIN:-}" ]; then
+    [ -x "$OPSX_CADDY_BIN" ] || die "OPSX_CADDY_BIN=$OPSX_CADDY_BIN is not an executable file"
+    caddy_has_cloudflare "$OPSX_CADDY_BIN" \
+      || die "$OPSX_CADDY_BIN does not list the dns.providers.cloudflare module (caddy list-modules)"
+    CADDY_BIN=$OPSX_CADDY_BIN
+    ok "caddy $(tilde "$CADDY_BIN") (from \$OPSX_CADDY_BIN, has dns.providers.cloudflare)"
+    return 0
+  fi
+  CADDY_BIN=$EXPOSE_BIN_DIR/caddy
+  if [ -x "$CADDY_BIN" ] && caddy_has_cloudflare "$CADDY_BIN"; then
+    ok "caddy $(tilde "$CADDY_BIN") (already installed, has dns.providers.cloudflare)"
+    return 0
+  fi
+  case "$PLATFORM" in macOS) os=darwin ;; *) os=linux ;; esac
+  case "$(uname -m)" in
+    x86_64|amd64)  arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    armv7*)        arch=arm; extra="&arm=7" ;;
+    armv6*)        arch=arm; extra="&arm=6" ;;
+    *) die "no Caddy build for CPU $(uname -m); set OPSX_CADDY_BIN to a caddy with caddy-dns/cloudflare" ;;
+  esac
+  url="https://caddyserver.com/api/download?os=$os&arch=$arch$extra&p=github.com/caddy-dns/cloudflare"
+  mkdir -p "$EXPOSE_BIN_DIR" || die "cannot create $EXPOSE_BIN_DIR"
+  tmp=$(mktemp "$EXPOSE_BIN_DIR/.caddy.XXXXXX") || die "cannot create a temp file in $EXPOSE_BIN_DIR"
+  note "downloading Caddy with caddy-dns/cloudflare ($os/$arch) — this can take a minute"
+  if ! curl -fsSL --max-time 600 -o "$tmp" "$url"; then
+    rm -f "$tmp"
+    die "could not download Caddy from $url"
+  fi
+  chmod 755 "$tmp"
+  if ! caddy_has_cloudflare "$tmp"; then
+    rm -f "$tmp"
+    die "the downloaded Caddy does not list dns.providers.cloudflare — removed it; re-run later or set OPSX_CADDY_BIN"
+  fi
+  mv -f "$tmp" "$CADDY_BIN" || { rm -f "$tmp"; die "cannot write $CADDY_BIN"; }
+  ok "caddy $(tilde "$CADDY_BIN") (downloaded, has dns.providers.cloudflare)"
+}
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# Base config: one HTTPS server on :443 only (no :80, no redirects), one
+# wildcard certificate via ACME DNS-01 through Cloudflare, admin API on a unix
+# socket inside a mode-700 state dir. Routes are added live by expose.sh.
+expose_write_caddy_config() {
+  local sock
+  mkdir -p "$EXPOSE_STATE_DIR" || die "cannot create $EXPOSE_STATE_DIR"
+  chmod 700 "$EXPOSE_STATE_DIR" || die "cannot chmod 700 $EXPOSE_STATE_DIR"
+  if [ "${#EXPOSE_SOCK}" -gt 100 ]; then
+    warn "admin socket path is ${#EXPOSE_SOCK} characters; unix sockets are limited to ~104-108, so Caddy may fail to start"
+    note "set a shorter XDG_STATE_HOME and re-run: $EXPOSE_SOCK"
+  fi
+  sock=$(json_escape "$EXPOSE_SOCK")
+  cat > "$EXPOSE_CADDY_JSON.tmp" <<JSON || die "cannot write $EXPOSE_CADDY_JSON"
+{
+  "admin": {
+    "listen": "unix/$sock"
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "expose": {
+          "listen": [":443"],
+          "routes": [],
+          "tls_connection_policies": [{}],
+          "automatic_https": {
+            "disable_redirects": true,
+            "disable_certificates": true
+          }
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "automate": ["*.$EXPOSE_DOMAIN"]
+      },
+      "automation": {
+        "policies": [
+          {
+            "subjects": ["*.$EXPOSE_DOMAIN"],
+            "issuers": [
+              {
+                "module": "acme",
+                "challenges": {
+                  "dns": {
+                    "provider": {
+                      "name": "cloudflare",
+                      "api_token": "{env.CLOUDFLARE_API_TOKEN}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
+JSON
+  local existed=0
+  [ -f "$EXPOSE_CADDY_JSON" ] && existed=1
+  replace_if_changed "$EXPOSE_CADDY_JSON"
+  [ "$existed" -eq 1 ] && [ "$REPLACED" -eq 1 ] && EXPOSE_CONFIG_CHANGED=1
+  ok "$(tilde "$EXPOSE_CADDY_JSON") (*.$EXPOSE_DOMAIN on :443, admin socket $(tilde "$EXPOSE_SOCK"))"
+}
+
+expose_unit_user() {
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    printf '%s' "$SUDO_USER"
+  else
+    id -un
+  fi
+}
+
+expose_write_unit() {
+  cat > "$EXPOSE_UNIT.tmp" <<UNIT || die "cannot write $EXPOSE_UNIT"
+# Written by tmux-opsx install.sh --expose-domain (the domain is in caddy.json)
+[Unit]
+Description=tmux-opsx expose proxy (Caddy on :443)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=$(expose_unit_user)
+Environment="HOME=$HOME"
+Environment="XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}"
+Environment="XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}"
+EnvironmentFile=$EXPOSE_ENV
+# Caddy starts from caddy.json alone (no autosave), so a rerun of install.sh
+# takes effect on the next start; expose.sh then puts the recorded routes back.
+ExecStart="$CADDY_BIN" run --config "$EXPOSE_CADDY_JSON"
+ExecStartPost=-"$PREFIX/skills/expose/expose.sh" list --json
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  replace_if_changed "$EXPOSE_UNIT"
+  ok "$(tilde "$EXPOSE_UNIT") (systemd unit, runs as $(expose_unit_user), may bind :443)"
+}
+
+# Enable the service as root; otherwise print the one privileged command.
+# A rerun that changed the setup also applies the change to a running proxy.
+expose_service_step() {
+  local cmd installed=$EXPOSE_SYSTEMD_DIR/$EXPOSE_UNIT_NAME.service
+  if [ "$PLATFORM" = macOS ]; then
+    expose_apply_changes
+    note "macOS: no service is installed (documented gap). Start Caddy with:"
+    info "    (set -a; . \"$EXPOSE_ENV\"; set +a; \"$CADDY_BIN\" run --config \"$EXPOSE_CADDY_JSON\")"
+    [ "$EXPOSE_TOKEN_CHANGED" -eq 0 ] || warn "the token changed: stop a running Caddy and start it again with the command above"
+    return 0
+  fi
+  expose_write_unit
+  if [ "$(id -u)" -eq 0 ]; then
+    if [ -f "$installed" ] && { [ "$EXPOSE_CONFIG_CHANGED" -eq 1 ] || [ "$EXPOSE_TOKEN_CHANGED" -eq 1 ] \
+         || ! cmp -s "$EXPOSE_UNIT" "$installed"; }; then
+      # Already set up and something changed: restart so Caddy reads the new
+      # caddy.json and expose.env (routes come back via ExecStartPost).
+      if install -m 644 "$EXPOSE_UNIT" "$installed" && systemctl daemon-reload \
+         && systemctl enable "$EXPOSE_UNIT_NAME" && systemctl restart "$EXPOSE_UNIT_NAME"; then
+        ok "restarted $EXPOSE_UNIT_NAME with the new configuration (systemd)"
+      else
+        warn "could not restart $EXPOSE_UNIT_NAME — check: systemctl status $EXPOSE_UNIT_NAME"
+      fi
+    elif install -m 644 "$EXPOSE_UNIT" "$installed" \
+       && systemctl daemon-reload && systemctl enable --now "$EXPOSE_UNIT_NAME"; then
+      ok "enabled and started $EXPOSE_UNIT_NAME (systemd)"
+    else
+      warn "could not enable $EXPOSE_UNIT_NAME — check: systemctl status $EXPOSE_UNIT_NAME"
+    fi
+    return 0
+  fi
+  # Push a changed caddy.json into a running proxy now.
+  expose_apply_changes
+  if [ -f "$installed" ]; then
+    if ! cmp -s "$EXPOSE_UNIT" "$installed" || [ "$EXPOSE_TOKEN_CHANGED" -eq 1 ] \
+       || { [ "$EXPOSE_CONFIG_CHANGED" -eq 1 ] && [ "$EXPOSE_APPLIED" -eq 0 ]; }; then
+      cmd="sudo install -m 644 \"$EXPOSE_UNIT\" $EXPOSE_SYSTEMD_DIR/ && sudo systemctl daemon-reload && sudo systemctl restart $EXPOSE_UNIT_NAME"
+      warn "the running proxy needs a restart to pick up the new configuration (install.sh never uses sudo):"
+      info "    $cmd"
+    fi
+    return 0
+  fi
+  cmd="sudo install -m 644 \"$EXPOSE_UNIT\" $EXPOSE_SYSTEMD_DIR/ && sudo systemctl daemon-reload && sudo systemctl enable --now $EXPOSE_UNIT_NAME"
+  warn "one privileged step left — run this once to start the proxy (install.sh never uses sudo):"
+  info "    $cmd"
+}
+
+# Rerun with a new domain: point every recorded exposure's URL at it. The
+# label (and so the route id) does not depend on the domain.
+expose_rewrite_records() {
+  local dir=$EXPOSE_STATE_DIR/routes f label tmp n=0
+  [ -n "$EXPOSE_OLD_DOMAIN" ] && [ "$EXPOSE_OLD_DOMAIN" != "$EXPOSE_DOMAIN" ] || return 0
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/*.env; do
+    [ -f "$f" ] || continue
+    label=$(env_file_get "$f" LABEL 2>/dev/null) || continue
+    [[ "$label" =~ ^[a-z0-9-]+$ ]] || continue
+    tmp=$(mktemp "$dir/.rewrite.XXXXXX") || continue
+    if awk -v url="https://$label.$EXPOSE_DOMAIN" 'BEGIN{FS=OFS="="} $1=="URL"{print "URL=" url; next} {print}' "$f" > "$tmp" \
+       && mv -f "$tmp" "$f"; then
+      n=$((n + 1))
+    else
+      rm -f "$tmp"
+    fi
+  done
+  [ "$n" -eq 0 ] || ok "moved $n exposure URL(s) from *.$EXPOSE_OLD_DOMAIN to *.$EXPOSE_DOMAIN"
+}
+
+# If caddy.json changed and the proxy is running, load it through the admin
+# socket (POST /load), then let expose.sh put the recorded routes back on the
+# new domain. Sets EXPOSE_APPLIED=1 on success.
+EXPOSE_APPLIED=0
+expose_apply_changes() {
+  local code
+  [ "$EXPOSE_CONFIG_CHANGED" -eq 1 ] || return 0
+  if [ ! -S "$EXPOSE_SOCK" ]; then
+    note "the proxy is not running; it reads the new $(tilde "$EXPOSE_CADDY_JSON") when it starts"
+    return 0
+  fi
+  code=$(curl -sS --max-time 30 --unix-socket "$EXPOSE_SOCK" -X POST -H 'Content-Type: application/json' \
+           --data-binary @"$EXPOSE_CADDY_JSON" -o /dev/null -w '%{http_code}' http://127.0.0.1/load 2>/dev/null) || code=000
+  case "$code" in
+    2??)
+      EXPOSE_APPLIED=1
+      ok "loaded the new $(tilde "$EXPOSE_CADDY_JSON") into the running proxy"
+      if OPSX_EXPOSE_ADMIN=$EXPOSE_SOCK bash "$SRC/skills/expose/expose.sh" list --json >/dev/null 2>&1; then
+        ok "restored the recorded exposures on *.$EXPOSE_DOMAIN"
+      else
+        warn "could not restore the recorded exposures; the next expose.sh call retries"
+      fi ;;
+    000) note "the proxy is not reachable on $(tilde "$EXPOSE_SOCK"); it reads the new config when it starts" ;;
+    *)   warn "the running proxy refused the new config (HTTP $code); it still serves the old one" ;;
+  esac
+}
+
+# This host's addresses (best effort).
+expose_host_addrs() {
+  if [ "$PLATFORM" = Linux ] && hostname -I >/dev/null 2>&1; then
+    hostname -I | tr ' ' '\n'
+  elif have ifconfig; then
+    ifconfig 2>/dev/null | awk '$1=="inet"||$1=="inet6"{print $2}' | sed 's/%.*//'
+  fi
+}
+
+expose_resolve() {
+  if have getent; then
+    if have timeout; then timeout 10 getent ahosts "$1" 2>/dev/null; else getent ahosts "$1" 2>/dev/null; fi \
+      | awk '{print $1}' | sort -u
+  elif have python3; then
+    python3 -c 'import socket,sys
+try:
+    print("\n".join(sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1], None)})))
+except OSError:
+    pass' "$1"
+  fi
+}
+
+# Resolve a random name under the domain and compare with this host. Only warns.
+expose_dns_check() {
+  local probe addrs mine a
+  probe="probe-$(od -An -N4 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n').$EXPOSE_DOMAIN"
+  addrs=$(expose_resolve "$probe" | grep -v '^$')
+  if [ -z "$addrs" ]; then
+    warn "*.$EXPOSE_DOMAIN does not resolve ($probe has no address)"
+    note "add a wildcard record *.$EXPOSE_DOMAIN -> this host's public IP, DNS-only (grey cloud) in Cloudflare; install.sh never changes DNS"
+    return 0
+  fi
+  mine=$(expose_host_addrs)
+  for a in $addrs; do
+    if printf '%s\n' "$mine" | grep -qxF "$a"; then
+      ok "*.$EXPOSE_DOMAIN resolves to this host ($a)"
+      return 0
+    fi
+  done
+  warn "*.$EXPOSE_DOMAIN resolves to $(printf '%s' "$addrs" | tr '\n' ' ')which is not an address of this host"
+  note "the wildcard record must be DNS-only (grey cloud) and point at this host; behind NAT this warning can be ignored"
+}
+
+# Under `sudo ./install.sh`, hand the expose files back to the real user.
+expose_chown() {
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    chown -R "$SUDO_USER" "$EXPOSE_CONFIG_DIR" "$EXPOSE_STATE_DIR" 2>/dev/null || true
+    [ -d "$EXPOSE_BIN_DIR" ] && chown -R "$SUDO_USER" "$EXPOSE_BIN_DIR" 2>/dev/null
+  fi
+  return 0
+}
+
+file_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
+
 MEMORY_BLOCK_START='<!-- tmux-opsx:memory:start -->'
 MEMORY_BLOCK_END='<!-- tmux-opsx:memory:end -->'
 
+# The backticks are literal Markdown, not command substitutions.
+# shellcheck disable=SC2016
 memory_instruction_block() {
   printf '%s\n' "$MEMORY_BLOCK_START"
   printf '%s\n' '## Memory'
@@ -915,7 +1377,7 @@ PY
 
 # Replace [mcp_servers.browser-use] (+ nested .env) then append a fresh table.
 upsert_codex_mcp() {
-  local dest=$1 uvx=$2 tmp env_block=""
+  local dest=$1 uvx=$2 tmp
   mkdir -p "$(dirname "$dest")" || return 1
   if [ -e "$dest" ] && [ "$BACKUP" -eq 1 ]; then
     cp "$dest" "$dest.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
@@ -943,7 +1405,7 @@ upsert_codex_mcp() {
 }
 
 install_browser_use_mcp() {
-  local uvx env_export
+  local uvx
   uvx=$(mcp_uvx) || {
     warn "uvx not on PATH — skipping browser-use MCP (install: uv tool install uv)"
     note "or: curl -LsSf https://astral.sh/uv/install.sh | sh"
@@ -1164,6 +1626,21 @@ else
   fi
 fi
 
+if [ -n "$EXPOSE_DOMAIN" ]; then
+  if have curl; then
+    ok "curl $(curl --version 2>/dev/null | awk 'NR==1{print $2}') (for --expose-domain)"
+  else
+    warn "curl not found — required by --expose-domain (Caddy download, token check, expose.sh)"
+    MISSING=1
+  fi
+  [ "$MISSING" -eq 0 ] || die "install the missing prerequisites above, then re-run this script."
+  [ -f "$SRC/skills/expose/SKILL.md" ] && [ -f "$SRC/skills/expose/expose.sh" ] \
+    || die "missing $SRC/skills/expose/ — run this script from the repo checkout"
+  ok "expose domain: $EXPOSE_DOMAIN (URLs like https://3000--<project>.$EXPOSE_DOMAIN)"
+  expose_token_intake
+  expose_verify_token
+fi
+
 [ "$MISSING" -eq 0 ] || die "install the missing prerequisites above, then re-run this script."
 info ""
 
@@ -1381,6 +1858,30 @@ else
 fi
 info ""
 
+# ---------- 9. /expose skill + proxy (only with --expose-domain) ----------
+if [ -n "$EXPOSE_DOMAIN" ]; then
+  step "Setting up /expose for *.$EXPOSE_DOMAIN"
+  expose_get_caddy
+  expose_write_env
+  expose_write_caddy_config
+  expose_rewrite_records
+  expose_service_step
+  expose_dns_check
+  expose_chown
+  note "exposed URLs are PUBLIC with no authentication; bind apps to 127.0.0.1 and open only 443 (and 22) in the provider firewall"
+  info ""
+  step "Installing the /expose skill"
+  install_expose_skill "$PREFIX/skills/expose" "Claude Code"
+  install_expose_skill "$CURSOR_EXPOSE_SKILLS_DIR" "Cursor CLI"
+  install_expose_skill "$AGENTS_EXPOSE_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
+  if [ "$CODEX_EXPOSE_SKILLS_DIR" != "$AGENTS_EXPOSE_SKILLS_DIR" ]; then
+    install_expose_skill "$CODEX_EXPOSE_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
+  fi
+  install_expose_skill "$OPENCODE_EXPOSE_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
+  install_expose_skill "$GEMINI_EXPOSE_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
+  info ""
+fi
+
 # ---------- verify ----------
 step "Verifying"
 FAIL=0
@@ -1507,6 +2008,31 @@ if [ "$SKIP_FORK" -eq 0 ]; then
     warn "fork.sh failed to parse"; FAIL=1
   fi
 fi
+if [ -n "$EXPOSE_DOMAIN" ]; then
+  for d in "$PREFIX/skills/expose" "$CURSOR_EXPOSE_SKILLS_DIR" "$AGENTS_EXPOSE_SKILLS_DIR" \
+           "$CODEX_EXPOSE_SKILLS_DIR" "$OPENCODE_EXPOSE_SKILLS_DIR" "$GEMINI_EXPOSE_SKILLS_DIR"; do
+    if [ -f "$d/SKILL.md" ] && [ -x "$d/expose.sh" ]; then
+      ok "$(tilde "$d")/{SKILL.md,expose.sh}"
+    else
+      warn "missing or not executable: $d/{SKILL.md,expose.sh}"; FAIL=1
+    fi
+  done
+  if bash -n "$PREFIX/skills/expose/expose.sh" 2>/dev/null; then
+    ok "expose.sh parses"
+  else
+    warn "expose.sh failed to parse"; FAIL=1
+  fi
+  if [ -f "$EXPOSE_ENV" ] && [ "$(file_mode "$EXPOSE_ENV")" = 600 ]; then
+    ok "$(tilde "$EXPOSE_ENV") (mode 600)"
+  else
+    warn "$EXPOSE_ENV missing or not mode 600"; FAIL=1
+  fi
+  if [ -f "$EXPOSE_CADDY_JSON" ]; then
+    ok "$(tilde "$EXPOSE_CADDY_JSON")"
+  else
+    warn "missing: $EXPOSE_CADDY_JSON"; FAIL=1
+  fi
+fi
 for sh in opsx-window.sh opsx-merge.sh opsx-land.sh opsx-eval.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
@@ -1541,5 +2067,6 @@ info "  2. Restart your agent CLI (Claude, Cursor, Codex, OpenCode, or Gemini) s
 info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
 info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
 [ "$SKIP_FORK" -eq 1 ] || info "  5. Side questions in a read-only pane:  ${B}/fork \"where are retries handled?\"${N}"
+[ -z "$EXPOSE_DOMAIN" ] || info "  6. Publish a local port (after the proxy is running):  ${B}/expose 3000${N}  ->  https://3000--<project>.$EXPOSE_DOMAIN"
 info ""
 [ -n "${TMUX:-}" ] || info "  ${Y}Note:${N} /opsx-run must be run from inside a tmux session."

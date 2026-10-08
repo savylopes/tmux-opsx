@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Skill documents every subcommand
+# level: L1
+# requirement: Skill entry point
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose
+f="$HOME/.claude/skills/expose/SKILL.md"; [ -f "$f" ] || fail "no installed $f"
+for w in up down list url; do grep -qw -- "$w" "$f" || fail "SKILL.md does not document $w"; echo "has $w"; done
+for o in --name --project; do grep -q -- "$o" "$f" || fail "SKILL.md does not document $o"; echo "has $o"; done
+echo OK

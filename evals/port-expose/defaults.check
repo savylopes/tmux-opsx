@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Defaults
+# level: L2
+# requirement: Hostname label
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+repo="$EVAL_TMP/provision-admin"
+git init -q "$repo" && git -C "$repo" -c user.email=e@x -c user.name=e commit -q --allow-empty -m init \
+  && git -C "$repo" worktree add -q "$EVAL_TMP/wt-add-auth" -b add-auth || fail "git setup failed"
+cd "$EVAL_TMP/wt-add-auth" || exit 1
+out=$(x up 3000); rc=$?
+echo "exit $rc"; echo "$out"
+last=$(printf '%s\n' "$out" | tail -n1)
+[ "$last" = "https://3000--provision-admin.dev.example.com" ] || fail "label is not 3000--provision-admin (got '$last')"
+echo OK

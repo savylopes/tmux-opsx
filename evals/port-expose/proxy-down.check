@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Proxy down
+# level: L2
+# requirement: Not configured
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose
+cd "$EVAL_TMP" || exit 1
+o=$(x up 3000 2>&1); rc=$?; echo "exit $rc: $o"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+echo "$o" | grep -qi 'not running' || fail "message does not say the proxy is not running"
+f=$(find "$STATE_DIR" -type f 2>/dev/null); [ -z "$f" ] || fail "state record created: $f"
+echo OK

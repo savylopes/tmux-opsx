@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: expose-install / Documented
+# level: L1
+# requirement: Opt-in flag
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+out=$(cd "$EVAL_ROOT" && ./install.sh --help 2>&1); rc=$?
+echo "--help exit $rc"
+echo "$out" | grep -n -- '--expose-domain' || fail "--help output lacks --expose-domain"
+echo OK

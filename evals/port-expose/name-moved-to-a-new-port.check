@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: port-expose / Name moved to a new port
+# level: L2
+# requirement: Re-publishing a name
+set -u
+. "$EVAL_ROOT/evals/_lib/expose.sh"
+configure_expose; start_admin "$(caddy_json)"; mkdir -p "$EVAL_TMP/shop"; cd "$EVAL_TMP/shop" || exit 1
+x up 3000 --name web --project shop >/dev/null || fail "first up failed"
+o=$(x up 3001 --name web --project shop); rc=$?; echo "second up exit $rc"; echo "$o"
+[ "$rc" -eq 0 ] || fail "second up failed"
+j=$(x list --json); echo "list: $j"
+n=$(echo "$j" | jq '[.[] | select(.name=="web")] | length'); p=$(echo "$j" | jq '[.[] | select(.name=="web")][0].port')
+[ "$n" = 1 ] || fail "list shows $n web entries"
+[ "$p" = 3001 ] || fail "web is on port $p, expected 3001"
+r=$(routes_to web--shop.dev.example.com); echo "proxy: $r"
+[ "$(echo "$r" | grep -c '^ROUTE$')" = 1 ] || fail "expected exactly one route for the hostname"
+echo "$r" | grep -qx '127.0.0.1:3001' || fail "hostname does not route to 127.0.0.1:3001"
+if echo "$r" | grep -qx '127.0.0.1:3000'; then fail "old upstream 3000 still routed"; fi
+echo OK
