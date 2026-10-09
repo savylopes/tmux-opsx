@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Unsafe value rejected
+# level: L2
+# requirement: Per-agent model flags
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+run_w ensure c1 --prompt-file p --reviewer-model "--x"
+[ "$RC" -ne 0 ] || fail "expected non-zero exit"
+[ -z "$(win_of c1)" ] || fail "a window tagged @opsx_change=c1 exists"
+echo OK

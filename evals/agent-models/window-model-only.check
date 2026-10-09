@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Window model only
+# level: L2
+# requirement: Window model flag unchanged
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+run_w ensure c1 --prompt-file p --agent-cli claude --model haiku
+[ "$RC" -eq 0 ] || fail "ensure exited $RC"
+w=$(win_of c1); [ -n "$w" ] || fail "no window for c1"
+start=$(T display -p -t "$w" '#{pane_start_command}')
+for _ in $(seq 50); do [ -s "$LAUNCH_LOG" ] && break; sleep 0.1; done
+echo "pane start command: $start"; echo "launched: $(cat "$LAUNCH_LOG" 2>/dev/null)"
+{ printf '%s\n' "$start"; cat "$LAUNCH_LOG" 2>/dev/null; } | grep -q -- '--model haiku' || fail "launch command lacks --model haiku"
+mo=$(model_opts "$w"); [ -z "$mo" ] || fail "@opsx_model_* options set: $mo"
+run_w models c1
+expect_line "applier opus config"
+echo OK

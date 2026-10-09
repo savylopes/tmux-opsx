@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Later run reuses it
+# level: L2
+# requirement: Flag choices are remembered on the window
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+run_w ensure c1 --prompt-file p --qa-model haiku
+[ "$RC" -eq 0 ] || fail "ensure exited $RC"
+w=$(win_of c1); [ -n "$w" ] || fail "no window for c1"
+run_w send c1 --prompt-file p
+[ "$RC" -eq 0 ] || fail "send exited $RC"
+[ "$(win_opt "$w" @opsx_model_qa)" = haiku ] || fail "@opsx_model_qa is '$(win_opt "$w" @opsx_model_qa)' after send, expected haiku"
+echo "ok: @opsx_model_qa still haiku"
+run_w models c1
+expect_line "qa haiku window"
+echo OK

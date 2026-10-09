@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: agent-models / OpenCode inherit has no model key
+# level: L2
+# requirement: Install writes models into agent files
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+. "$EVAL_ROOT/evals/_lib/models_fm.sh"
+rm -f "$XDG_CONFIG_HOME/tmux-opsx/models.conf"
+out=$(run_install); rc=$?
+echo "install exit $rc"; printf '%s\n' "$out" | tail -5
+[ "$rc" -eq 0 ] || fail "install.sh exited $rc"
+f="$HOME/.config/opencode/agents/ops-applier.md"
+[ -f "$f" ] || fail "$f not installed"
+echo "frontmatter of $f:"; frontmatter "$f"
+frontmatter "$f" | grep -qE '^[[:space:]]*model:' && fail "frontmatter has a model: line"
+echo OK

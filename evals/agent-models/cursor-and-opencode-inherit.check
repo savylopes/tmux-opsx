@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Cursor and OpenCode inherit
+# level: L1
+# requirement: Shipped default models
+set -u
+conf="$EVAL_ROOT/agents/models.conf"
+[ -f "$conf" ] || { echo "FAIL: $conf missing"; exit 1; }
+pairs=$(awk -F= '/^[[:space:]]*#/ || !/=/ {next} { k=$1; v=$2; gsub(/[[:space:]]/,"",k); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print k"="v }' "$conf")
+bad=0
+for cli in agent opencode; do
+  n=$(printf '%s\n' "$pairs" | grep -c "^$cli\.")
+  [ "$n" -gt 0 ] || { echo "BAD: no $cli.* keys"; bad=1; }
+  for a in applier eval reviewer security qa; do
+    printf '%s\n' "$pairs" | grep -qx "$cli\.$a=inherit" && echo "ok: $cli.$a = inherit" || { echo "BAD: $cli.$a not inherit ($(printf '%s\n' "$pairs" | grep "^$cli\.$a=" || echo unset))"; bad=1; }
+  done
+  other=$(printf '%s\n' "$pairs" | grep "^$cli\." | grep -v '=inherit$' || true)
+  [ -z "$other" ] || { echo "BAD: non-inherit $cli keys: $other"; bad=1; }
+done
+[ $bad -eq 0 ] || exit 1
+echo OK

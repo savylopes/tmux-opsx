@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: agent-models / User override reaches the agent file
+# level: L2
+# requirement: Install writes models into agent files
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+. "$EVAL_ROOT/evals/_lib/models_fm.sh"
+mkdir -p "$XDG_CONFIG_HOME/tmux-opsx"; echo 'claude.reviewer = haiku' > "$XDG_CONFIG_HOME/tmux-opsx/models.conf"
+out=$(run_install); rc=$?
+echo "install exit $rc"; printf '%s\n' "$out" | tail -5
+[ "$rc" -eq 0 ] || fail "install.sh exited $rc"
+fm_model_is "$HOME/.claude/agents/opsx-reviewer.md" haiku
+echo OK

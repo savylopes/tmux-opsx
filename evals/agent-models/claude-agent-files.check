@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Claude agent files
+# level: L2
+# requirement: Install writes models into agent files
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+. "$EVAL_ROOT/evals/_lib/models_fm.sh"
+rm -f "$XDG_CONFIG_HOME/tmux-opsx/models.conf"
+out=$(run_install); rc=$?
+echo "install exit $rc"; printf '%s\n' "$out" | tail -5
+[ "$rc" -eq 0 ] || fail "install.sh exited $rc"
+fm_model_is "$HOME/.claude/agents/opsx-reviewer.md" opus
+fm_model_is "$HOME/.claude/agents/opsx-qa.md" sonnet
+echo OK

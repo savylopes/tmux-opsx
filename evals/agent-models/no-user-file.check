@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: agent-models / No user file
+# level: L2
+# requirement: User model overrides
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+rm -f "$USER_CONF"
+run_w models c1 --agent-cli claude
+[ "$RC" -eq 0 ] || fail "expected exit 0, got $RC"
+for l in "applier opus config" "eval sonnet config" "reviewer opus config" "security opus config" "qa sonnet config"; do expect_line "$l"; done
+echo OK

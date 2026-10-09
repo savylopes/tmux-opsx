@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: agent-models / README
+# level: L1
+# requirement: Documentation
+set -u
+f="$EVAL_ROOT/README.md"
+fail() { echo "FAIL: $*"; exit 1; }
+grep -q 'models.conf' "$f" || fail "README does not mention models.conf"; echo "ok: models.conf"
+grep -q -- '--reviewer-model' "$f" || fail "README does not mention --reviewer-model"; echo "ok: --reviewer-model"
+o=$(grep -nE 'flag[^a-z]*(>|→|->|&gt;)[^a-z]*window[^a-z]*(>|→|->|&gt;)[^a-z]*config[^a-z]*(>|→|->|&gt;)[^a-z]*inherit' "$f" || true)
+[ -n "$o" ] || fail "README lacks the order flag > window > config > inherit"
+echo "order: $o"
+echo OK

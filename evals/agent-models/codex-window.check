@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Codex window
+# level: L2
+# requirement: Codex and Gemini ignore per-agent models
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+run_w ensure c2 --prompt-file p --agent-cli codex --qa-model gpt-5
+[ "$RC" -eq 0 ] || fail "expected exit 0, got $RC"
+n=$(printf '%s\n' "$ERR" | grep -ci 'per-agent' || true)
+[ "$n" -eq 1 ] || fail "expected one stderr note about per-agent models, found $n"
+w=$(win_of c2); [ -n "$w" ] || fail "no window for c2"
+echo "model options:"; model_opts "$w"
+win_has_opt "$w" @opsx_model_qa && fail "@opsx_model_qa set to $(win_opt "$w" @opsx_model_qa)"
+echo OK

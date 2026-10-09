@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: agent-models / List shows memory
+# level: L2
+# requirement: Remembered models are visible
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+run_w ensure c1 --prompt-file p --agent-cli claude
+w=$(win_of c1); [ -n "$w" ] || fail "no window for c1"
+T set-option -w -t "$w" @opsx_model_qa haiku
+run_w list
+[ "$RC" -eq 0 ] || fail "list exited $RC"
+l=$(printf '%s\n' "$OUT" | grep -w 'c1' || true)
+[ -n "$l" ] || fail "no line for c1"
+printf '%s\n' "$l" | grep -q 'qa=haiku' || fail "c1 line lacks qa=haiku: $l"
+echo OK
