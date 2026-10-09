@@ -19,13 +19,17 @@
 #                                   -> ~/.codex/agents/ops-{applier,qa,reviewer,security,eval}.toml
 #                                   -> ~/.config/opencode/agents/ops-{applier,qa,reviewer,security,eval}.md
 #                                   -> ~/.gemini/agents/opsx-{applier,qa,reviewer,security,eval}.md
+#      Claude Code, Cursor and OpenCode files get their frontmatter `model:` from
+#      agents/models.conf merged with ~/.config/tmux-opsx/models.conf (never
+#      written here); a model the CLI does not accept warns and becomes inherit.
 #   5. the /opsx-run skill         -> ~/.claude/skills/opsx-run/
 #                                   -> ~/.cursor/skills/opsx-run/
 #                                   -> ~/.agents/skills/opsx-run/   (Codex / Agent Skills)
 #                                   -> ~/.codex/skills/opsx-run/    (Codex home)
 #                                   -> ~/.config/opencode/skills/opsx-run/  (OpenCode)
 #                                   -> ~/.gemini/skills/opsx-run/  (Gemini CLI)
-#      (opsx-window.sh + opsx-merge.sh + opsx-land.sh + opsx-eval.sh + opsx-preview.sh)
+#      (opsx-window.sh + opsx-merge.sh + opsx-land.sh + opsx-eval.sh + opsx-preview.sh
+#       + models.conf)
 #   6. browser-use MCP             -> ~/.gemini/settings.json
 #                                   -> ~/.codex/config.toml
 #                                   -> ~/.config/opencode/opencode.json{,c}
@@ -641,6 +645,7 @@ install_opsx_run_skill() {
   install_file "$SRC/skills/opsx-run/opsx-land.sh"   "$dest/opsx-land.sh"
   install_file "$SRC/skills/opsx-run/opsx-eval.sh"   "$dest/opsx-eval.sh"
   install_file "$SRC/skills/opsx-run/opsx-preview.sh" "$dest/opsx-preview.sh"
+  install_file "$SRC/agents/models.conf"             "$dest/models.conf"
   chmod +x "$dest/opsx-window.sh" || die "cannot chmod +x $dest/opsx-window.sh"
   chmod +x "$dest/opsx-merge.sh"  || die "cannot chmod +x $dest/opsx-merge.sh"
   chmod +x "$dest/opsx-land.sh"   || die "cannot chmod +x $dest/opsx-land.sh"
@@ -1227,8 +1232,54 @@ agent_frontmatter_desc() {
   ' "$1"
 }
 
+# Per-agent default models. opsx-window.sh `models` is the one resolver: it
+# reads agents/models.conf, merges ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/models.conf
+# and checks each value against the CLI. Invalid values come back as inherit
+# with a warning on stderr, which is relayed here; install never fails on them.
+# AGENT_MODELS_<cli> holds the "<agent> <model> <source>" lines.
+# shellcheck disable=SC2034  # read through ${!var} in agent_model_for
+AGENT_MODELS_claude="" AGENT_MODELS_agent="" AGENT_MODELS_opencode=""
+load_agent_models() {
+  local cli=$1 out errf line rc
+  errf=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  out=$(OPSX_MODELS_CONF="$SRC/agents/models.conf" \
+        bash "$SRC/skills/opsx-run/opsx-window.sh" models --agent-cli "$cli" 2>"$errf" </dev/null)
+  rc=$?
+  while IFS= read -r line; do
+    [ -n "$line" ] && warn "${line#opsx-window: warning: }"
+  done < "$errf"
+  rm -f "$errf"
+  if [ "$rc" -ne 0 ]; then
+    warn "could not resolve agent models for $cli — agent files use inherit"
+    out=""
+  fi
+  printf -v "AGENT_MODELS_$cli" '%s' "$out"
+}
+
+# Resolved model for agent $2 (applier|eval|reviewer|security|qa) on CLI $1.
+agent_model_for() {
+  local var="AGENT_MODELS_$1" m
+  m=$(printf '%s\n' "${!var}" | awk -v a="$2" '$1==a { print $2; exit }')
+  printf '%s' "${m:-inherit}"
+}
+
+# Claude Code agent: the source file with its frontmatter `model:` set to $3.
+install_claude_agent() {
+  local src=$1 dest=$2 model=${3:-inherit} tmp
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  awk -v m="$model" '
+    /^---$/ { n++
+              if (n == 2 && !done) { print "model: " m; done=1 }
+              print; next }
+    n == 1 && /^model:/ { if (!done) { print "model: " m; done=1 }; next }
+    { print }
+  ' "$src" > "$tmp"
+  install_file "$tmp" "$dest"
+  rm -f "$tmp"
+}
+
 install_cursor_agent() {
-  local src=$1 dest=$2 tmp desc name
+  local src=$1 dest=$2 model=${3:-inherit} tmp desc name
   name=$(agent_frontmatter_name "$src")
   [ -n "$name" ] || name=$(basename "$dest" .md)
   desc=$(agent_frontmatter_desc "$src")
@@ -1238,7 +1289,7 @@ install_cursor_agent() {
     printf '%s\n' '---'
     printf 'name: %s\n' "$name"
     printf 'description: %s\n' "$desc"
-    printf 'model: inherit\n'
+    printf 'model: %s\n' "$model"
     printf '%s\n' '---'
     awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
   } > "$tmp"
@@ -1276,7 +1327,7 @@ install_codex_agent() {
 
 # OpenCode agents are markdown under ~/.config/opencode/agents/ (filename = name).
 install_opencode_agent() {
-  local src=$1 dest=$2 tmp desc
+  local src=$1 dest=$2 model=${3:-inherit} tmp desc
   desc=$(agent_frontmatter_desc "$src")
   [ -n "$desc" ] || desc="OpenSpec subagent"
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
@@ -1284,6 +1335,8 @@ install_opencode_agent() {
     printf '%s\n' '---'
     printf 'description: %s\n' "$desc"
     printf 'mode: subagent\n'
+    # inherit = no model key, so OpenCode uses the window's model.
+    [ "$model" = inherit ] || printf 'model: %s\n' "$model"
     printf 'permission:\n'
     printf '  edit: allow\n'
     printf '  bash: allow\n'
@@ -1747,56 +1800,26 @@ step "Installing the ops-applier, ops-qa, ops-reviewer, ops-security, and ops-ev
 [ -f "$SRC/agents/opsx-eval.md" ] || die "missing $SRC/agents/opsx-eval.md — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-eval.sh" ] || die "missing $SRC/skills/opsx-run/opsx-eval.sh — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-preview.sh" ] || die "missing $SRC/skills/opsx-run/opsx-preview.sh — run this script from the repo checkout"
-install_file "$SRC/agents/opsx-applier.md" "$PREFIX/agents/opsx-applier.md"
-ok "ops-applier -> $PREFIX/agents/opsx-applier.md (Claude Code)"
-install_cursor_agent "$SRC/agents/opsx-applier.md" "$CURSOR_AGENTS_DIR/opsx-applier.md"
-ok "ops-applier -> $CURSOR_AGENTS_DIR/opsx-applier.md (Cursor CLI)"
-install_codex_agent "$SRC/agents/opsx-applier.md" "$CODEX_AGENTS_DIR/ops-applier.toml"
-ok "ops-applier -> $CODEX_AGENTS_DIR/ops-applier.toml (Codex CLI)"
-install_opencode_agent "$SRC/agents/opsx-applier.md" "$OPENCODE_AGENTS_DIR/ops-applier.md"
-ok "ops-applier -> $OPENCODE_AGENTS_DIR/ops-applier.md (OpenCode)"
-install_file "$SRC/agents/opsx-qa.md" "$PREFIX/agents/opsx-qa.md"
-ok "ops-qa -> $PREFIX/agents/opsx-qa.md (Claude Code)"
-install_cursor_agent "$SRC/agents/opsx-qa.md" "$CURSOR_AGENTS_DIR/opsx-qa.md"
-ok "ops-qa -> $CURSOR_AGENTS_DIR/opsx-qa.md (Cursor CLI)"
-install_codex_agent "$SRC/agents/opsx-qa.md" "$CODEX_AGENTS_DIR/ops-qa.toml"
-ok "ops-qa -> $CODEX_AGENTS_DIR/ops-qa.toml (Codex CLI)"
-install_opencode_agent "$SRC/agents/opsx-qa.md" "$OPENCODE_AGENTS_DIR/ops-qa.md"
-ok "ops-qa -> $OPENCODE_AGENTS_DIR/ops-qa.md (OpenCode)"
-install_file "$SRC/agents/opsx-applier.md" "$GEMINI_AGENTS_DIR/opsx-applier.md"
-ok "ops-applier -> $GEMINI_AGENTS_DIR/opsx-applier.md (Gemini CLI)"
-install_file "$SRC/agents/opsx-qa.md" "$GEMINI_AGENTS_DIR/opsx-qa.md"
-ok "ops-qa -> $GEMINI_AGENTS_DIR/opsx-qa.md (Gemini CLI)"
-install_file "$SRC/agents/opsx-reviewer.md" "$PREFIX/agents/opsx-reviewer.md"
-ok "ops-reviewer -> $PREFIX/agents/opsx-reviewer.md (Claude Code)"
-install_cursor_agent "$SRC/agents/opsx-reviewer.md" "$CURSOR_AGENTS_DIR/opsx-reviewer.md"
-ok "ops-reviewer -> $CURSOR_AGENTS_DIR/opsx-reviewer.md (Cursor CLI)"
-install_codex_agent "$SRC/agents/opsx-reviewer.md" "$CODEX_AGENTS_DIR/ops-reviewer.toml"
-ok "ops-reviewer -> $CODEX_AGENTS_DIR/ops-reviewer.toml (Codex CLI)"
-install_opencode_agent "$SRC/agents/opsx-reviewer.md" "$OPENCODE_AGENTS_DIR/ops-reviewer.md"
-ok "ops-reviewer -> $OPENCODE_AGENTS_DIR/ops-reviewer.md (OpenCode)"
-install_file "$SRC/agents/opsx-reviewer.md" "$GEMINI_AGENTS_DIR/opsx-reviewer.md"
-ok "ops-reviewer -> $GEMINI_AGENTS_DIR/opsx-reviewer.md (Gemini CLI)"
-install_file "$SRC/agents/opsx-security.md" "$PREFIX/agents/opsx-security.md"
-ok "ops-security -> $PREFIX/agents/opsx-security.md (Claude Code)"
-install_cursor_agent "$SRC/agents/opsx-security.md" "$CURSOR_AGENTS_DIR/opsx-security.md"
-ok "ops-security -> $CURSOR_AGENTS_DIR/opsx-security.md (Cursor CLI)"
-install_codex_agent "$SRC/agents/opsx-security.md" "$CODEX_AGENTS_DIR/ops-security.toml"
-ok "ops-security -> $CODEX_AGENTS_DIR/ops-security.toml (Codex CLI)"
-install_opencode_agent "$SRC/agents/opsx-security.md" "$OPENCODE_AGENTS_DIR/ops-security.md"
-ok "ops-security -> $OPENCODE_AGENTS_DIR/ops-security.md (OpenCode)"
-install_file "$SRC/agents/opsx-security.md" "$GEMINI_AGENTS_DIR/opsx-security.md"
-ok "ops-security -> $GEMINI_AGENTS_DIR/opsx-security.md (Gemini CLI)"
-install_file "$SRC/agents/opsx-eval.md" "$PREFIX/agents/opsx-eval.md"
-ok "ops-eval -> $PREFIX/agents/opsx-eval.md (Claude Code)"
-install_cursor_agent "$SRC/agents/opsx-eval.md" "$CURSOR_AGENTS_DIR/opsx-eval.md"
-ok "ops-eval -> $CURSOR_AGENTS_DIR/opsx-eval.md (Cursor CLI)"
-install_codex_agent "$SRC/agents/opsx-eval.md" "$CODEX_AGENTS_DIR/ops-eval.toml"
-ok "ops-eval -> $CODEX_AGENTS_DIR/ops-eval.toml (Codex CLI)"
-install_opencode_agent "$SRC/agents/opsx-eval.md" "$OPENCODE_AGENTS_DIR/ops-eval.md"
-ok "ops-eval -> $OPENCODE_AGENTS_DIR/ops-eval.md (OpenCode)"
-install_file "$SRC/agents/opsx-eval.md" "$GEMINI_AGENTS_DIR/opsx-eval.md"
-ok "ops-eval -> $GEMINI_AGENTS_DIR/opsx-eval.md (Gemini CLI)"
+[ -f "$SRC/agents/models.conf" ] || die "missing $SRC/agents/models.conf — run this script from the repo checkout"
+load_agent_models claude
+load_agent_models agent
+load_agent_models opencode
+for a in applier qa reviewer security eval; do
+  m=$(agent_model_for claude "$a")
+  install_claude_agent "$SRC/agents/opsx-$a.md" "$PREFIX/agents/opsx-$a.md" "$m"
+  ok "ops-$a -> $PREFIX/agents/opsx-$a.md (Claude Code, model: $m)"
+  m=$(agent_model_for agent "$a")
+  install_cursor_agent "$SRC/agents/opsx-$a.md" "$CURSOR_AGENTS_DIR/opsx-$a.md" "$m"
+  ok "ops-$a -> $CURSOR_AGENTS_DIR/opsx-$a.md (Cursor CLI, model: $m)"
+  install_codex_agent "$SRC/agents/opsx-$a.md" "$CODEX_AGENTS_DIR/ops-$a.toml"
+  ok "ops-$a -> $CODEX_AGENTS_DIR/ops-$a.toml (Codex CLI)"
+  m=$(agent_model_for opencode "$a")
+  install_opencode_agent "$SRC/agents/opsx-$a.md" "$OPENCODE_AGENTS_DIR/ops-$a.md" "$m"
+  ok "ops-$a -> $OPENCODE_AGENTS_DIR/ops-$a.md (OpenCode, model: $m)"
+  install_file "$SRC/agents/opsx-$a.md" "$GEMINI_AGENTS_DIR/opsx-$a.md"
+  ok "ops-$a -> $GEMINI_AGENTS_DIR/opsx-$a.md (Gemini CLI)"
+done
+note "agent models: agents/models.conf, overridden by ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/models.conf (re-run install after editing)"
 note "applier implements in opsx/<change>; eval/reviewer/security/qa verify after apply (eval owns evals/)"
 info ""
 
@@ -1915,6 +1938,7 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$PREFIX/skills/opsx-run/opsx-land.sh" \
          "$PREFIX/skills/opsx-run/opsx-eval.sh" \
          "$PREFIX/skills/opsx-run/opsx-preview.sh" \
+         "$PREFIX/skills/opsx-run/models.conf" \
          "$CURSOR_SKILLS_DIR/SKILL.md" \
          "$CURSOR_SKILLS_DIR/opsx-window.sh" \
          "$CURSOR_SKILLS_DIR/opsx-merge.sh" \
