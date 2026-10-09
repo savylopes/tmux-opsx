@@ -1246,6 +1246,7 @@ load_agent_models() {
         bash "$SRC/skills/opsx-run/opsx-window.sh" models --agent-cli "$cli" 2>"$errf" </dev/null)
   rc=$?
   while IFS= read -r line; do
+    line=$(printf '%s' "$line" | LC_ALL=C tr '\000-\037\177' '?')
     [ -n "$line" ] && warn "${line#opsx-window: warning: }"
   done < "$errf"
   rm -f "$errf"
@@ -1260,6 +1261,12 @@ load_agent_models() {
 agent_model_for() {
   local var="AGENT_MODELS_$1" m
   m=$(printf '%s\n' "${!var}" | awk -v a="$2" '$1==a { print $2; exit }')
+  # Belt and braces: the resolver already rejects these, but never let a value
+  # outside the safe model charset reach agent frontmatter.
+  if [ -n "$m" ] && ! [[ "$m" =~ ^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]*$ ]]; then
+    warn "unsafe $1.$2 model value — using inherit"
+    m=inherit
+  fi
   printf '%s' "${m:-inherit}"
 }
 
@@ -1267,7 +1274,9 @@ agent_model_for() {
 install_claude_agent() {
   local src=$1 dest=$2 model=${3:-inherit} tmp
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
-  awk -v m="$model" '
+  # ENVIRON, not -v: awk -v would expand backslash escapes in the value.
+  OPSX_AGENT_MODEL="$model" awk '
+    BEGIN { m = ENVIRON["OPSX_AGENT_MODEL"] }
     /^---$/ { n++
               if (n == 2 && !done) { print "model: " m; done=1 }
               print; next }

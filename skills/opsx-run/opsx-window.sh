@@ -682,13 +682,44 @@ run_limited() {
     gtimeout "$secs" "$@"
     return $?
   fi
+  # No timeout(1): poll once a second so no sleep outlives the command.
   "$@" &
   pid=$!
-  ( sleep "$secs"; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
-  w=$!
+  w=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$w" -ge "$secs" ]; then
+      kill "$pid" 2>/dev/null
+      break
+    fi
+    sleep 1
+    w=$((w + 1))
+  done
   wait "$pid"; rc=$?
-  kill "$w" 2>/dev/null
   return "$rc"
+}
+
+# Model ids from a CLI's model list on stdin, one per line. Only the id
+# column counts: a line "<id> - <description>" (Cursor `agent models`) gives
+# <id>; a line that is a single word (OpenCode `opencode models`) gives that
+# word; an optional leading "*" or ">" marker is dropped. Headers, blank
+# lines and description words are ignored, and only ids in the safe model
+# charset are kept.
+models_list_ids() {
+  awk '
+    { sub(/\r$/, ""); sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "")
+      sub(/^[*>][[:space:]]+/, "") }
+    $0 == "" { next }
+    NF == 1 { id = $1 }
+    NF >= 3 && $2 == "-" { id = $1 }
+    NF == 2 || (NF >= 3 && $2 != "-") { next }
+    id ~ /^[A-Za-z0-9._:\/@-]+$/ { print id }
+  '
+}
+
+# True when $1 only uses the safe model charset [A-Za-z0-9._:/@-] and does not
+# start with '-'. Keeps values inert in agent frontmatter, tmux and shells.
+model_charset_ok() {
+  [[ "$1" =~ ^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]*$ ]]
 }
 
 # Load the model list of a CLI into MODELS_LIST_<cli> (one token per line),
@@ -714,7 +745,7 @@ models_cli_load() {
        && out=$(run_limited "$bin" models </dev/null 2>/dev/null) \
        && [ -n "$out" ]; then
       out=$(printf '%s\n' "$out" | sed "s/${esc}\\[[0-9;]*[A-Za-z]//g" \
-            | tr -s ' \t,()' '[\n*]' | sed '/^$/d')
+            | models_list_ids)
       printf -v "$list_var" '%s' "$out"
       printf -v "$state_var" '%s' ok
     else
@@ -734,9 +765,7 @@ models_cli_has() {
 model_valid_for_cli() {
   local cli=$1 m=$2
   [ "$m" = inherit ] && return 0
-  case "$m" in
-    ''|*[[:space:]]*|-*) return 1 ;;
-  esac
+  model_charset_ok "$m" || return 1
   case "$cli" in
     claude)
       case "$m" in
@@ -823,6 +852,9 @@ store_agent_models() {
     else
       tmux set-option -w -t "$win" "@opsx_model_$a" "${!v}" >/dev/null 2>&1 \
         || die "failed to store @opsx_model_$a on $win"
+      model_valid_for_cli "$cli" "${!v}" \
+        || printf 'opsx-window: warning: --%s-model %s is not a valid model for %s; remembered on the window but models will skip it (clear it with --%s-model default)\n' \
+             "$a" "$(printable "${!v}")" "$cli" "$a" >&2
     fi
   done
 }
@@ -862,6 +894,11 @@ window_cli() {
   printf '%s' "$c"
 }
 
+# $1 with control characters replaced by '?', for warnings.
+printable() {
+  printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?'
+}
+
 # Resolve agent $2 for CLI key $1 with flag $3 and remembered value $4.
 # Sets RES_MODEL and RES_SOURCE; warnings go to stderr.
 resolve_agent_model() {
@@ -873,7 +910,7 @@ resolve_agent_model() {
       RES_MODEL=$flag; RES_SOURCE=flag; return 0
     fi
     printf 'opsx-window: warning: --%s-model %s is not a valid model for %s; ignoring it\n' \
-      "$agent" "$flag" "$cli" >&2
+      "$agent" "$(printable "$flag")" "$cli" >&2
   fi
   # `default` clears the remembered value, so skip the window layer.
   if [ -n "$remembered" ] && [ "$flag" != default ]; then
@@ -881,7 +918,7 @@ resolve_agent_model() {
       RES_MODEL=$remembered; RES_SOURCE=window; return 0
     fi
     printf 'opsx-window: warning: remembered @opsx_model_%s=%s is not a valid model for %s; ignoring it\n' \
-      "$agent" "$remembered" "$cli" >&2
+      "$agent" "$(printable "$remembered")" "$cli" >&2
   fi
   conf=$(models_conf_value "$cli.$agent")
   if [ -n "$conf" ]; then
@@ -889,7 +926,7 @@ resolve_agent_model() {
       RES_MODEL=$conf; RES_SOURCE=config; return 0
     fi
     printf 'opsx-window: warning: %s.%s = %s is not a valid model for %s; using inherit\n' \
-      "$cli" "$agent" "$conf" "$cli" >&2
+      "$cli" "$agent" "$(printable "$conf")" "$cli" >&2
   fi
   return 0
 }
@@ -1394,11 +1431,20 @@ cmd_models() {
   if [ -n "$win" ]; then
     cli=$(tmux show-options -wqv -t "$win" @opsx_agent_cli 2>/dev/null)
   fi
+  if [ -n "$cli" ] && [ -n "$agent_cli" ] \
+     && [ "$(models_cli_key "$cli")" != "$(models_cli_key "$agent_cli")" ]; then
+    printf '# note: %s already has a window on %s — using its CLI, not --agent-cli %s\n' \
+      "$change" "$(models_cli_key "$cli")" "$(printable "$agent_cli")" >&2
+  fi
   [ -n "$cli" ] || cli=$agent_cli
   if [ -z "$cli" ]; then
     cli=$(resolve_agent_cli "") || exit 1
   fi
   key=$(models_cli_key "$cli")
+  if [ -z "$key" ]; then
+    printf 'opsx-window: warning: unknown agent CLI %s (known: claude, agent, opencode, codex, gemini); every agent uses inherit\n' \
+      "$(printable "$cli")" >&2
+  fi
   for a in $OPSX_AGENTS; do
     v="AM_$a"
     remembered=""

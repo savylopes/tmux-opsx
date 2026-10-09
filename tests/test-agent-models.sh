@@ -93,12 +93,24 @@ ok "opencode unlisted id rejected" '[ "$(line "$out" eval)" = "eval inherit inhe
 rm -f "$FAKE_MODELS_DIR/opencode.models"
 out=$($W models c1 --agent-cli opencode 2>/dev/null)
 ok "opencode list unavailable: provider/model accepted" '[ "$(line "$out" eval)" = "eval openai/nope config" ]'
+printf 'Models:\nopenai/gpt-5\nsome header words\n' > "$FAKE_MODELS_DIR/opencode.models"
+printf 'opencode.qa = some/header\n' > "$UF"
+out=$($W models c1 --agent-cli opencode --eval-model openai/gpt-5 2>/dev/null)
+ok "opencode list: one id per line accepted, words rejected" '[ "$(line "$out" eval)" = "eval openai/gpt-5 flag" ] && [ "$(line "$out" qa)" = "qa inherit inherit" ]'
+rm -f "$FAKE_MODELS_DIR/opencode.models"
 
 printf 'agent.qa = gpt-5\nagent.eval = bogus\n' > "$UF"
 printf 'Available models\n\ngpt-5 - GPT-5\nsonnet-4 - Sonnet 4 (current)\n' > "$FAKE_MODELS_DIR/agent.models"
 out=$($W models c1 --agent-cli agent 2>"$SP/err")
 ok "cursor listed id accepted" '[ "$(line "$out" qa)" = "qa gpt-5 config" ]'
 ok "cursor unlisted id rejected" '[ "$(line "$out" eval)" = "eval inherit inherit" ] && grep -q bogus "$SP/err"'
+# F2: header and description words are not model ids.
+for bad in current Available models GPT-5 '(current)'; do
+  out=$($W models zz --agent-cli agent --qa-model "$bad" 2>"$SP/err")
+  ok "cursor list: '$bad' is not a model" '[ "$(line "$out" qa)" = "qa gpt-5 config" ] && grep -q warning "$SP/err"'
+done
+out=$($W models zz --agent-cli agent --qa-model sonnet-4 2>/dev/null)
+ok "cursor list: id column accepted" '[ "$(line "$out" qa)" = "qa sonnet-4 flag" ]'
 rm -f "$FAKE_MODELS_DIR/agent.models"
 out=$($W models c1 --agent-cli agent 2>/dev/null)
 ok "cursor list unavailable: accepted" '[ "$(line "$out" eval)" = "eval bogus config" ]'
@@ -116,6 +128,24 @@ $W models c1 --agent-cli claude --qa-model "" >/dev/null 2>&1; rc=$?
 ok "models rejects empty flag value" '[ $rc -ne 0 ]'
 out=$(OPSX_MODELS_CONF=$SP/none.conf $W models --agent-cli claude 2>/dev/null)
 ok "OPSX_MODELS_CONF overrides shipped file" '[ "$(line "$out" applier)" = "applier inherit inherit" ]'
+# F1: only [A-Za-z0-9._:/@-] is a model, at every layer.
+printf '%s\n' 'claude.security = claude-x\npermissionMode:\040bypassPermissions' 'claude.qa = claude-$(id)' > "$UF"
+out=$($W models c1 --agent-cli claude 2>"$SP/err")
+ok "claude: escapes in config rejected" '[ "$(line "$out" security)" = "security inherit inherit" ] && grep -q claude.security "$SP/err"'
+ok "claude: \$(...) in config rejected" '[ "$(line "$out" qa)" = "qa inherit inherit" ]'
+for bad in 'claude-`id`' 'claude-a&b' "claude-a'b" 'claude-a"b'; do
+  out=$($W models c1 --agent-cli claude --eval-model "$bad" 2>/dev/null)
+  ok "claude: flag $bad rejected" '[ "$(line "$out" eval)" = "eval sonnet config" ]'
+done
+out=$($W models c1 --agent-cli claude --eval-model claude-sonnet-4.5@2025:x 2>/dev/null)
+ok "claude: safe claude-* id accepted" '[ "$(line "$out" eval)" = "eval claude-sonnet-4.5@2025:x flag" ]'
+printf 'claude.qa = claude-\033[31mx\n' > "$UF"
+$W models c1 --agent-cli claude >/dev/null 2>"$SP/err"
+ok "warnings carry no control characters" '! LC_ALL=C grep -q "$(printf "\033")" "$SP/err"'
+rm -f "$UF"
+# F5: unknown CLI warns.
+out=$($W models c1 --agent-cli bogus 2>"$SP/err"); rc=$?
+ok "unknown --agent-cli warns" '[ $rc -eq 0 ] && grep -q "unknown agent CLI bogus" "$SP/err" && [ "$(printf "%s\n" "$out" | grep -c " inherit inherit$")" -eq 5 ]'
 
 # ================================================================ 2.x window memory
 $W ensure c1 --prompt-file "$SP/p" --agent-cli claude --reviewer-model "--x" >/dev/null 2>&1; rc=$?
@@ -139,6 +169,15 @@ out=$($W models c1 --reviewer-model haiku 2>/dev/null)
 ok "flag beats remembered" '[ "$(line "$out" reviewer)" = "reviewer haiku flag" ]'
 out=$($W models c1 2>/dev/null)
 ok "remembered beats config" '[ "$(line "$out" reviewer)" = "reviewer sonnet window" ] && [ "$(line "$out" applier)" = "applier opus config" ]'
+# F3: --agent-cli overridden by the window's CLI says so.
+$W models c1 --agent-cli agent --qa-model gpt-5 >/dev/null 2>"$SP/err"
+ok "models notes the window CLI beats --agent-cli" 'grep -q "window on claude" "$SP/err"'
+$W models c1 --agent-cli claude >/dev/null 2>"$SP/err"
+ok "models: no note when --agent-cli matches" '! grep -q "note:" "$SP/err"'
+# F4: an invalid value is stored (spec) but warned about at send time.
+$W send c1 --prompt-file "$SP/p" --eval-model gpt-5 >/dev/null 2>"$SP/err"; rc=$?
+ok "send warns when storing a model the CLI rejects" '[ $rc -eq 0 ] && grep -q "gpt-5 is not a valid model for claude" "$SP/err" && [ "$(opt $W1 @opsx_model_eval)" = gpt-5 ]'
+$W send c1 --prompt-file "$SP/p" --eval-model default >/dev/null 2>&1
 
 out=$($W list 2>/dev/null)
 ok "list shows qa=haiku" 'printf "%s\n" "$out" | grep "^$W1	" | grep -q "qa=haiku"'
@@ -213,6 +252,10 @@ ok "install: user override reaches reviewer" 'fm "$IH/.claude/agents/opsx-review
 ok "install: invalid security warns and writes inherit" 'printf "%s\n" "$out" | grep "claude.security" | grep -q "gpt-5" && fm "$IH/.claude/agents/opsx-security.md" | grep -qx "model: inherit"'
 ok "install never writes the user file" '[ "$(cat "$IH/.config/tmux-opsx/models.conf")" = "claude.reviewer = haiku
 claude.security = gpt-5" ]'
+# F1: backslash escapes never become frontmatter keys.
+printf '%s\n' 'claude.security = claude-x\npermissionMode:\040bypassPermissions' > "$IH/.config/tmux-opsx/models.conf"
+out=$(run_install); rc=$?
+ok "install: escaped model rejected, no extra frontmatter key" '[ $rc -eq 0 ] && fm "$IH/.claude/agents/opsx-security.md" | grep -qx "model: inherit" && [ "$(fm "$IH/.claude/agents/opsx-security.md" | grep -v "^model:")" = "$(fm "$REPO/agents/opsx-security.md" | grep -v "^model:")" ] && printf "%s\n" "$out" | grep -q claude.security'
 
 # ================================================================ 4.x skill + docs
 SK=$REPO/skills/opsx-run/SKILL.md; RD=$REPO/README.md
