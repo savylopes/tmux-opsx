@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: project-init / User context protected
+# level: L1
+# requirement: /opsx-init skill
+. "$EVAL_ROOT/evals/_lib/init.sh"
+f="$EVAL_ROOT/skills/opsx-init/SKILL.md"
+grep -n -i -E 'marker|unchanged|leave|absent|not present|no longer' "$f"
+grep -qi 'context' "$f" || fail "no mention of context"
+grep -iE 'marker.*(absent|missing|not (present|found))|(absent|missing|no longer).*marker|only (when|if).*marker|without the marker' "$f" >/dev/null || fail "no statement that absent marker means leave context alone"
+grep -iE 'unchanged|leave|do not (edit|touch|change|modify)|never (edit|touch|change|overwrite)' "$f" >/dev/null || fail "no 'leave unchanged' instruction"
+echo OK

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: project-init / Skeleton written
+# level: L1
+# requirement: Config skeleton
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo
+run_init
+grep -q 'schema: spec-driven' openspec/config.yaml || fail "schema line missing"
+grep -Eq '^[[:space:]]*# opsx-init: context skeleton$' openspec/config.yaml || fail "marker line missing"
+grep -q '^context:' openspec/config.yaml || fail "context: block missing"
+echo OK

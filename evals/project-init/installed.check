@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: project-init / Installed
+# level: L2
+# requirement: opsx command
+. "$EVAL_ROOT/evals/_lib/init.sh"
+
+( cd "$EVAL_ROOT" && PATH=$ORIG_PATH ./install.sh --skip-openspec --skip-graphify --skip-commands --skip-mcp --skip-memory --skip-fork --no-backup ) </dev/null >"$EVAL_TMP/inst.log" 2>&1
+rc=$?; tail -5 "$EVAL_TMP/inst.log"
+[ $rc -eq 0 ] || fail "install.sh exit $rc"
+[ -x "$HOME/.local/bin/opsx" ] || fail "~/.local/bin/opsx missing or not executable"
+h=$("$HOME/.local/bin/opsx" help 2>&1); echo "$h"
+echo "$h" | grep -q 'init' || fail "opsx help does not list init"
+echo OK

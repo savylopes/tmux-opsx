@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: project-init / Go and Node
+# level: L1
+# requirement: Several toolchains
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; printf 'module x\n\ngo 1.22\n' > go.mod; echo 20 > .nvmrc
+run_init
+cat .opsx/dev.yaml
+grep -qx 'image: golang:1.22' .opsx/dev.yaml || fail "image: golang:1.22 missing"
+grep '^#' .opsx/dev.yaml | grep -q 'node:20' || fail "no comment line mentioning node:20"
+[ "$(grep -c '^image:' .opsx/dev.yaml)" -eq 1 ] || fail "more than one image: line"
+echo "$out" | grep -q 'dockerfile:' || fail "output does not warn about dockerfile:"
+echo OK

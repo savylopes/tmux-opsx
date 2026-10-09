@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: project-init / Graph build on request
+# level: L1
+# requirement: Graphify setup
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; fake graphify; mkrepo
+run_init --graphify
+[ -f "$EVAL_TMP/graphify.log" ] || fail "fake graphify not called"
+grep -qx 'update .' "$EVAL_TMP/graphify.log" || { cat "$EVAL_TMP/graphify.log"; fail "not called with 'update .'"; }
+echo OK

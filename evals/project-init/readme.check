@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: project-init / README
+# level: L1
+# requirement: Documentation
+. "$EVAL_ROOT/evals/_lib/init.sh"
+f="$EVAL_ROOT/README.md"
+for p in 'opsx init' '--force' '.opsx/dev.yaml' '/opsx-init' '--git' '--graphify'; do
+  grep -qF -- "$p" "$f" && echo "ok: $p" || fail "README lacks $p"
+done
+echo OK

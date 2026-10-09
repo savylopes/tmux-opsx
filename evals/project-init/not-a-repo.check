@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: project-init / Not a repo
+# level: L1
+# requirement: Git repo required
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec
+d="$EVAL_TMP/empty"; mkdir -p "$d"; cd "$d"
+run_init
+[ $rc -ne 0 ] || fail "exit 0 outside a repo"
+echo "$out" | grep -q -- '--git' || fail "message does not mention --git"
+[ -z "$(ls -A "$d")" ] || { ls -A "$d"; fail "directory not empty"; }
+echo OK

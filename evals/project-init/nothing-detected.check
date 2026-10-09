@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: project-init / Nothing detected
+# level: L1
+# requirement: Toolchain detection
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo
+run_init
+[ ! -e .opsx/dev.yaml ] || fail ".opsx/dev.yaml exists"
+echo "$out" | grep -q '\.opsx/dev\.yaml' || fail "output does not mention .opsx/dev.yaml"
+echo OK

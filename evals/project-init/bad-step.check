@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: project-init / Bad step
+# level: L1
+# requirement: Force one step
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo
+before=$(snap); ls -A > "$EVAL_TMP/ls1"
+run_init --force everything
+[ $rc -ne 0 ] || fail "exit 0"
+[ "$before" = "$(snap)" ] || fail "files created"
+[ ! -e openspec ] && [ ! -e .gitignore ] && [ ! -e .opsx ] || fail "something was created"
+echo OK
