@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Close and recreate
+# level: L2
+# requirement: Memory ends with the window
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+run_w ensure c1 --prompt-file p --agent-cli claude
+w=$(win_of c1); [ -n "$w" ] || fail "no window for c1"
+T set-option -w -t "$w" @opsx_model_qa haiku
+run_w close c1
+[ -z "$(win_of c1)" ] || fail "window for c1 still open after close (exit $RC)"
+run_w ensure c1 --prompt-file p
+[ "$RC" -eq 0 ] || fail "second ensure exited $RC"
+w2=$(win_of c1); [ -n "$w2" ] || fail "no new window for c1"
+echo "model options on $w2:"; model_opts "$w2"
+win_has_opt "$w2" @opsx_model_qa && fail "new window has @opsx_model_qa=$(win_opt "$w2" @opsx_model_qa)"
+echo OK

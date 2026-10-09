@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Invalid Claude config model
+# level: L2
+# requirement: Install falls back on invalid models
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+. "$EVAL_ROOT/evals/_lib/models_fm.sh"
+mkdir -p "$XDG_CONFIG_HOME/tmux-opsx"; echo 'claude.security = gpt-5' > "$XDG_CONFIG_HOME/tmux-opsx/models.conf"
+out=$(run_install); rc=$?
+echo "install exit $rc"
+[ "$rc" -eq 0 ] || fail "install.sh exited $rc"
+w=$(printf '%s\n' "$out" | grep 'claude.security' | grep 'gpt-5' || true)
+echo "warning: ${w:-<none>}"
+[ -n "$w" ] || fail "no warning line containing claude.security and gpt-5"
+fm_model_is "$HOME/.claude/agents/opsx-security.md" inherit
+echo OK

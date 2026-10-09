@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: agent-models / OpenCode bare id
+# level: L2
+# requirement: Model validity per CLI
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+user_conf 'opencode.qa = gpt-5'
+run_w models c1 --agent-cli opencode
+got=$(line_of qa)
+set -- $got
+[ "${2:-}" = inherit ] || fail "expected qa model inherit, got '${got:-<none>}'"
+echo "ok: $got"
+[ -n "$ERR" ] || fail "no warning on stderr"
+echo OK

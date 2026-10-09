@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Remembered beats config
+# level: L2
+# requirement: Model resolution order
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+run_w ensure c1 --prompt-file p --agent-cli claude
+[ "$RC" -eq 0 ] || fail "ensure failed"
+w=$(win_of c1); [ -n "$w" ] || fail "no window for c1"
+T set-option -w -t "$w" @opsx_model_reviewer sonnet
+run_w models c1
+expect_line "reviewer sonnet window"
+expect_line "applier opus config"
+echo OK

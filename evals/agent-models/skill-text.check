@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Skill text
+# level: L1
+# requirement: Dispatcher passes per-agent models
+set -u
+f="$EVAL_ROOT/skills/opsx-run/SKILL.md"
+fail() { echo "FAIL: $*"; exit 1; }
+for flag in --applier-model --eval-model --reviewer-model --security-model --qa-model; do
+  grep -q -- "$flag" "$f" || fail "SKILL.md does not document $flag"; echo "ok: $flag"
+done
+r=$(grep -niE 'retry|retries|retried' "$f" | grep -iE 'model' | grep -iE 'without (a |any )?model|no model' || true)
+[ -n "$r" ] || fail "no retry-without-a-model instruction"
+echo "retry: $r"
+s=$(grep -nE 'model: *`?inherit' "$f" | grep -iE 'spawn|task|agent tool' || true)
+[ -z "$s" ] || fail "model: inherit spawn instruction present: $s"
+echo "occurrences of 'model: inherit' (informational):"; grep -n 'model: inherit' "$f" || echo none
+echo OK

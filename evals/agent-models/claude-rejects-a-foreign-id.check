@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Claude rejects a foreign id
+# level: L2
+# requirement: Model validity per CLI
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+user_conf 'claude.eval = gpt-5'
+run_w models c1 --agent-cli claude
+expect_line "eval inherit inherit"
+printf '%s\n' "$ERR" | grep -q 'gpt-5' || fail "no stderr warning naming gpt-5"
+echo OK

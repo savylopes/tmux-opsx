@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Claude defaults
+# level: L1
+# requirement: Shipped default models
+set -u
+conf="$EVAL_ROOT/agents/models.conf"
+[ -f "$conf" ] || { echo "FAIL: $conf missing"; exit 1; }
+val() { awk -F= -v k="$1" '/^[[:space:]]*#/ {next} { key=$1; gsub(/[[:space:]]/,"",key); if (key==k) { v=$2; gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print v } }' "$conf" | tail -1; }
+bad=0
+for kv in claude.applier=opus claude.reviewer=opus claude.security=opus claude.eval=sonnet claude.qa=sonnet; do
+  k=${kv%%=*} want=${kv#*=} got=$(val "$k")
+  if [ "$got" = "$want" ]; then echo "ok: $k = $got"; else echo "BAD: $k expected $want, got '${got:-<unset>}'"; bad=1; fi
+done
+[ $bad -eq 0 ] || exit 1
+echo OK

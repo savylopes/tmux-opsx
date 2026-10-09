@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Invalid flag falls through
+# level: L2
+# requirement: Model resolution order
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+rm -f "$USER_CONF"
+run_w models c1 --agent-cli claude --qa-model gpt-5
+expect_line "qa sonnet config"
+printf '%s\n' "$ERR" | grep -q 'gpt-5' || fail "stderr does not warn about gpt-5"
+echo OK

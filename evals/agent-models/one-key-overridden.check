@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: agent-models / One key overridden
+# level: L2
+# requirement: User model overrides
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+user_conf 'claude.qa = haiku'
+run_w models c1 --agent-cli claude
+[ -z "$(win_of c1)" ] || fail "a window for c1 exists"
+[ "$RC" -eq 0 ] || fail "exit $RC"
+expect_line "qa haiku config"
+expect_line "reviewer opus config"
+echo OK

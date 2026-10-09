@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: agent-models / Reset to config
+# level: L2
+# requirement: Clearing a remembered model
+set -u
+. "$EVAL_ROOT/evals/_lib/models.sh"
+run_w ensure c1 --prompt-file p --agent-cli claude
+w=$(win_of c1); [ -n "$w" ] || fail "no window for c1"
+T set-option -w -t "$w" @opsx_model_qa haiku
+run_w send c1 --prompt-file p --qa-model default
+[ "$RC" -eq 0 ] || fail "send exited $RC"
+win_has_opt "$w" @opsx_model_qa && fail "@opsx_model_qa still set to '$(win_opt "$w" @opsx_model_qa)'"
+run_w models c1
+expect_line "qa sonnet config"
+echo OK

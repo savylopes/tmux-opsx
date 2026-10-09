@@ -7,15 +7,16 @@
 # follow-up instruction.
 #
 # Usage:
-#   opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>]
-#   opsx-window.sh send   <change> --prompt-file <f>   # send, or create the window if missing
+#   opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
+#   opsx-window.sh send   <change> --prompt-file <f> [--<agent>-model <m>]...   # send, or create the window if missing
+#   opsx-window.sh models [<change>] [--agent-cli <cli>] [--<agent>-model <m>]...
 #   opsx-window.sh close  <change> [--force] [--keep-session]
 #   opsx-window.sh close  --all    [--force] [--keep-session]
 #   opsx-window.sh status <change> [--lines N]
 #   opsx-window.sh detect-cli [--agent-cli <cmd>]
 #   opsx-window.sh detect-model [--model <id>]
 #   opsx-window.sh mark   <change> <busy|done|fail|idle>   # title badge + status color
-#   opsx-window.sh list
+#   opsx-window.sh list                                # last column: remembered <agent>=<model> pairs
 #   opsx-window.sh preview-start <change> --cwd <dir> --script <file>
 #   opsx-window.sh preview-find  <change>
 #   opsx-window.sh preview-kill  <change>|--all
@@ -72,6 +73,26 @@
 #   Gemini CLI windows launch as `gemini --approval-mode=yolo --skip-trust -i …`
 #   and apply in the window (like Codex). Agents are installed under
 #   ~/.gemini/agents/; ensure also links them into <cwd>/.gemini/agents/.
+#
+# Per-agent models (<agent> = applier, eval, reviewer, security, qa):
+#   --<agent>-model <m>  On ensure/send: remember <m> on the change window as
+#                         the tmux option @opsx_model_<agent> (gone when the window
+#                         closes); `default` unsets it. Values that are empty,
+#                         contain whitespace or start with '-' are rejected before
+#                         any window is touched. Codex/Gemini windows ignore them
+#                         with one note. --model stays the window's own model.
+#   models               Print "<agent> <model> <source>" per agent, resolving
+#                         flag > window memory > config > inherit (source is
+#                         flag|window|config|inherit). Config: $OPSX_MODELS_CONF,
+#                         else models.conf next to this script, else
+#                         ../../agents/models.conf, merged with
+#                         ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/models.conf.
+#                         Each layer is checked against the window's CLI (or
+#                         --agent-cli / detect-cli without a window); invalid
+#                         values warn on stderr and fall through. Claude: opus,
+#                         sonnet, haiku, fable or claude-*; Cursor: listed by
+#                         `agent models` (any when unavailable); OpenCode:
+#                         provider/model, listed by `opencode models` when available.
 #
 # Inside tmux the window goes in the caller's session. Codex (and some
 # sandboxes) strip $TMUX from the child environment; opsx-window.sh recovers
@@ -573,6 +594,343 @@ resolve_model() {
   printf '%s' "$model"
 }
 
+# ---------- per-agent models (ops-applier/eval/reviewer/security/qa) ----------
+#
+# Resolution per agent: --<agent>-model flag > @opsx_model_<agent> on the change
+# window > config (shipped models.conf merged with the user file) > inherit.
+# Every layer is checked against the window's CLI; an invalid value prints a
+# warning on stderr and falls through to the next layer. Codex and Gemini (and
+# unknown CLIs) do the work without sub-agents: every agent is `inherit inherit`.
+
+OPSX_AGENTS="applier eval reviewer security qa"
+
+# Shipped defaults: $OPSX_MODELS_CONF > <script dir>/models.conf (installed) >
+# <script dir>/../../agents/models.conf (running from the repo). Empty if none.
+models_conf_shipped() {
+  local dir
+  if [ -n "${OPSX_MODELS_CONF:-}" ]; then
+    printf '%s' "$OPSX_MODELS_CONF"
+    return 0
+  fi
+  dir=$(cd -- "$(dirname -- "$0")" && pwd)
+  if [ -f "$dir/models.conf" ]; then
+    printf '%s' "$dir/models.conf"
+  elif [ -f "$dir/../../agents/models.conf" ]; then
+    printf '%s' "$dir/../../agents/models.conf"
+  fi
+}
+
+models_conf_user() {
+  printf '%s/tmux-opsx/models.conf' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+# Config value for key $1 (e.g. claude.qa): the user file wins over the shipped
+# file; the last matching line in a file wins. Empty when no file sets it.
+models_conf_value() {
+  local key=$1 shipped user files=()
+  shipped=$(models_conf_shipped)
+  user=$(models_conf_user)
+  [ -n "$shipped" ] && [ -f "$shipped" ] && files+=("$shipped")
+  [ -f "$user" ] && files+=("$user")
+  [ "${#files[@]}" -gt 0 ] || return 0
+  awk -v k="$key" '
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      line=$0
+      eq=index(line, "=")
+      if (eq == 0) next
+      lhs=substr(line, 1, eq-1); rhs=substr(line, eq+1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", lhs)
+      sub(/[[:space:]]+#.*$/, "", rhs)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", rhs)
+      if (lhs == k) val=rhs
+    }
+    END { if (val != "") print val }
+  ' "${files[@]}" 2>/dev/null
+}
+
+# Config/flag key for a CLI name or path: claude | agent | opencode for CLIs
+# whose sub-agents take a model, codex | gemini for CLIs without sub-agents,
+# empty for anything else.
+models_cli_key() {
+  local c
+  c=$(normalize_agent_cli "$(basename -- "${1:-}")")
+  case "$c" in
+    claude|agent|opencode|codex|gemini) printf '%s' "$c" ;;
+    cursor-agent) printf '%s' agent ;;
+    *) printf '' ;;
+  esac
+}
+
+# True when per-agent models apply to CLI key $1.
+models_cli_supported() {
+  case "$1" in
+    claude|agent|opencode) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Run "$@" with a time limit ($OPSX_MODELS_LIST_TIMEOUT, default 10 s).
+run_limited() {
+  local secs=${OPSX_MODELS_LIST_TIMEOUT:-10} pid w rc
+  case "$secs" in ''|*[!0-9]*) secs=10 ;; esac
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+    return $?
+  fi
+  # No timeout(1): poll once a second so no sleep outlives the command.
+  "$@" &
+  pid=$!
+  w=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$w" -ge "$secs" ]; then
+      kill "$pid" 2>/dev/null
+      break
+    fi
+    sleep 1
+    w=$((w + 1))
+  done
+  wait "$pid"; rc=$?
+  return "$rc"
+}
+
+# Model ids from a CLI's model list on stdin, one per line. Only the id
+# column counts: a line "<id> - <description>" (Cursor `agent models`) gives
+# <id>; a line that is a single word (OpenCode `opencode models`) gives that
+# word; an optional leading "*" or ">" marker is dropped. Headers, blank
+# lines and description words are ignored, and only ids in the safe model
+# charset are kept.
+models_list_ids() {
+  awk '
+    { sub(/\r$/, ""); sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "")
+      sub(/^[*>][[:space:]]+/, "") }
+    $0 == "" { next }
+    NF == 1 { id = $1 }
+    NF >= 3 && $2 == "-" { id = $1 }
+    NF == 2 || (NF >= 3 && $2 != "-") { next }
+    id ~ /^[A-Za-z0-9._:\/@-]+$/ { print id }
+  '
+}
+
+# True when $1 only uses the safe model charset [A-Za-z0-9._:/@-] and does not
+# start with '-'. Keeps values inert in agent frontmatter, tmux and shells.
+model_charset_ok() {
+  [[ "$1" =~ ^[A-Za-z0-9._:/@][A-Za-z0-9._:/@-]*$ ]]
+}
+
+# Load the model list of a CLI into MODELS_LIST_<cli> (one token per line),
+# once per process; call it in the current shell, not in $(...), so the cache
+# sticks. Status 1 when the command is missing, fails, times out, or prints
+# nothing ("unavailable").
+# shellcheck disable=SC2034  # read through ${!name} in models_cli_load
+MODELS_LIST_agent="" MODELS_LIST_agent_state=""
+# shellcheck disable=SC2034
+MODELS_LIST_opencode="" MODELS_LIST_opencode_state=""
+models_cli_load() {
+  local cli=$1 bin state_var list_var out esc
+  esc=$(printf '\033')
+  case "$cli" in
+    agent)    bin=agent ;;
+    opencode) bin=opencode ;;
+    *) return 1 ;;
+  esac
+  state_var="MODELS_LIST_${cli}_state"; list_var="MODELS_LIST_${cli}"
+  if [ -z "${!state_var}" ]; then
+    out=""
+    if command -v "$bin" >/dev/null 2>&1 \
+       && out=$(run_limited "$bin" models </dev/null 2>/dev/null) \
+       && [ -n "$out" ]; then
+      out=$(printf '%s\n' "$out" | sed "s/${esc}\\[[0-9;]*[A-Za-z]//g" \
+            | models_list_ids)
+      printf -v "$list_var" '%s' "$out"
+      printf -v "$state_var" '%s' ok
+    else
+      printf -v "$state_var" '%s' none
+    fi
+  fi
+  [ "${!state_var}" = ok ]
+}
+
+# True when model $2 is in the loaded list of CLI $1.
+models_cli_has() {
+  local list_var="MODELS_LIST_$1"
+  printf '%s\n' "${!list_var}" | grep -Fxq -- "$2"
+}
+
+# True when model $2 is valid for CLI key $1. `inherit` is always valid.
+model_valid_for_cli() {
+  local cli=$1 m=$2
+  [ "$m" = inherit ] && return 0
+  model_charset_ok "$m" || return 1
+  case "$cli" in
+    claude)
+      case "$m" in
+        opus|sonnet|haiku|fable|claude-*) return 0 ;;
+        *) return 1 ;;
+      esac
+      ;;
+    agent)
+      models_cli_load agent || return 0
+      models_cli_has agent "$m"
+      ;;
+    opencode)
+      [[ "$m" =~ ^[^/]+/.+$ ]] || return 1
+      models_cli_load opencode || return 0
+      models_cli_has opencode "$m"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Reject an unsafe per-agent flag value (empty, whitespace, leading '-').
+check_agent_model_value() {
+  local flag=$1 v=$2
+  case "$v" in
+    '') die "$flag needs a model value" ;;
+    *[[:space:]]*) die "$flag value must not contain whitespace: '$v'" ;;
+    -*) die "$flag value must not start with '-': '$v'" ;;
+  esac
+}
+
+# Parse one per-agent flag. Sets AM_<agent> and returns 0 when $1 is one of
+# --<agent>-model; returns 1 otherwise. Dies on an unsafe value.
+# shellcheck disable=SC2034  # read through ${!name}
+AM_applier="" AM_eval="" AM_reviewer="" AM_security="" AM_qa=""
+parse_agent_model_flag() {
+  local a
+  for a in $OPSX_AGENTS; do
+    if [ "$1" = "--$a-model" ]; then
+      [ $# -ge 2 ] || die "--$a-model needs a model value"
+      check_agent_model_value "--$a-model" "$2"
+      printf -v "AM_$a" '%s' "$2"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# True when any per-agent flag was given.
+agent_model_flags_given() {
+  local a v
+  for a in $OPSX_AGENTS; do
+    v="AM_$a"
+    [ -n "${!v}" ] && return 0
+  done
+  return 1
+}
+
+# Re-emit the per-agent flags (one word per line) for forwarding.
+agent_model_flag_args() {
+  local a v
+  for a in $OPSX_AGENTS; do
+    v="AM_$a"
+    [ -n "${!v}" ] && printf -- '--%s-model\n%s\n' "$a" "${!v}"
+  done
+  return 0
+}
+
+# Store the per-agent flags on window $1 (CLI key $2): set @opsx_model_<agent>,
+# unset it for `default`. For CLIs without sub-agents print one note and store
+# nothing.
+store_agent_models() {
+  local win=$1 cli=$2 a v
+  agent_model_flags_given || return 0
+  if ! models_cli_supported "$cli"; then
+    printf '# note: per-agent models do not apply to %s windows (no sub-agents) — --<agent>-model flags ignored\n' \
+      "${cli:-this CLI}" >&2
+    return 0
+  fi
+  for a in $OPSX_AGENTS; do
+    v="AM_$a"
+    [ -n "${!v}" ] || continue
+    if [ "${!v}" = default ]; then
+      tmux set-option -wu -t "$win" "@opsx_model_$a" >/dev/null 2>&1 || true
+    else
+      tmux set-option -w -t "$win" "@opsx_model_$a" "${!v}" >/dev/null 2>&1 \
+        || die "failed to store @opsx_model_$a on $win"
+      model_valid_for_cli "$cli" "${!v}" \
+        || printf 'opsx-window: warning: --%s-model %s is not a valid model for %s; remembered on the window but models will skip it (clear it with --%s-model default)\n' \
+             "$a" "$(printable "${!v}")" "$cli" "$a" >&2
+    fi
+  done
+}
+
+# Remembered models of window $1 as space-separated <agent>=<model> pairs.
+window_model_pairs() {
+  local win=$1 a v out=""
+  for a in $OPSX_AGENTS; do
+    v=$(tmux show-options -wqv -t "$win" "@opsx_model_$a" 2>/dev/null)
+    [ -n "$v" ] && out="$out${out:+ }$a=$v"
+  done
+  printf '%s' "$out"
+}
+
+# Window id of change $1 without creating anything or failing: the caller's
+# session inside tmux, else the project session if it exists. Empty if none.
+find_change_window_quiet() {
+  local sess
+  command -v tmux >/dev/null 2>&1 || return 0
+  recover_tmux_env || true
+  if [ -n "${TMUX:-}" ]; then
+    sess=$(current_session 2>/dev/null) || return 0
+  else
+    sess=$(project_session_name "$PWD")
+    session_exists "$sess" || return 0
+  fi
+  [ -n "$sess" ] || return 0
+  find_window "$sess" "$1" 2>/dev/null
+}
+
+# CLI of window $1 from its @opsx_agent_cli tag; else $2; else detect-cli.
+window_cli() {
+  local c
+  c=$(tmux show-options -wqv -t "$1" @opsx_agent_cli 2>/dev/null)
+  [ -n "$c" ] || c=${2:-}
+  [ -n "$c" ] || c=$(resolve_agent_cli "" 2>/dev/null)
+  printf '%s' "$c"
+}
+
+# $1 with control characters replaced by '?', for warnings.
+printable() {
+  printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?'
+}
+
+# Resolve agent $2 for CLI key $1 with flag $3 and remembered value $4.
+# Sets RES_MODEL and RES_SOURCE; warnings go to stderr.
+resolve_agent_model() {
+  local cli=$1 agent=$2 flag=$3 remembered=$4 conf
+  RES_MODEL=inherit; RES_SOURCE=inherit
+  models_cli_supported "$cli" || return 0
+  if [ -n "$flag" ] && [ "$flag" != default ]; then
+    if model_valid_for_cli "$cli" "$flag"; then
+      RES_MODEL=$flag; RES_SOURCE=flag; return 0
+    fi
+    printf 'opsx-window: warning: --%s-model %s is not a valid model for %s; ignoring it\n' \
+      "$agent" "$(printable "$flag")" "$cli" >&2
+  fi
+  # `default` clears the remembered value, so skip the window layer.
+  if [ -n "$remembered" ] && [ "$flag" != default ]; then
+    if model_valid_for_cli "$cli" "$remembered"; then
+      RES_MODEL=$remembered; RES_SOURCE=window; return 0
+    fi
+    printf 'opsx-window: warning: remembered @opsx_model_%s=%s is not a valid model for %s; ignoring it\n' \
+      "$agent" "$(printable "$remembered")" "$cli" >&2
+  fi
+  conf=$(models_conf_value "$cli.$agent")
+  if [ -n "$conf" ]; then
+    if model_valid_for_cli "$cli" "$conf"; then
+      RES_MODEL=$conf; RES_SOURCE=config; return 0
+    fi
+    printf 'opsx-window: warning: %s.%s = %s is not a valid model for %s; using inherit\n' \
+      "$cli" "$agent" "$(printable "$conf")" "$cli" >&2
+  fi
+  return 0
+}
+
 # Shell command that reads the prompt inside the new window's cwd.
 # The $(cat …) is expanded later by the window's shell, not here.
 # shellcheck disable=SC2016
@@ -790,10 +1148,11 @@ cmd_ensure() {
       --agent-cli)   agent_cli=${2:-}; shift 2 ;;
       --model)       model=${2:-}; shift 2 ;;
       --create-only) create_only=1; shift ;;
+      --*-model)     parse_agent_model_flag "$@" || die "unknown option: $1"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  [ -n "$change" ] || die "usage: opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>]"
+  [ -n "$change" ] || die "usage: opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]..."
   [ -n "$prompt_file" ] || die "--prompt-file is required"
   [ -f "$prompt_file" ] || die "prompt file not found: $prompt_file"
   [ -d "$cwd" ] || die "cwd not found: $cwd"
@@ -825,6 +1184,7 @@ cmd_ensure() {
       win=$(tmux new-session -d -s "$sess" -n "$change" -c "$cwd" -P -F '#{window_id}' \
             "$launch" 2>&1) || die "failed to create session '$sess': $win"
       tag_window "$win" "$change" "$cli" "$model"
+      store_agent_models "$win" "$(models_cli_key "$cli")"
       apply_window_status "$win" "$change" busy
       printf 'created %s %s:%s agent=%s model=%s session=created\n' \
         "$win" "$sess" "$change" "$cli" "${model:-default}"
@@ -837,6 +1197,7 @@ cmd_ensure() {
 
   if [ -n "$win" ]; then
     [ "$create_only" -eq 1 ] && die "window '$change' already exists ($win)"
+    store_agent_models "$win" "$(models_cli_key "$(window_cli "$win" "$cli")")"
     apply_window_status "$win" "$change" busy
     send_prompt "$win" "$prompt_file"
     printf 'reused %s %s:%s\n' "$win" "$sess" "$change"
@@ -854,6 +1215,7 @@ cmd_ensure() {
   # relabel the window to the running command ("claude" / "agent") and lose the
   # change name the whole workflow keys off.
   tag_window "$win" "$change" "$cli" "$model"
+  store_agent_models "$win" "$(models_cli_key "$cli")"
   apply_window_status "$win" "$change" busy
 
   printf 'created %s %s:%s agent=%s model=%s\n' \
@@ -866,10 +1228,11 @@ cmd_send() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt-file) prompt_file=${2:-}; shift 2 ;;
+      --*-model)     parse_agent_model_flag "$@" || die "unknown option: $1"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
-  [ -n "$change" ] || die "usage: opsx-window.sh send <change> --prompt-file <f>"
+  [ -n "$change" ] || die "usage: opsx-window.sh send <change> --prompt-file <f> [--<agent>-model <m>]..."
   [ -n "$prompt_file" ] || die "--prompt-file is required"
   [ -f "$prompt_file" ] || die "prompt file not found: $prompt_file"
 
@@ -885,10 +1248,12 @@ cmd_send() {
   # Window gone (closed after land, killed, never created): open one with this
   # prompt instead of telling the user to apply first.
   if [ -z "$win" ]; then
+    # cmd_ensure re-parses the flags; AM_* are already set and stay set.
     cmd_ensure "$change" --prompt-file "$prompt_file"
     return $?
   fi
 
+  store_agent_models "$win" "$(models_cli_key "$(window_cli "$win" "")")"
   apply_window_status "$win" "$change" busy
   send_prompt "$win" "$prompt_file"
   printf 'sent %s %s:%s\n' "$win" "$sess" "$change"
@@ -1039,8 +1404,54 @@ cmd_status() {
   win=$(find_window "$sess" "$change")
   [ -n "$win" ] || die "no window named '$change' in session '$sess'."
 
+  local pairs
+  pairs=$(window_model_pairs "$win")
+  [ -n "$pairs" ] && printf '# models: %s\n' "$pairs"
   printf '# %s:%s (%s) last %s lines\n' "$sess" "$change" "$win" "$lines"
   tmux capture-pane -p -t "$win" -S "-$lines" 2>/dev/null || die "failed to capture pane for $win"
+}
+
+# models [<change>] [--agent-cli <cli>] [--<agent>-model <m>]...
+# Prints "<agent> <model> <source>" for every agent. With a change whose window
+# exists, the window's CLI and remembered models are used.
+cmd_models() {
+  local change="" agent_cli="" win="" cli="" key a v remembered
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --agent-cli) agent_cli=${2:-}; [ -n "$agent_cli" ] || die "--agent-cli needs a value"; shift 2 ;;
+      --*-model)   parse_agent_model_flag "$@" || die "unknown option: $1"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *)  [ -z "$change" ] || die "models takes one change name (got '$change' and '$1')"
+          change=$1; shift ;;
+    esac
+  done
+  if [ -n "$change" ]; then
+    win=$(find_change_window_quiet "$change")
+  fi
+  if [ -n "$win" ]; then
+    cli=$(tmux show-options -wqv -t "$win" @opsx_agent_cli 2>/dev/null)
+  fi
+  if [ -n "$cli" ] && [ -n "$agent_cli" ] \
+     && [ "$(models_cli_key "$cli")" != "$(models_cli_key "$agent_cli")" ]; then
+    printf '# note: %s already has a window on %s — using its CLI, not --agent-cli %s\n' \
+      "$change" "$(models_cli_key "$cli")" "$(printable "$agent_cli")" >&2
+  fi
+  [ -n "$cli" ] || cli=$agent_cli
+  if [ -z "$cli" ]; then
+    cli=$(resolve_agent_cli "") || exit 1
+  fi
+  key=$(models_cli_key "$cli")
+  if [ -z "$key" ]; then
+    printf 'opsx-window: warning: unknown agent CLI %s (known: claude, agent, opencode, codex, gemini); every agent uses inherit\n' \
+      "$(printable "$cli")" >&2
+  fi
+  for a in $OPSX_AGENTS; do
+    v="AM_$a"
+    remembered=""
+    [ -n "$win" ] && remembered=$(tmux show-options -wqv -t "$win" "@opsx_model_$a" 2>/dev/null)
+    resolve_agent_model "$key" "$a" "${!v}" "$remembered"
+    printf '%s %s %s\n' "$a" "$RES_MODEL" "$RES_SOURCE"
+  done
 }
 
 cmd_detect_cli() {
@@ -1109,8 +1520,22 @@ cmd_list() {
   printf '# session %s\n' "$sess"
   # The opsx column marks windows this script created (see tag_window).
   # status comes from @opsx_status (busy|fail|idle; done is stored as idle).
+  # A last column lists remembered per-agent models as <agent>=<model> pairs.
   tmux list-windows -t "$sess" \
-    -F '#{window_id}	#{?@opsx_change,opsx,#{?@opsx_preview,preview,-}}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}'
+    -F '#{window_id}	#{?@opsx_change,opsx,#{?@opsx_preview,preview,-}}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}	#{@opsx_model_applier}	#{@opsx_model_eval}	#{@opsx_model_reviewer}	#{@opsx_model_security}	#{@opsx_model_qa}' \
+    | awk -F '\t' -v OFS='\t' -v names="$OPSX_AGENTS" '
+        BEGIN { n = split(names, ag, " ") }
+        {
+          pairs = ""
+          for (i = 1; i <= n; i++) {
+            v = $(6 + i)
+            if (v != "") pairs = pairs (pairs == "" ? "" : " ") ag[i] "=" v
+          }
+          line = $1
+          for (i = 2; i <= 6; i++) line = line OFS $i
+          if (pairs != "") line = line OFS pairs
+          print line
+        }'
 }
 
 # ---------- preview windows (driven by opsx-preview.sh) ----------
@@ -1232,6 +1657,7 @@ case "${1:-}" in
   mark)         shift; cmd_mark "$@" ;;
   detect-cli)   shift; cmd_detect_cli "$@" ;;
   detect-model) shift; cmd_detect_model "$@" ;;
+  models)       shift; cmd_models "$@" ;;
   list)         shift; cmd_list "$@" ;;
   preview-start) shift; cmd_preview_start "$@" ;;
   preview-find)  shift; cmd_preview_find "$@" ;;
@@ -1239,5 +1665,5 @@ case "${1:-}" in
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|list|preview-start|preview-find|preview-kill)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|models|list|preview-start|preview-find|preview-kill)" ;;
 esac

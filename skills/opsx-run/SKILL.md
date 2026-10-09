@@ -19,6 +19,11 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> apply --agent-cli opencode # force OpenCode (Task/@ops-applier)
 /opsx-run <change> apply --agent-cli gemini  # force Gemini CLI (applies in the window)
 /opsx-run <change> apply --model sonnet-4    # pin the apply window's model (default: this session's)
+/opsx-run <change> apply --applier-model opus    # ops-applier's model; remembered by the change window
+/opsx-run <change> eval --eval-model sonnet      # ops-eval's model (any action accepts any of the five flags)
+/opsx-run <change> review --reviewer-model opus  # ops-reviewer's model
+/opsx-run <change> security --security-model opus # ops-security's model
+/opsx-run <change> qa --qa-model haiku           # ops-qa's model; `--qa-model default` forgets a remembered choice
 /opsx-run <change> apply --validate          # fire-and-forget: window /goal drives apply → eval → review → security → qa → fixes until PASS
 /opsx-run <change> verify               # inline validate/status gate; only bothers the window on failure
 /opsx-run <change> eval                 # one-shot spec eval: ops-eval writes/runs evals/ checks (no auto-fix)
@@ -59,15 +64,16 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 All tmux calls go through `~/.claude/skills/opsx-run/opsx-window.sh`. **Never hand-roll `tmux send-keys`** — the script handles literal-text quoting, newline collapsing, window-id targeting, and rename suppression, all of which break subtly when improvised.
 
 ```
-opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>]
+opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
 opsx-window.sh detect-cli [--agent-cli <cmd>]                          # print agent|claude|codex|opencode|gemini for the host session
 opsx-window.sh detect-model [--model <id>]                             # print the model id to launch with (or `default`)
-opsx-window.sh send   <change> --prompt-file <f>                 # send; creates the window if it is gone
+opsx-window.sh models [<change>] [--agent-cli <cmd>] [--<agent>-model <m>]...  # "<agent> <model> <source>" per sub-agent
+opsx-window.sh send   <change> --prompt-file <f> [--<agent>-model <m>]...  # send; creates the window if it is gone
 opsx-window.sh close  <change> [--force] [--keep-session]        # close one window
 opsx-window.sh close  --all    [--force] [--keep-session]        # close every tagged opsx window
 opsx-window.sh status <change> [--lines N]                       # capture-pane snapshot (default 60 lines)
 opsx-window.sh mark   <change> <busy|done|fail|idle> # title badge + status-bar color
-opsx-window.sh list                                              # windows in the current session
+opsx-window.sh list                                              # windows in the current session (+ remembered <agent>=<model>)
 opsx-window.sh preview-start <change> --cwd <dir> --script <f>   # opsx-preview.sh only: tagged @opsx_preview window
 opsx-window.sh preview-find  <change>                            # opsx-preview.sh only
 opsx-window.sh preview-kill  <change>|--all                      # opsx-preview.sh only
@@ -124,7 +130,17 @@ done
 2. `$OPSX_MODEL`
 3. Auto-detect via `opsx-window.sh detect-model`: `$ANTHROPIC_MODEL`, else Cursor `~/.cursor/cli-config.json` `selectedModel.modelId`, else Claude `~/.claude/settings.json` `model`, else Codex `~/.codex/config.toml` `model`, else OpenCode `~/.config/opencode/opencode.json{,c}` `model`, else Gemini `$GEMINI_MODEL` / `~/.gemini/settings.json` `model`. Values `default` / `auto` / `inherit` mean "CLI default" — omit `--model` so the new window matches this session.
 
-Forward `--model` when the user named one **or** when `detect-model` prints something other than `default`. On Claude/Cursor/OpenCode, tell the dispatcher to spawn ops-applier with `model: inherit` (or OpenCode's equivalent) so the apply worker uses that window's model. On Codex the model applies to the window itself (it launches with `-m <model>`).
+Forward `--model` when the user named one **or** when `detect-model` prints something other than `default`. `--model` is only the **window's** model: it never changes which model a sub-agent gets (see **Per-agent models** below). On Codex and Gemini the model applies to the window itself (it launches with `-m <model>`), which also does the agents' work.
+
+**Per-agent models.** `--applier-model`, `--eval-model`, `--reviewer-model`, `--security-model` and `--qa-model` pick the model of one sub-agent (`<agent>` below is `applier`, `eval`, `reviewer`, `security` or `qa`). Each takes one value; a value that is empty, contains whitespace or starts with `-` is rejected by `opsx-window.sh` before any window is touched. Any action that sends a prompt accepts any of the five flags.
+
+- **Resolution order, per agent:** flag > remembered on the change window > config default > `inherit`. Config defaults come from `agents/models.conf` (shipped; installed as `models.conf` next to `opsx-window.sh`) merged key by key with `${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/models.conf` (`<cli>.<agent> = <model>|inherit`). Shipped Claude Code defaults: applier, reviewer, security `opus`; eval, qa `sonnet`. Cursor and OpenCode default to `inherit`. Each layer is checked against the window's CLI (Claude: `opus`/`sonnet`/`haiku`/`fable`/`claude-*`; Cursor: listed by `agent models`; OpenCode: `provider/model`, listed by `opencode models`); an invalid value warns and falls through to the next layer.
+- **Memory:** a model given by a flag is stored on the change window (tmux option `@opsx_model_<agent>`) by `ensure`/`send` and reused by every later run in that window until it closes. Config defaults are never stored. `--<agent>-model default` clears the remembered value, so that agent resolves from the config again. `list` and `status` show remembered models as `<agent>=<model>`.
+- **Codex and Gemini** windows do the work themselves without spawning sub-agents, so per-agent models do not apply: the flags are accepted, not stored, and `opsx-window.sh` prints one note. Tell the user that.
+- **Caller step (every action that writes a window prompt):** before writing the prompt, run `opsx-window.sh models <change> [--agent-cli <cli>] [the user's --<agent>-model flags]` and read its `<agent> <model> <source>` lines. Relay any warning it prints. Then forward the same `--<agent>-model` flags to `ensure` / `send` so the window remembers them.
+- **`<MODELS>` block** — insert it in every dispatcher prompt below. For each agent whose source is `flag` or `window`, add one line: "Spawn ops-<agent> with model `<model>` (Claude Code: Agent tool `model: "<model>"`; Cursor CLI / OpenCode: pass it as the Task model when supported, otherwise say the override was not applied)." Name **no** model for agents with source `config` or `inherit`: spawn them without a model so their installed agent file (the config default) applies. Always add: "If spawning a sub-agent fails with a model error, retry once without a model and print `retried ops-<agent> without a model (<error>)` in this pane." Omit the block entirely for Codex/Gemini windows.
+
+After editing a `models.conf`, re-run `./install.sh`: the installed agent files carry the config default in their frontmatter `model:`, and `models` already shows the new value.
 
 After upgrading the repo, re-run `./install.sh` so `~/.claude/skills/opsx-run/opsx-window.sh` picks up detection — an old install hardcodes `claude` and ignores Cursor entirely.
 
@@ -149,7 +165,7 @@ Both `openspec` and the window's agent CLI run from the current working director
 
 | Action | This session does | The window gets |
 |---|---|---|
-| `apply` (default) | `openspec status --change <c> --json` to confirm the change is applyable, then `detect-cli` + `detect-model` + `ensure` | Apply dispatcher prompt (**ops-applier only** — no eval, review, security, or QA) |
+| `apply` (default) | `openspec status --change <c> --json` to confirm the change is applyable, then `detect-cli` + `detect-model` + `models` + `ensure` | Apply dispatcher prompt (**ops-applier only** — no eval, review, security, or QA) |
 | `apply --validate` | Fire-and-forget: `ensure` the **validate** dispatcher prompt. Do **not** CreateGoal, do **not** poll | One prompt: window `/goal` + apply → eval → review → security → qa → fix rounds until all PASS/SKIP |
 | `verify` | `openspec validate <c> --strict --json` **and** `openspec status --change <c> --json` inline; report pass/fail with the actual errors | Nothing on pass. On failure, `ensure` a fix prompt (creates the window if it was closed) |
 | `eval` / `eval --agentic` | `detect-cli` + `detect-model` + `ensure` (creates the window if missing). Resolve the change first if the user wrote `/opsx-run eval` | Eval dispatcher prompt — **ops-eval once**; do not auto-fix. `--agentic` also runs L3 checks. Never pass the applier's report |
@@ -194,7 +210,8 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`. Stay in this window. Do NOT implement product code yourself (Claude/Cursor/OpenCode).
 > Call `CreateGoal` **once in this window** (not the parent): Apply OpenSpec change `<change>` on `opsx/<change>`, then ops-eval, ops-reviewer, ops-security, and ops-qa each `VERDICT: PASS` or `SKIP` with no leftover P0/P1 FINDINGS. Ops-applier implements; eval/reviewer/security/qa only verify (ops-eval writes only `evals/`). If Goal tools are missing, keep that as this window's objective.
 > Then loop in this window (never `/loop` timer):
-> 1. Delegate apply to **ops-applier** only (`subagent_type: "ops-applier"` / `@ops-applier`, `run_in_background: false`, `model: inherit`). Codex/Gemini: apply yourself on `opsx/<change>` / `../wt-<change>`.
+> <MODELS block — for all five agents>
+> 1. Delegate apply to **ops-applier** only (`subagent_type: "ops-applier"` / `@ops-applier`, `run_in_background: false`, model only as the models block says). Codex/Gemini: apply yourself on `opsx/<change>` / `../wt-<change>`.
 > 2. If apply failed, `UpdateGoal` incomplete, `opsx-window.sh mark <change> fail`, stop.
 > 3. Delegate eval to **ops-eval** only (`subagent_type: "ops-eval"` / `@ops-eval`, `run_in_background: false`). Pass only: change name, `opsx/<change>` / `../wt-<change>`, and any `DISPUTE` lines from the last eval-fix round. **Never pass the applier's report.** Print `VERDICT:` and FINDINGS. Codex/Gemini: run eval yourself per the ops-eval agent file, deriving expectations from the specs only.
 > 4. Eval `FAIL` → delegate **ops-applier** to fix eval FINDINGS **verbatim** (keep F1, F2, …) **without touching `evals/`**; it may answer `DISPUTE F<n>: <reason>` instead. Then go to step 3 with those disputes. Eval `PASS` or `SKIP` → step 5.
@@ -211,7 +228,8 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement in this window yourself (Claude/Cursor/OpenCode). Delegate ALL implementation to **ops-applier**. Do **not** run ops-eval, ops-reviewer, ops-security, or ops-qa.
-> Claude Code: Agent `subagent_type: "ops-applier"`, `run_in_background: false`, `model: inherit`.
+> <MODELS block — ops-applier only>
+> Claude Code: Agent `subagent_type: "ops-applier"`, `run_in_background: false` (model only as the models block says).
 > Cursor CLI: Task `subagent_type: "ops-applier"` (`.cursor/agents/opsx-applier.md` must exist).
 > OpenCode: Task or `@ops-applier`.
 > Codex CLI / Gemini CLI: apply yourself on `opsx/<change>` / `../wt-<change>`.
@@ -222,6 +240,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
+> <MODELS block — ops-eval only>
 > Delegate to **ops-eval** only (`subagent_type: "ops-eval"` / `@ops-eval`). Codex/Gemini: run the eval yourself per the ops-eval agent file (`~/.codex/agents/ops-eval.toml` / `~/.gemini/agents/opsx-eval.md`), deriving expected behaviour from the spec scenarios only.
 > Pass only: change name, `opsx/<change>` / `../wt-<change>`, `agentic: yes` (only for `eval --agentic`), and these disputes (omit if none):
 > <DISPUTE lines pasted by the caller, verbatim>
@@ -233,6 +252,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement in this window yourself. Delegate to **ops-applier** only.
+> <MODELS block — ops-applier only>
 > Fix these ops-eval FINDINGS **verbatim** (keep F1, F2, …) in the same `opsx/<change>` worktree. Fix product code only: **do not create, edit or delete anything under `evals/`**. If a finding comes from a broken check, change nothing for it and report `DISPUTE F<n>: <reason>` instead. Do not reopen unrelated tasks.
 > <FINDINGS pasted by the caller>
 > Print the applier's DISPUTE lines (if any) so the next `/opsx-run <change> eval` can pass them on.
@@ -242,6 +262,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
+> <MODELS block — ops-reviewer only>
 > Delegate to **ops-reviewer** only (`subagent_type: "ops-reviewer"` / `@ops-reviewer`). Codex/Gemini: run the implementation review yourself.
 > Pass: change name, `opsx/<change>` / `../wt-<change>`, files the applier changed if known.
 > Extra notes from the user (omit this block if they sent none):
@@ -253,6 +274,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
+> <MODELS block — ops-security only>
 > Delegate to **ops-security** only (`subagent_type: "ops-security"` / `@ops-security`). Codex/Gemini: run the security review yourself.
 > Pass: change name, `opsx/<change>` / `../wt-<change>`, files the applier changed if known.
 > Extra notes from the user (omit this block if they sent none):
@@ -264,6 +286,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement in this window yourself. Delegate to **ops-applier** only.
+> <MODELS block — ops-applier only>
 > Fix these ops-reviewer FINDINGS **verbatim** (keep F1, F2, …) in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.
 > <FINDINGS pasted by the caller>
 > Then `opsx-window.sh mark <change> done` or `fail`. Stop after marking.
@@ -272,6 +295,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement in this window yourself. Delegate to **ops-applier** only.
+> <MODELS block — ops-applier only>
 > Fix these ops-security FINDINGS **verbatim** (keep F1, F2, …) in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.
 > <FINDINGS pasted by the caller>
 > Then `opsx-window.sh mark <change> done` or `fail`. Stop after marking.
@@ -281,6 +305,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
 > First run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`, then on exit 0 `<skills>/opsx-run/opsx-preview.sh share <change> --for ops-qa --ttl 1d`. On exit 0 of both pass the share command's last stdout line (a share link) to ops-qa as `PREVIEW_URL` (open it first and keep the same browser context so its login cookie applies; do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Leave the preview running.
+> <MODELS block — ops-qa only>
 > Delegate to **ops-qa** only (`subagent_type: "ops-qa"` / `@ops-qa`). Codex/Gemini: run the QA checks yourself, against `PREVIEW_URL` when you have one.
 > Pass: change name, `opsx/<change>` / `../wt-<change>`, `PREVIEW_URL` (or the reason there is none), how to run the app if known. Use browser-use MCP when user-facing.
 > Extra notes from the user (omit this block if they sent none):
@@ -293,6 +318,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
 > Do NOT implement in this window yourself. Delegate to **ops-applier** only.
+> <MODELS block — ops-applier only>
 > Fix these ops-qa FINDINGS **verbatim** (keep F1, F2, …) in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.
 > <FINDINGS pasted by the caller>
 > Then `opsx-window.sh mark <change> done` or `fail`. Stop after marking.
@@ -300,6 +326,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 **archive**
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> <MODELS block — ops-applier only>
 > Delegate to the ops-applier subagent. Claude Code: Agent `subagent_type: "ops-applier"`. Cursor CLI: Task `subagent_type: "ops-applier"` (project `.cursor/agents/opsx-applier.md` must exist). OpenCode: Task/`@ops-applier`. Codex CLI / Gemini CLI: do it yourself in this window. Do NOT delegate to anything else.
 > Task: archive OpenSpec change `<change>`. Confirm every task in `openspec/changes/<change>/tasks.md` is checked and `openspec validate "<change>" --strict` passes, then run `openspec archive "<change>" -y` and report what moved and any spec updates.
 > When done, summarize the report, then `opsx-window.sh mark <change> done` (or `fail`). Stop after marking.
@@ -307,7 +334,10 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 **verify-fix** (only sent when the inline gate fails)
 
 > Verification of OpenSpec change `<change>` failed. `openspec validate "<change>" --strict` reported: `<errors verbatim>`.
+> <MODELS block — ops-applier only>
 > Delegate the fix to the ops-applier subagent (Claude: Agent / Cursor: Task / OpenCode: Task or `@ops-applier`). Codex CLI / Gemini CLI: fix it yourself in this window. After it is fixed, re-run `openspec validate "<change>" --strict` and `openspec status --change "<change>" --json` and report the result. Then `opsx-window.sh mark <change> done` (or `fail`).
+
+`<MODELS block — …>` in the prompts is the per-agent models block from **Per-agent models** above, limited to the agents that prompt spawns (always with the retry rule). Drop it for Codex/Gemini windows.
 
 `<skills>` in the prompts is the skills dir this skill was loaded from (e.g. `~/.claude/skills`); substitute the absolute path when writing the prompt file.
 
@@ -379,6 +409,6 @@ opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
 - **Codex CLI** loads this skill from `~/.agents/skills/opsx-run/` (and `$CODEX_HOME/skills/opsx-run`). Restart Codex after install. Windows launch unattended; a Codex dispatcher window applies the change itself in an `opsx/<change>` worktree; `ops-applier` is also installed as `~/.codex/agents/ops-applier.toml`.
 - **OpenCode** loads this skill from `~/.config/opencode/skills/opsx-run/` (and also reads `~/.claude/skills` / `~/.agents/skills`). Restart OpenCode after install. Windows launch as `opencode --auto --prompt …` (`-m provider/model` from config when detected). `ops-applier` is `~/.config/opencode/agents/ops-applier.md`; `ensure` also links it into `<project>/.opencode/agents/`. Dispatcher windows use Task or `@ops-applier`.
 - **Gemini CLI** loads this skill from `~/.gemini/skills/opsx-run/` (and `~/.agents/skills`). Restart Gemini after install. Windows launch as `gemini --approval-mode=yolo --skip-trust -i …` (`-m` from `$GEMINI_MODEL` or `~/.gemini/settings.json`). Agents live in `~/.gemini/agents/`; `ensure` links them into `<project>/.gemini/agents/`. A Gemini window applies the change itself in `opsx/<change>`.
-- Forward `--agent-cli` and `--model` from the user's `/opsx-run` message to `opsx-window.sh ensure` when they name them; otherwise `detect-cli` / `detect-model`.
+- Forward `--agent-cli` and `--model` from the user's `/opsx-run` message to `opsx-window.sh ensure` when they name them; otherwise `detect-cli` / `detect-model`. Forward `--applier-model` / `--eval-model` / `--reviewer-model` / `--security-model` / `--qa-model` to `models`, `ensure` and `send` as given.
 - `ops-applier` / `ops-eval` / `ops-reviewer` / `ops-security` / `ops-qa` — Claude Code: `~/.claude/agents/opsx-*.md`. Cursor CLI: `~/.cursor/agents/` plus **`ensure` links into `<project>/.cursor/agents/`**. OpenCode: `~/.config/opencode/agents/` plus project `.opencode/agents/`. Codex: `~/.codex/agents/ops-*.toml`. Gemini: `~/.gemini/agents/opsx-*.md` plus project `.gemini/agents/`. Plain **apply** only runs ops-applier (no eval, review, security, or QA). **`apply --validate`**: the **opsx-run window** uses `/goal` (`CreateGoal`) and loops apply → eval → review → security → qa → fix; this calling session only `ensure`s that prompt and returns. Standalone **eval** / **review** / **security** / **qa** (and `review "..."` / `security "..."` / `qa "..."`) are one-shot with no auto-fix. Applier drives `openspec` and never edits `evals/`. ops-eval writes only `evals/` (its own `eval: <change>` commit); reviewer/security/qa are read-only gates. OpenSpec `/opsx:*` commands are installed globally by `./install.sh`.
 - Window names are `ox ·change` / `ox …change` / `ox ✗change` with muted mint / amber / rose on a dark bar, plus a dark pane. Idle is never tmux default. `done` maps to idle so the window stays reusable. Busy windows that go silent (~40s) fall back to idle if the agent forgot `mark done`. Lookups use `@opsx_change`, not the display title.
