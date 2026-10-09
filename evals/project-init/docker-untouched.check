@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: project-init / Docker untouched
+# level: L1
+# requirement: Docker check
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; fake docker; mkrepo; printf 'module x\n\ngo 1.22\n' > go.mod
+run_init
+echo "docker log:"; cat "$EVAL_TMP/docker.log" 2>/dev/null
+if grep -Eq '(^| )(pull|build|run)( |$)' "$EVAL_TMP/docker.log" 2>/dev/null; then fail "docker pull/build/run called"; fi
+echo OK

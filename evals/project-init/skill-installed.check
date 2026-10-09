@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: project-init / Skill installed
+# level: L2
+# requirement: /opsx-init skill
+. "$EVAL_ROOT/evals/_lib/init.sh"
+( cd "$EVAL_ROOT" && PATH=$ORIG_PATH ./install.sh --skip-openspec --skip-graphify --skip-commands --skip-mcp --skip-memory --skip-fork --no-backup ) </dev/null >"$EVAL_TMP/inst.log" 2>&1 || { tail "$EVAL_TMP/inst.log"; fail "install failed"; }
+f="$HOME/.claude/skills/opsx-init/SKILL.md"
+[ -f "$f" ] || fail "$f missing"
+grep -q 'opsx init' "$f" || fail "no mention of opsx init"
+grep -q '# opsx-init: context skeleton' "$f" || fail "no marker mention"
+for d in .cursor .agents .codex .config/opencode .gemini; do [ -f "$HOME/$d/skills/opsx-init/SKILL.md" ] && echo "also: $d" || echo "absent: $d"; done
+echo OK

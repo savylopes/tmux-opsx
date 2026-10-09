@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: project-init / --git
+# level: L1
+# requirement: Git repo required
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec
+d="$EVAL_TMP/empty"; mkdir -p "$d"; cd "$d"
+run_init --git
+[ $rc -eq 0 ] || fail "exit $rc"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -d .git ] || fail "not a git repo"
+[ -f openspec/config.yaml ] || fail "openspec/config.yaml missing"
+echo OK

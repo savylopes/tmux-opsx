@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scenario: project-init / pnpm setup line
+# level: L1
+# requirement: Setup commands in dev.yaml
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; echo '{"name":"x"}' > package.json; echo 20 > .nvmrc; : > pnpm-lock.yaml
+run_init
+grep -qx 'setup: pnpm install --frozen-lockfile' .opsx/dev.yaml || { cat .opsx/dev.yaml; fail "setup line missing"; }
+echo OK

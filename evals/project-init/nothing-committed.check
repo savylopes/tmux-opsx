@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: project-init / Nothing committed
+# level: L1
+# requirement: No commits
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; printf 'module x\n\ngo 1.22\n' > go.mod; git add go.mod; git commit -qm one
+run_init; [ $rc -eq 0 ] || fail "exit $rc"
+[ "$(git rev-list --count HEAD)" -eq 1 ] || fail "commit count changed"
+[ -z "$(git diff --cached --name-only)" ] || fail "something staged"
+echo "$out" | grep -q 'git add' || fail "no git add in output"
+echo OK

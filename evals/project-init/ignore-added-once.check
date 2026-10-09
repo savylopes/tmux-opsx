@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: project-init / Ignore added once
+# level: L1
+# requirement: Graphify setup
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo
+run_init; [ $rc -eq 0 ] || fail "first run exit $rc"
+run_init; [ $rc -eq 0 ] || fail "second run exit $rc"
+n=$(grep -cx 'graphify-out/' .gitignore); echo "count=$n"
+[ "$n" -eq 1 ] || fail "expected exactly one graphify-out/ line"
+echo OK

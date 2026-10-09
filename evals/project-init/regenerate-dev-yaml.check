@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: project-init / Regenerate dev.yaml
+# level: L1
+# requirement: Force one step
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; printf 'module x\n\ngo 1.22\n' > go.mod
+mkdir .opsx; echo 'image: custom:1' > .opsx/dev.yaml
+run_init --force dev
+[ $rc -eq 0 ] || fail "exit $rc"
+cat .opsx/dev.yaml
+grep -qx 'image: golang:1.22' .opsx/dev.yaml || fail "not regenerated"
+grep -q custom .opsx/dev.yaml && fail "custom content remains"
+echo OK

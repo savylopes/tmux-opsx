@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scenario: project-init / Unknown subcommand
+# level: L1
+# requirement: opsx command
+. "$EVAL_ROOT/evals/_lib/init.sh"
+out=$("$OPSX" frobnicate 2>&1); rc=$?; echo "exit $rc"; echo "$out"
+[ $rc -ne 0 ] || fail "exit 0"
+echo "$out" | grep -qi 'usage' || fail "no usage printed"
+echo OK

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# opsx — tmux-opsx per-repo commands (installed by install.sh).
+#
+# Usage: opsx <command> [options]
+#   init     set up the current git repo: OpenSpec, config context skeleton,
+#            graphify ignore, .opsx/dev.yaml (see: opsx init help)
+#   help     show this help
+#
+# Each command runs a script from an installed tmux-opsx skill, found in the
+# first of: $OPSX_SKILLS_DIR, ~/.claude/skills (or $CLAUDE_CONFIG_DIR/skills),
+# ~/.cursor/skills, ~/.agents/skills, $CODEX_HOME/skills,
+# ~/.config/opencode/skills, ~/.gemini/skills.
+
+# install.sh --uninstall removes this file only while it carries the next line.
+# tmux-opsx launcher
+
+set -uo pipefail
+
+usage() { awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"; }
+
+# find_script <skill>/<script>: print the first installed copy.
+find_script() {
+  local rel=$1 self_dir d
+  self_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  for d in ${OPSX_SKILLS_DIR:+"$OPSX_SKILLS_DIR"} \
+           "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills" \
+           "$HOME/.cursor/skills" \
+           "$HOME/.agents/skills" \
+           "${CODEX_HOME:-$HOME/.codex}/skills" \
+           "${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}/skills" \
+           "${GEMINI_HOME:-$HOME/.gemini}/skills"; do
+    [ -f "$d/$rel" ] && { printf '%s\n' "$d/$rel"; return 0; }
+  done
+  # Running from a tmux-opsx checkout (bin/opsx): use its skills/.
+  if [ -f "$self_dir/../install.sh" ] && [ -f "$self_dir/../skills/$rel" ]; then
+    printf '%s\n' "$self_dir/../skills/$rel"; return 0
+  fi
+  return 1
+}
+
+run_skill_script() {
+  local rel=$1 script; shift
+  script=$(find_script "$rel") || {
+    printf 'opsx: %s is not installed — run install.sh from the tmux-opsx checkout\n' "$rel" >&2
+    exit 1
+  }
+  exec bash "$script" "$@"
+}
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+cmd=$1; shift
+case "$cmd" in
+  init)           run_skill_script opsx-init/opsx-init.sh "$@" ;;
+  help|-h|--help) usage ;;
+  *) printf 'opsx: unknown command %s\n\n' "'$cmd'" >&2; usage >&2; exit 2 ;;
+esac

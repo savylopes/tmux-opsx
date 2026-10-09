@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scenario: project-init / Go setup line
+# level: L1
+# requirement: Setup commands in dev.yaml
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; printf 'module x\n\ngo 1.22\n' > go.mod
+run_init
+grep -qx 'setup: go mod download' .opsx/dev.yaml || { cat .opsx/dev.yaml; fail "setup line missing"; }
+echo OK

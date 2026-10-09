@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: project-init / Existing config kept
+# level: L1
+# requirement: Config skeleton
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; mkdir openspec
+printf 'schema: custom\ncontext: |\n  mine\n' > openspec/config.yaml
+before=$(sha1sum openspec/config.yaml)
+run_init
+[ "$before" = "$(sha1sum openspec/config.yaml)" ] || fail "config.yaml changed"
+echo OK

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: project-init / No docker
+# level: L1
+# requirement: Docker check
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; printf 'module x\n\ngo 1.22\n' > go.mod
+command -v docker >/dev/null 2>&1 && fail "test PATH still has docker"
+run_init
+[ $rc -eq 0 ] || fail "exit $rc"
+echo "$out" | grep -i 'docker' | grep -q '^!' || echo "$out" | grep -i 'warn' | grep -qi docker || fail "no warning naming docker"
+[ -f .opsx/dev.yaml ] || fail "dev.yaml not written"
+echo OK

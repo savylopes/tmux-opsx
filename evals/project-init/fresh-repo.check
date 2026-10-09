@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: project-init / Fresh repo
+# level: L1
+# requirement: OpenSpec setup
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo
+run_init
+[ -f "$EVAL_TMP/openspec.log" ] || fail "fake openspec never called"
+cat "$EVAL_TMP/openspec.log"
+grep -qx 'init --tools none' "$EVAL_TMP/openspec.log" || fail "not called with 'init --tools none'"
+echo OK

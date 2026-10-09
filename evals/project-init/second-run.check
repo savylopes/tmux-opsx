@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: project-init / Second run
+# level: L1
+# requirement: Idempotent re-run
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; printf 'module x\n\ngo 1.22\n' > go.mod
+run_init; [ $rc -eq 0 ] || fail "first exit $rc"
+a=$(snap)
+run_init; [ $rc -eq 0 ] || fail "second exit $rc"
+b=$(snap)
+[ "$a" = "$b" ] || { diff <(echo "$a") <(echo "$b"); fail "files changed between runs"; }
+steps=$(echo "$out" | grep -E '^(✓|·|!) ' | grep -vE '^! docker' )
+echo "$steps" | grep -q '^✓' && fail "second run created something"
+echo "$steps" | grep -vqi 'skipped' && { echo "$steps"; fail "a step line is not skipped"; }
+echo OK

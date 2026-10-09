@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: project-init / Go repo
+# level: L1
+# requirement: Toolchain detection
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; printf 'module x\n\ngo 1.22\n' > go.mod
+run_init
+cat .opsx/dev.yaml
+grep -qx 'image: golang:1.22' .opsx/dev.yaml || fail "image: golang:1.22 missing"
+echo OK

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: project-init / Already initialised
+# level: L1
+# requirement: OpenSpec setup
+. "$EVAL_ROOT/evals/_lib/init.sh"
+fake_openspec; mkrepo; mkdir -p openspec
+run_init
+[ ! -s "$EVAL_TMP/openspec.log" ] || { cat "$EVAL_TMP/openspec.log"; fail "openspec init was called"; }
+echo "$out" | grep -i 'openspec' | grep -qi 'skipped' || fail "openspec step not reported as skipped"
+echo OK
