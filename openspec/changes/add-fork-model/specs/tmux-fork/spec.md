@@ -30,7 +30,7 @@
 - **THEN** it exits non-zero with a clear message, and no fork id, state directory or pane is created
 
 ### Requirement: Inherit the parent's model
-`fork.sh open` SHALL accept `--parent-model <m>`, the parent agent's own model. It SHALL be used only when neither `--model` nor `$FORK_MODEL` gives a model and the child CLI is the same CLI as the host CLI. The host CLI SHALL be taken from `$FORK_HOST_CLI` when set (`none` meaning undetected), otherwise detected. Otherwise it SHALL be ignored without error. For OpenCode children it SHALL be used only if it has the `provider/model` form. The `/fork` skill SHALL instruct the parent agent to always pass `--parent-model` with its own model id.
+`fork.sh open` SHALL accept `--parent-model <m>`, the parent agent's own model. It SHALL be used only when neither `--model` nor `$FORK_MODEL` gives a model and the child CLI is the same CLI as the host CLI; otherwise it SHALL be ignored without error. For OpenCode children it SHALL be used only if it has the `provider/model` form.
 
 #### Scenario: Same CLI inherits
 - **WHEN** the parent runs under Claude Code and calls `fork.sh open --parent-model claude-opus-5-5` without `--cli`
@@ -44,13 +44,23 @@
 - **WHEN** `$FORK_MODEL=haiku` and the parent calls `fork.sh open --parent-model claude-opus-5-5` from Claude Code
 - **THEN** the child is launched with `--model haiku`
 
+#### Scenario: OpenCode id without provider
+- **WHEN** the parent runs under OpenCode and passes `--parent-model gpt-5`
+- **THEN** the OpenCode child is launched with no model flag
+
+### Requirement: Host CLI for inheritance
+The host CLI used to decide inheritance SHALL be taken from `$FORK_HOST_CLI` when set, with `none` meaning undetected; otherwise it SHALL be detected. When the host is undetected, `--parent-model` SHALL be ignored.
+
 #### Scenario: Host not detected
 - **WHEN** `$FORK_HOST_CLI=none` and `fork.sh open --cli claude --parent-model claude-opus-5-5` runs
 - **THEN** the child is launched with no model flag
 
-#### Scenario: OpenCode id without provider
-- **WHEN** the parent runs under OpenCode and passes `--parent-model gpt-5`
-- **THEN** the OpenCode child is launched with no model flag
+### Requirement: Skill passes the parent's model
+The `/fork` skill SHALL instruct the parent agent to always pass `--parent-model` with its own model id.
+
+#### Scenario: Skill instruction
+- **WHEN** `skills/fork/SKILL.md` is read
+- **THEN** its open step tells the parent to pass `--parent-model <its own model id>`
 
 ### Requirement: Report the child's model
 The `open` output line SHALL end with `model <m>` naming the chosen model, or `model default` when none was chosen.
