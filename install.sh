@@ -63,6 +63,12 @@
 #      flag. No sudo: a non-root run prints the one systemd command to run; a root
 #      run enables the unit itself. DNS is never changed — add a DNS-only
 #      *.<domain> record pointing at this host yourself.
+#  10. the opsx command + /opsx-init skill
+#                                   -> ~/.local/bin/opsx  (or ~/bin when only that is on PATH)
+#                                   -> ~/.claude/skills/opsx-init/  (and the other five
+#                                      skill dirs, like /fork; opsx-init.sh)
+#      `opsx init` sets up a repo (OpenSpec, config context skeleton, graphify
+#      ignore, .opsx/dev.yaml); it only ever writes inside the repo it runs in.
 #
 # Window CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex),
 # OpenCode (opencode), and Gemini CLI (gemini). At least one must be on PATH.
@@ -75,6 +81,7 @@
 #   --skip-mcp         Don't install the browser-use MCP server
 #   --skip-memory      Don't install the memory skill, instruction blocks, store, or import
 #   --skip-fork        Don't install the /fork skill
+#   --skip-init        Don't install the opsx command or the /opsx-init skill
 #   --expose-domain <d>  Set up /expose: publish local ports at https://<name>--<project>.<d>
 #                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9).
 #                      Use a domain that serves nothing else: the login cookie
@@ -98,6 +105,7 @@ SKIP_COMMANDS=0
 SKIP_MCP=0
 SKIP_MEMORY=0
 SKIP_FORK=0
+SKIP_INIT=0
 EXPOSE_DOMAIN=""
 BACKUP=1
 UNINSTALL=0
@@ -127,6 +135,7 @@ while [ $# -gt 0 ]; do
     --skip-mcp)      SKIP_MCP=1; shift ;;
     --skip-memory)   SKIP_MEMORY=1; shift ;;
     --skip-fork)     SKIP_FORK=1; shift ;;
+    --skip-init)     SKIP_INIT=1; shift ;;
     --expose-domain) [ $# -ge 2 ] || die "--expose-domain needs a domain"
                      EXPOSE_DOMAIN=$2; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift 2 ;;
     --expose-domain=*) EXPOSE_DOMAIN=${1#--expose-domain=}; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift ;;
@@ -540,6 +549,13 @@ CODEX_EXPOSE_SKILLS_DIR=$CODEX_HOME_DIR/skills/expose
 AGENTS_EXPOSE_SKILLS_DIR=$HOME/.agents/skills/expose
 OPENCODE_EXPOSE_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/expose
 GEMINI_EXPOSE_SKILLS_DIR=$GEMINI_HOME_DIR/skills/expose
+CURSOR_INIT_SKILLS_DIR=$HOME/.cursor/skills/opsx-init
+CODEX_INIT_SKILLS_DIR=$CODEX_HOME_DIR/skills/opsx-init
+AGENTS_INIT_SKILLS_DIR=$HOME/.agents/skills/opsx-init
+OPENCODE_INIT_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/opsx-init
+GEMINI_INIT_SKILLS_DIR=$GEMINI_HOME_DIR/skills/opsx-init
+# The launcher marks itself with this line; uninstall removes only marked files.
+OPSX_LAUNCHER_MARK='# tmux-opsx launcher'
 CODEX_AGENTS_MD=$CODEX_HOME_DIR/AGENTS.md
 OPENCODE_AGENTS_MD=$OPENCODE_CONFIG_DIR/AGENTS.md
 GEMINI_MD=$GEMINI_HOME_DIR/GEMINI.md
@@ -673,6 +689,25 @@ install_fork_skill() {
   install_file "$SRC/skills/fork/fork.sh"  "$dest/fork.sh"
   chmod +x "$dest/fork.sh" || die "cannot chmod +x $dest/fork.sh"
   ok "/fork -> $dest ($label)"
+}
+
+# Install the /opsx-init skill (SKILL.md + opsx-init.sh) into one dest dir.
+install_opsx_init_skill() {
+  local dest=$1 label=$2
+  install_file "$SRC/skills/opsx-init/SKILL.md"     "$dest/SKILL.md"
+  install_file "$SRC/skills/opsx-init/opsx-init.sh" "$dest/opsx-init.sh"
+  chmod +x "$dest/opsx-init.sh" || die "cannot chmod +x $dest/opsx-init.sh"
+  ok "/opsx-init -> $dest ($label)"
+}
+
+# The user's bin dir for the opsx launcher: ~/.local/bin, or ~/bin when that
+# is on PATH and ~/.local/bin is not.
+user_bin_dir() {
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) printf '%s' "$HOME/.local/bin" ;;
+    *":$HOME/bin:"*)        printf '%s' "$HOME/bin" ;;
+    *)                      printf '%s' "$HOME/.local/bin" ;;
+  esac
 }
 
 # Install the /expose skill (SKILL.md + expose.sh) into one dest dir.
@@ -1587,6 +1622,19 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -rf "$CODEX_FORK_SKILLS_DIR" && ok "removed $CODEX_FORK_SKILLS_DIR (Codex)"
   rm -rf "$OPENCODE_FORK_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/fork (OpenCode)"
   rm -rf "$GEMINI_FORK_SKILLS_DIR" && ok "removed ~/.gemini/skills/fork (Gemini CLI)"
+  rm -rf "$PREFIX/skills/opsx-init" && ok "removed skills/opsx-init (Claude Code)"
+  rm -rf "$CURSOR_INIT_SKILLS_DIR" && ok "removed ~/.cursor/skills/opsx-init (Cursor CLI)"
+  rm -rf "$AGENTS_INIT_SKILLS_DIR" && ok "removed ~/.agents/skills/opsx-init (Agent Skills)"
+  rm -rf "$CODEX_INIT_SKILLS_DIR" && ok "removed $CODEX_INIT_SKILLS_DIR (Codex)"
+  rm -rf "$OPENCODE_INIT_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/opsx-init (OpenCode)"
+  rm -rf "$GEMINI_INIT_SKILLS_DIR" && ok "removed ~/.gemini/skills/opsx-init (Gemini CLI)"
+  for f in "$HOME/.local/bin/opsx" "$HOME/bin/opsx"; do
+    if [ -f "$f" ] && grep -qxF "$OPSX_LAUNCHER_MARK" "$f" 2>/dev/null; then
+      rm -f "$f" && ok "removed $(printf '%s' "$f" | sed "s|^$HOME|~|") (opsx command)"
+    elif [ -e "$f" ]; then
+      warn "left $f in place — it is not the tmux-opsx launcher"
+    fi
+  done
   remove_marked_block "$PREFIX/CLAUDE.md"
   remove_marked_block "$CODEX_AGENTS_MD"
   remove_marked_block "$OPENCODE_AGENTS_MD"
@@ -1938,6 +1986,38 @@ if [ -n "$EXPOSE_DOMAIN" ]; then
   info ""
 fi
 
+# ---------- 10. opsx command + /opsx-init skill ----------
+if [ "$SKIP_INIT" -eq 1 ]; then
+  step "Skipping the opsx command and /opsx-init skill (--skip-init)"
+else
+  step "Installing the opsx command and /opsx-init skill"
+  [ -f "$SRC/skills/opsx-init/SKILL.md" ] && [ -f "$SRC/skills/opsx-init/opsx-init.sh" ] && [ -f "$SRC/bin/opsx" ] \
+    || die "missing $SRC/skills/opsx-init/ or $SRC/bin/opsx — run this script from the repo checkout"
+  install_opsx_init_skill "$PREFIX/skills/opsx-init" "Claude Code"
+  install_opsx_init_skill "$CURSOR_INIT_SKILLS_DIR" "Cursor CLI"
+  install_opsx_init_skill "$AGENTS_INIT_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
+  if [ "$CODEX_INIT_SKILLS_DIR" != "$AGENTS_INIT_SKILLS_DIR" ]; then
+    install_opsx_init_skill "$CODEX_INIT_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
+  fi
+  install_opsx_init_skill "$OPENCODE_INIT_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
+  install_opsx_init_skill "$GEMINI_INIT_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
+  OPSX_BIN_DIR=$(user_bin_dir)
+  OPSX_BIN=$OPSX_BIN_DIR/opsx
+  if [ -e "$OPSX_BIN" ] && ! grep -qxF "$OPSX_LAUNCHER_MARK" "$OPSX_BIN" 2>/dev/null; then
+    warn "$OPSX_BIN exists and is not the tmux-opsx launcher — left it alone; run opsx-init.sh from the skill dir instead"
+  else
+    install_file "$SRC/bin/opsx" "$OPSX_BIN"
+    chmod +x "$OPSX_BIN" || die "cannot chmod +x $OPSX_BIN"
+    ok "opsx -> $(printf '%s' "$OPSX_BIN" | sed "s|^$HOME|~|")"
+    case ":$PATH:" in
+      *":$OPSX_BIN_DIR:"*) ;;
+      *) warn "$OPSX_BIN_DIR is not on PATH — add it to use opsx:"
+         note "  export PATH=\"$OPSX_BIN_DIR:\$PATH\"" ;;
+    esac
+  fi
+fi
+info ""
+
 # ---------- verify ----------
 step "Verifying"
 FAIL=0
@@ -2067,6 +2147,26 @@ if [ "$SKIP_FORK" -eq 0 ]; then
     warn "fork.sh failed to parse"; FAIL=1
   fi
 fi
+if [ "$SKIP_INIT" -eq 0 ]; then
+  for d in "$PREFIX/skills/opsx-init" "$CURSOR_INIT_SKILLS_DIR" "$AGENTS_INIT_SKILLS_DIR" \
+           "$CODEX_INIT_SKILLS_DIR" "$OPENCODE_INIT_SKILLS_DIR" "$GEMINI_INIT_SKILLS_DIR"; do
+    if [ -f "$d/SKILL.md" ] && [ -x "$d/opsx-init.sh" ]; then
+      ok "$(printf '%s' "$d" | sed "s|$HOME|~|")/{SKILL.md,opsx-init.sh}"
+    else
+      warn "missing or not executable: $d/{SKILL.md,opsx-init.sh}"; FAIL=1
+    fi
+  done
+  if bash -n "$PREFIX/skills/opsx-init/opsx-init.sh" 2>/dev/null; then
+    ok "opsx-init.sh parses"
+  else
+    warn "opsx-init.sh failed to parse"; FAIL=1
+  fi
+  if [ -x "$OPSX_BIN" ] && grep -qxF "$OPSX_LAUNCHER_MARK" "$OPSX_BIN" 2>/dev/null; then
+    ok "$(printf '%s' "$OPSX_BIN" | sed "s|$HOME|~|")"
+  else
+    warn "opsx launcher not installed at $OPSX_BIN"
+  fi
+fi
 if [ -n "$EXPOSE_DOMAIN" ]; then
   for d in "$PREFIX/skills/expose" "$CURSOR_EXPOSE_SKILLS_DIR" "$AGENTS_EXPOSE_SKILLS_DIR" \
            "$CODEX_EXPOSE_SKILLS_DIR" "$OPENCODE_EXPOSE_SKILLS_DIR" "$GEMINI_EXPOSE_SKILLS_DIR"; do
@@ -2120,8 +2220,11 @@ info ""
 info "${G}${B}Done.${N}"
 info ""
 info "${B}Next steps${N}"
-info "  1. In a project:   ${B}openspec init --tools claude${N}  (Claude Code)"
-info "                     ${B}openspec init --tools cursor${N}  (Cursor CLI / IDE)"
+if [ "$SKIP_INIT" -eq 0 ]; then
+  info "  1. In a project:   ${B}opsx init${N}  (or ${B}/opsx-init${N} in your agent CLI to also write the OpenSpec context)"
+else
+  info "  1. In a project:   ${B}openspec init --tools none${N}"
+fi
 info "  2. Restart your agent CLI (Claude, Cursor, Codex, OpenCode, or Gemini) so it picks up the skill"
 info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
 info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
