@@ -5,6 +5,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
 ```
  your dev harness
  ├── setup        opsx init · /opsx-init: OpenSpec, config context, graphify ignore, .opsx/dev.yaml per repo
+ │                opsx dev: the repo's toolchain in a per-checkout Docker container, nothing installed on the host
  ├── workflow     /opsx-run: change → window → apply → gates → merge/land
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork
@@ -44,7 +45,7 @@ Not in tmux? It starts a session named after the project folder for you.
 
 | Piece | Installs to | What it does |
 |---|---|---|
-| `opsx` command | `~/.local/bin/opsx` (or `~/bin` when only that is on `PATH`) | `opsx init` sets up the repo you are in (see [Initialising a repo](#initialising-a-repo)); dispatches to the installed skill scripts |
+| `opsx` command | `~/.local/bin/opsx` (or `~/bin` when only that is on `PATH`) | `opsx init` sets up the repo you are in (see [Initialising a repo](#initialising-a-repo)); `opsx dev` runs commands in its dev container (see [Dev container](#dev-container-opsx-dev)); dispatches to the installed skill scripts |
 | `/opsx-init` skill + `opsx-init.sh` | `~/.claude/skills/opsx-init/` · `~/.cursor/skills/opsx-init/` · `~/.agents/skills/opsx-init/` · `$CODEX_HOME/skills/opsx-init/` · `~/.config/opencode/skills/opsx-init/` · `~/.gemini/skills/opsx-init/` | Runs `opsx init`, then writes the OpenSpec `context:` from the actual repo |
 | `/opsx-run` skill | `~/.claude/skills/opsx-run/` · `~/.cursor/skills/opsx-run/` · `~/.agents/skills/opsx-run/` · `$CODEX_HOME/skills/opsx-run/` · `~/.config/opencode/skills/opsx-run/` · `~/.gemini/skills/opsx-run/` | The lifecycle: apply, verify, archive, land, close — one window per change |
 | `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
@@ -217,6 +218,55 @@ It never overwrites a file you have — `--force config` or `--force dev` regene
 From an agent CLI, **`/opsx-init`** (same flags) runs `opsx init` and then replaces the `context:` skeleton with a description written from the repo — purpose, stack, layout, conventions, test commands. It only does that while the `# opsx-init: context skeleton` marker is there; a `context:` you wrote is left unchanged.
 
 `bash tests/test-init.sh` covers every step, idempotency, `--force`, `--git`, `--graphify`, toolchain detection and the install/uninstall of `opsx` and `/opsx-init` with fake `openspec`/`graphify`/`docker` in scratch repos and a scratch HOME.
+
+### Dev container (`opsx dev`)
+
+Go, Python or Node do not need to be installed on the host — not for you, not for the agents. A repo declares its toolchain once in `.opsx/dev.yaml` (written by `opsx init`), and `opsx dev` runs commands in a long-lived Docker container built from it, one per checkout. The agents themselves stay on the host with their logins, MCP and tmux; only builds, tests, package managers and the app go into the container.
+
+```bash
+opsx dev go test ./...        # run a command in this checkout's container (created on first use)
+opsx dev npm ci               # arguments are passed as-is; the exit status is the command's
+opsx dev -- -weird-cmd        # a command that starts with "-"
+opsx dev --shell              # interactive shell in the container
+opsx dev --status             # container name, image and state (or: none yet)
+opsx dev --rm                 # remove this checkout's dev and preview containers
+opsx dev --rm --all           # remove every opsx container of the project
+```
+
+**`.opsx/dev.yaml`** — flat `key: value` lines, `#` comments:
+
+| Key | Meaning |
+|---|---|
+| `image:` | Base image, e.g. `golang:1.22`, `python:3.12`, `node:20` |
+| `dockerfile:` | Build from this Dockerfile instead (path relative to the checkout root, which is the build context) — for multi-language repos. Tagged `opsx-dev/<project>:<sha256 of the file>` and built only when that tag is missing. Exactly one of `image:` / `dockerfile:` |
+| `setup:` | Run once after the container is created, as you, in the checkout root (`sh -c`). May repeat; runs in order. A failing line removes the container and names the line |
+| `cache:` | An absolute path in the container kept in a named volume `opsx-dev-<project>-cache-<path>`, shared by all checkouts of the project (e.g. `cache: /go/pkg/mod`). May repeat |
+
+Unknown keys are a warning. Without `.opsx/dev.yaml`, `opsx dev` says to run `opsx init`; without `docker` on `PATH`, it says so.
+
+```yaml
+# .opsx/dev.yaml — a Go service
+image: golang:1.22
+setup: go mod download
+cache: /go/pkg/mod
+```
+
+**Naming and lifetime.** The container is `opsx-dev-<project>-<name>`: `<project>` is the main checkout's folder name, `<name>` is `<change>` for a worktree on `opsx/<change>`, `main` for the main checkout, else the worktree folder name (lowercased; anything outside `[a-z0-9_.-]` becomes `-`). It is created on first use (`docker run -d --entrypoint sleep <image> infinity`, so any image works) and reused by every later `opsx dev` through `docker exec`. Editing `.opsx/dev.yaml` or the Dockerfile changes the `opsx.dev.hash` label, and the next `opsx dev` recreates the container and runs `setup:` again.
+
+**Same paths, same user, same ports.** The checkout is mounted at its own absolute path and the main repo's `.git` at its own (so a worktree's `.git` file resolves and git works inside). Commands run as your uid:gid in the directory you ran `opsx dev` from, with `HOME=/opsx-home` on a per-project volume `opsx-dev-<project>-home` — files you create are owned by you, and `pip install --user`, npm and Go caches persist. The container uses host networking, so an app listening on `127.0.0.1:$PORT` inside is on the host's loopback, which is what [`/expose`](#expose) needs. **This assumes a Linux host with Docker** (Docker Desktop on macOS/Windows does not give host networking). Images need `sh`, `sleep` and `chown`; for distroless images use a dev image or a `dockerfile:`.
+
+**Previews** of a checkout with `.opsx/dev.yaml` run `install` and `cmd` in a container `opsx-dev-<project>-<name>-preview` from the same image (see [Preview](#preview)).
+
+**Cleanup.** `/opsx-run <change> close` and `land` remove the change's dev and preview containers; `close-all` removes every opsx container of the project. A missing `docker` or a failed removal never fails them. Volumes are kept on purpose (caches survive); remove them by hand when you no longer need them:
+
+```bash
+docker volume ls --filter name=opsx-dev-<project>-
+docker volume rm opsx-dev-<project>-home opsx-dev-<project>-cache-go-pkg-mod
+```
+
+Agents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa) are told to use `opsx dev` whenever `.opsx/dev.yaml` exists and never to install a toolchain on the host; a host command that fails for a missing tool is retried through `opsx dev`.
+
+`bash tests/test-dev.sh` covers the `dev.yaml` keys, naming, container creation arguments, exec user/workdir/argv/exit status, setup, Dockerfile builds, recreation, `--status`/`--rm` and the cleanup from `close`, against a fake `docker` (`tests/fake-docker.sh`) that records every call.
 
 ### Setting up OpenSpec in a project
 
@@ -464,7 +514,7 @@ If you were sitting *on* the change branch when you landed it, it stays on the t
 /opsx-run close-all           # close all of them (confirms first)
 ```
 
-Closing kills the agent session in that window along with anything it still had in flight; worktrees, commits and files already written stay on disk. `close` also stops the change's preview, and `close-all` stops every preview in the project (a missing or failing preview never blocks the close).
+Closing kills the agent session in that window along with anything it still had in flight; worktrees, commits and files already written stay on disk. `close` also stops the change's preview and removes its [dev containers](#dev-container-opsx-dev), and `close-all` stops every preview and removes every opsx container in the project (a missing or failing preview, or a missing `docker`, never blocks the close).
 
 - `--all` only matches windows tmux-opsx created — your own windows in the same session are never touched.
 - It refuses to close the window you are currently *in* unless you pass `--force`, so `close-all` from inside a change window can't pull the rug out from under itself.
@@ -693,7 +743,7 @@ What happens on `preview`:
 
 1. **Recipe.** `.opsx/preview.yaml` in the checkout, else detection (below), else an error asking for `.opsx/preview.yaml`.
 2. **Install**, only when the install command or a lockfile changed since the last successful install in that checkout.
-3. **Port.** The change's last port when free, else the first free one in 3100–3999. `PORT` and `HOST=127.0.0.1` are exported to `install` and `cmd`.
+3. **Port.** The change's last port when free, else the first free one in 3100–3999. `PORT` and `HOST=127.0.0.1` are exported to `install` and `cmd`. When the checkout has [`.opsx/dev.yaml`](#dev-container-opsx-dev), `install` and `cmd` run (through `sh -c`) in a container `opsx-dev-<project>-<change>-preview` from the dev image — same mounts, user and host network as `opsx dev`, `PORT` and `HOST` set inside — and `stop` removes it; otherwise they run on the host.
 4. **Window.** The app runs in its own tmux window `ox ><change>` (ASCII, so non-UTF-8 clients show it as-is), tagged `@opsx_preview=<change>` (never `@opsx_change`, so it is never mistaken for the agent window), in its own process group; output also goes to `~/.local/state/tmux-opsx/preview/<project>/<change>.log`. The window stays open after the app exits.
 5. **Health.** `http://127.0.0.1:<port><health>` is polled until it answers 2xx/3xx. If the app exits or `timeout` passes first, the last log lines are printed, the app is stopped, and nothing is published.
 6. **Publish** with `expose.sh up <port> --name <change> --project <project>`. The URL needs a login like any exposure (your owner cookie, or a link from `preview share`). The app must listen on `127.0.0.1` (use `$HOST`): if it binds `0.0.0.0`, expose refuses it and `preview` stops the app, closes its window and says to bind `127.0.0.1`. A second `preview` while it is healthy just prints the same URL. Two `preview` runs for the same change never race: the second waits for the first (including its health wait) and then reuses it, and a `preview stop` during a start waits for it and then stops it.
@@ -724,7 +774,7 @@ timeout: 180
 
 **Bind to `127.0.0.1`.** Many dev servers ignore `HOST` and listen on every interface, which makes the app reachable at `<server-ip>:<port>` without going through Caddy. Pass the binding flag in `cmd` — `--hostname 127.0.0.1` for Next.js, `--host 127.0.0.1` for Vite — and keep a host firewall that allows only 22 and 443.
 
-`bash tests/test-preview.sh` covers recipes, detection, install hashing, health failures, reuse, stop, `--main`, close/close-all/land teardown and the README example above, against a fake `expose.sh` on a private tmux server.
+`bash tests/test-preview.sh` covers recipes, detection, install hashing, health failures, reuse, stop, `--main`, containerised previews, close/close-all/land teardown and the README example above, against a fake `expose.sh` and a fake `docker` on a private tmux server.
 
 ---
 
@@ -783,6 +833,7 @@ Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-ru
 - Windows launch with permission bypass (`claude --permission-mode bypassPermissions`, `agent --force --approve-mcps --trust`, `codex --dangerously-bypass-approvals-and-sandbox`, `opencode --auto --prompt …`, or `gemini --approval-mode=yolo --skip-trust -i …`) so they never stall on a prompt while unattended. `--approve-mcps` loads `~/.cursor/mcp.json` (browser-use) into the Cursor tmux window; OpenCode uses `--auto`; Gemini uses YOLO. `./install.sh` also writes browser-use into `~/.gemini/settings.json`, `~/.codex/config.toml`, and `~/.config/opencode/opencode.json{,c}` (`uvx --from browser-use[cli] browser-use --mcp`). Cursor Task subagents often still lack MCP — the dispatcher then runs browser-use MCP itself. A Codex or Gemini window applies the change itself. Everything they do happens in git worktrees, and the agent reports its branch back.
 - Landing never pushes, and it is the only command that writes to your git history. Everything else is confined to tmux and the OpenSpec files.
 - The `ops-applier` agent has no `Skill` tool, so it drives the `openspec` CLI directly (`openspec instructions apply --change <c> --json`) instead of calling `/opsx:apply`. That is the same work the command describes. Add `Skill` to its `tools:` list in `agents/opsx-applier.md` if you want it to use the command instead.
+- `opsx dev` and containerised previews assume a Linux host with Docker (host networking). Agents are only *told* to use `opsx dev`; nothing forces them.
 - Back-to-back sends to the same window are spaced slightly, because the Claude TUI can concatenate two prompts into one input box otherwise.
 
 ## License

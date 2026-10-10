@@ -45,6 +45,10 @@ Return `VERDICT: SKIP` with a one-line reason when:
 
 **Do not SKIP** when the diff includes API changes, auth, user input, network, file I/O, dependencies, env/secrets patterns, or executable config.
 
+## Toolchain
+
+If the checkout has `.opsx/dev.yaml`, the repo's toolchain lives in its dev container, not on the host: run builds, tests, package managers and the app through `opsx dev` from inside the checkout (e.g. `opsx dev go test ./...`, `opsx dev npm ci`, `opsx dev pytest`; `opsx dev --status` shows the container). Never install a language toolchain or package manager on the host (no `apt install golang`, `brew`, `nvm`, `pyenv`, `npm i -g`, …). If a host command fails because the tool is missing, retry it as `opsx dev <command>`. Without `.opsx/dev.yaml`, run commands on the host as before.
+
 ## Output (required)
 
 End with **exactly** this block so the dispatcher can parse it:

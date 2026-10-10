@@ -31,9 +31,11 @@
 # and preview-kill look across all sessions of the tmux server for windows
 # with this project's tag, so they work from any session or from outside tmux.
 # `close` stops the change's preview first (`close --all` stops every preview
-# in the project) through opsx-preview.sh next to this script, ignoring
-# failures; a `close` that will refuse to close the caller's own window leaves
-# the preview running.
+# in the project) through opsx-preview.sh next to this script, then removes
+# the change's dev and preview containers (`close --all`: every opsx
+# container of the project) through opsx-dev.sh --rm when docker is on PATH,
+# ignoring failures; a `close` that will refuse to close the caller's own
+# window leaves the preview and the containers running.
 #
 # Window status (distinct `ox` title + dark pane + muted bar colors).
 # Lookups use @opsx_change, so renaming does not break ensure/send/close.
@@ -1301,6 +1303,27 @@ stop_previews() {
   return 0
 }
 
+# Remove the dev containers (opsx-dev.sh --rm) of change $1, or of the whole
+# project for --all, from the same project directories as stop_previews.
+# Only "removed ..." lines are relayed; a missing docker or script, or any
+# failure, is ignored.
+remove_dev_containers() {
+  local script out dirs dir
+  script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-dev.sh"
+  [ -x "$script" ] && command -v docker >/dev/null 2>&1 || return 0
+  dirs=$(preview_project_dirs "$1")
+  [ -n "$dirs" ] || return 0
+  while IFS= read -r dir; do
+    if [ "$1" = "--all" ]; then
+      out=$(cd -- "$dir" && "$script" --rm --all 2>/dev/null) || true
+    else
+      out=$(cd -- "$dir" && "$script" --rm --change "$1" 2>/dev/null) || true
+    fi
+    printf '%s\n' "$out" | grep '^removed ' | sed 's/^/# /'
+  done <<< "$dirs"
+  return 0
+}
+
 cmd_close() {
   local change="" all=0 force=0 keep_session=0
   while [ $# -gt 0 ]; do
@@ -1327,11 +1350,14 @@ cmd_close() {
   # a missing or failing opsx-preview.sh must not block closing the window.
   # Skipped when this close is about to refuse closing the caller's own
   # window, so a refused close changes nothing.
+  # The change's dev and preview containers go with it (opsx-dev.sh --rm).
   if [ "$all" -eq 1 ]; then
     stop_previews --all
+    remove_dev_containers --all
   elif [ "$force" -eq 1 ] || [ -z "$here" ] \
        || [ "$(find_window "$(lookup_session 2>/dev/null)" "$change" 2>/dev/null)" != "$here" ]; then
     stop_previews "$change"
+    remove_dev_containers "$change"
   fi
 
   sess=$(lookup_session) || exit 1
