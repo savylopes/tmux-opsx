@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Missing docker
+# level: L1
+# requirement: No dev.yaml or no docker
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22"
+rm -f "$FAKEBIN/docker"
+command -v docker >/dev/null && fail "fixture: docker still on PATH"
+od go version
+echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+echo "$out" | grep -qi docker || fail "message does not mention docker"
+echo OK

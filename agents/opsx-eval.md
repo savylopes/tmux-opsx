@@ -114,6 +114,10 @@ timeout: 60
 
 Only add `setup`/`teardown`/`env` when checks need them; prefer provisioning inside each check's `EVAL_TMP`.
 
+## Toolchain
+
+If the checkout has `.opsx/dev.yaml`, the repo's toolchain lives in its dev container, not on the host: run builds, tests, package managers and the app through `opsx dev` from inside the checkout (e.g. `opsx dev go test ./...`, `opsx dev npm ci`, `opsx dev pytest`; `opsx dev --status` shows the container). Never install a language toolchain or package manager on the host (no `apt install golang`, `brew`, `nvm`, `pyenv`, `npm i -g`, …). If a host command fails because the tool is missing, retry it as `opsx dev <command>`. Without `.opsx/dev.yaml`, run commands on the host as before. Checks under `evals/` that need the toolchain call it through `opsx dev` as well, so they pass on a host without it.
+
 ## Procedure
 
 1. **SKIP check** (above). If SKIP, go straight to the verdict.

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Create arguments
+# level: L1
+# requirement: Container shape
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22" "cache: /go/pkg/mod"
+od true; echo "exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "exit $rc"
+dq run; echo
+WTR=$(cd "$WT" && pwd -P); GIT=$(cd "$REPO/.git" && pwd -P)
+python3 -I - "$DLOG" "$WT" "$WTR" "$REPO/.git" "$GIT" <<'PY' || exit 1
+import json, sys
+log, wt, wtr, git, gitr = sys.argv[1:6]
+runs = [json.loads(l) for l in open(log)]; runs = [r for r in runs if r[:1] == ["run"]]
+if not runs: print("FAIL: no docker run"); sys.exit(1)
+r = runs[0]; j = " ".join(r)
+def bad(m): print("FAIL: " + m); sys.exit(1)
+if "-d" not in r and "--detach" not in r: bad("no -d")
+if not any(r[i] in ("--network", "--net") and r[i+1] == "host" for i in range(len(r)-1)) and "--network=host" not in r and "--net=host" not in r: bad("no --network host")
+vols = [r[i+1] for i in range(len(r)-1) if r[i] in ("-v", "--volume")] + [x.split("=",1)[1] for x in r if x.startswith("--volume=")]
+mounts = [r[i+1] for i in range(len(r)-1) if r[i] == "--mount"]
+allv = vols + mounts
+def has_same_path(p):
+    return any(v == p + ":" + p or v.startswith(p + ":" + p + ":") or ("source=" + p in v and "target=" + p in v) for v in allv)
+if not (has_same_path(wt) or has_same_path(wtr)): bad("no same-path mount of checkout: %s" % allv)
+if not (has_same_path(git) or has_same_path(gitr)): bad("no same-path mount of main .git: %s" % allv)
+def named(v):
+    return v.endswith(":/go/pkg/mod") or v.startswith("/go/pkg/mod") is False and ":/go/pkg/mod" in v
+nv = [v for v in allv if ("/go/pkg/mod" in v) and not v.startswith("/")]
+if not nv: bad("no named volume on /go/pkg/mod: %s" % allv)
+if not any(wt in x or wtr in x for x in r if x.startswith("--label") or ("=" in x and r[r.index(x)-1] in ("--label","-l")) ) and not any((wt in r[i+1] or wtr in r[i+1]) for i in range(len(r)-1) if r[i] in ("--label","-l")): bad("no label with the checkout path")
+print("OK")
+PY

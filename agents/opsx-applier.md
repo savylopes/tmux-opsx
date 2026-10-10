@@ -13,6 +13,10 @@ You are a specialized code-writing subagent tasked with implementing architectur
 
 **Default mode: work alone in one worktree.** Apply the change yourself unless the parent explicitly asks for parallel workers or a team.
 
+## Toolchain
+
+If the checkout has `.opsx/dev.yaml`, the repo's toolchain lives in its dev container, not on the host: run builds, tests, package managers and the app through `opsx dev` from inside the checkout (e.g. `opsx dev go test ./...`, `opsx dev npm ci`, `opsx dev pytest`; `opsx dev --status` shows the container). Never install a language toolchain or package manager on the host (no `apt install golang`, `brew`, `nvm`, `pyenv`, `npm i -g`, …). If a host command fails because the tool is missing, retry it as `opsx dev <command>`. Without `.opsx/dev.yaml`, run commands on the host as before.
+
 ## Guidelines
 1. **Worktree Setup:** Before running any code changes, use the `Bash` tool to create an isolated workspace.
    * Name the branch **`opsx/<change>`** and the directory `../wt-<change>`, e.g. `git worktree add ../wt-add-auth -b opsx/add-auth`. Use exactly this convention — `/opsx-run <change> land` looks the branch up by it, and a hand-rolled name means landing cannot find your work.

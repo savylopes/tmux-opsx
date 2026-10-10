@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Setup once
+# level: L1
+# requirement: Setup on creation
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22" "setup: echo SETUPMARK"
+od true; [ "$rc" -eq 0 ] || fail "run1 exit $rc: $out"
+od true; [ "$rc" -eq 0 ] || fail "run2 exit $rc: $out"
+n=$(dq exec | grep -c SETUPMARK); echo "setup executions: $n"
+[ "$n" -eq 1 ] || fail "expected setup once, got $n"
+echo OK

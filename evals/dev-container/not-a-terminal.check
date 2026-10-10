@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Not a terminal
+# level: L1
+# requirement: Commands run as the user in the same directory
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22"
+(cd "$WT" && "$OPSX" dev true </dev/null >"$EVAL_TMP/stdout.txt" 2>&1); rc=$?
+echo "exit $rc"; cat "$EVAL_TMP/stdout.txt"
+[ "$rc" -eq 0 ] || fail "exit $rc"
+dq exec
+python3 -I - "$DLOG" <<'PY' || exit 1
+import json, sys
+ex = [json.loads(l) for l in open(sys.argv[1])]; ex = [e for e in ex if e[:1] == ["exec"] and e[-1] == "true"]
+if not ex: print("FAIL: no exec of true"); sys.exit(1)
+for e in ex:
+    opts = []
+    for x in e[1:]:
+        if x.startswith("opsx-dev-"): break
+        opts.append(x)
+    if any(x in ("-t", "--tty", "-it", "-ti") or (x.startswith("-") and not x.startswith("--") and "t" in x[1:]) for x in opts if x not in ()):
+        # a short flag cluster containing t (but not values like -u/-w/-e args)
+        flags = [x for x in opts if x.startswith("-")]
+        if any(f in ("-t","--tty","-it","-ti") for f in flags): print("FAIL: tty flag in %s" % e); sys.exit(1)
+print("OK")
+PY

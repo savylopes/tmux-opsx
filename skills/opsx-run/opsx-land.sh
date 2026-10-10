@@ -15,8 +15,8 @@
 #   --skip-eval        Don't run the eval regression gate (see below)
 #   --no-close         Leave the tmux window open
 #   --keep-branch      Don't delete the change branch
-#   --keep-worktree    Don't remove the change's worktree (its preview, if
-#                      any, is still stopped)
+#   --keep-worktree    Don't remove the change's worktree (its preview and
+#                      dev containers, if any, are still stopped/removed)
 #   --dry-run          Print what would happen, change nothing
 #   -h, --help         Show this help
 #
@@ -435,6 +435,19 @@ if [ -x "$preview_script" ]; then
       ''|'no preview running for '*) ;;
       *) printf '%s\n' "$out" | sed 's/^/  /' ;;
     esac
+  fi
+fi
+
+# Remove the change's dev and preview containers (opsx-dev.sh --rm; volumes
+# are kept). Never fatal, silent unless something was removed, skipped
+# without docker.
+dev_script="$(cd -- "$(dirname -- "$0")" && pwd)/opsx-dev.sh"
+if [ -x "$dev_script" ] && command -v docker >/dev/null 2>&1; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '  %swould run:%s %s --rm --change %s\n' "$D" "$N" "$dev_script" "$CHANGE"
+  else
+    out=$("$dev_script" --rm --change "$CHANGE" 2>/dev/null) || true
+    printf '%s\n' "$out" | grep '^removed ' | sed 's/^/  /'
   fi
 fi
 

@@ -42,6 +42,10 @@ If `PREVIEW_URL` is given, test that URL and do not start a server: it is the ch
 
 Otherwise (no `PREVIEW_URL`, or `none — <reason>`), keep the old behaviour and mention the reason in SUMMARY: start the app only if it is not already up. Prefer the project's documented dev command. Do not kill unrelated processes. If the app cannot start, that is a FAIL.
 
+## Toolchain
+
+If the checkout has `.opsx/dev.yaml`, the repo's toolchain lives in its dev container, not on the host: run builds, tests, package managers and the app through `opsx dev` from inside the checkout (e.g. `opsx dev go test ./...`, `opsx dev npm ci`, `opsx dev pytest`; `opsx dev --status` shows the container). Never install a language toolchain or package manager on the host (no `apt install golang`, `brew`, `nvm`, `pyenv`, `npm i -g`, …). If a host command fails because the tool is missing, retry it as `opsx dev <command>`. Without `.opsx/dev.yaml`, run commands on the host as before. Previews of such a checkout already run the app in a container (`opsx-preview.sh`).
+
 ## Output (required)
 
 End with **exactly** this block so the dispatcher can parse it:

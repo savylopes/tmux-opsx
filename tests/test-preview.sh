@@ -5,7 +5,7 @@
 # Runs in a scratch HOME/XDG with scratch git repos. tmux work goes to a
 # private server (tmux -L opsx-preview-test-$$) that $TMUX/$TMUX_PANE point
 # at, expose.sh is a fake that records its calls ($OPSX_EXPOSE_SH), and
-# `openspec`, `pnpm`, `npm` are fakes on PATH. Apps are python3 http.server on
+# `openspec`, `pnpm`, `npm` and `docker` (tests/fake-docker.sh) are fakes on PATH. Apps are python3 http.server on
 # 127.0.0.1. Never touches your tmux session, expose config, Caddy or DNS.
 # Usage: bash tests/test-preview.sh
 # Assertions are eval'd strings, so variables read only there look unused.
@@ -123,7 +123,13 @@ chmod +x "$SP/bin/openspec"
 # A stand-in agent CLI for agent windows.
 printf '#!/usr/bin/env bash\nexec sleep 3000\n' > "$SP/bin/fakecli"
 chmod +x "$SP/bin/fakecli"
+# Fake docker (records calls in $SP/docker/docker.log; never a real daemon).
+FD=$SP/docker
+mkdir -p "$FD/c" "$FD/img"
+cp "$REPO/tests/fake-docker.sh" "$SP/bin/docker"; chmod +x "$SP/bin/docker"
+export FAKE_DOCKER_DIR=$FD
 export PATH=$SP/bin:$PATH
+dlog() { cat "$FD/docker.log" 2>/dev/null; }
 
 # ---------------------------------------------------------------- private tmux
 $L -f /dev/null new-session -d -s pt -x 160 -y 40 'exec sleep 3000'
@@ -529,6 +535,37 @@ fi
 kill "$ADMIN_PID" 2>/dev/null; wait "$ADMIN_PID" 2>/dev/null
 rm -f "$XDG_CONFIG_HOME/tmux-opsx/expose.env"
 
+# ================================================================ dev container previews
+# Host preview: no .opsx/dev.yaml -> docker is never called.
+addwt hosted
+: > "$FD/docker.log"
+out=$(pv up hosted); rc=$?
+pv stop hosted >/dev/null
+ok "host preview never calls docker"           '[ $rc -eq 0 ] && [ ! -s "$FD/docker.log" ]'
+# Containerised preview: .opsx/dev.yaml (image: node:20) + preview.yaml.
+addwt boxed
+mkdir -p "$SP/wt-boxed/.opsx"
+printf 'image: node:20\n' > "$SP/wt-boxed/.opsx/dev.yaml"
+printf 'cmd: npm run dev -- --port $PORT\ninstall: npm install\n' > "$SP/wt-boxed/.opsx/preview.yaml"
+: > "$FD/docker.log"; : > "$SP/pm.log"
+out=$(pv up boxed); rc=$?
+BX=opsx-dev-shop-boxed-preview
+BL=$(dlog | grep "^run --rm .*--name $BX " | tail -n 1)
+ok "containerised preview: up ok, URL"         '[ $rc -eq 0 ] && [ "$(last "$out")" = "https://boxed--shop.dev.example.com" ]'
+ok "containerised preview: run for <name>-preview with node:20, host network" '[[ "$BL" == *" --network host "* ]] && [[ "$BL" == *" node:20 "* ]]'
+ok "containerised preview: PORT and HOST inside, npm run dev as command" '[[ "$BL" == *" -e PORT=$(rec boxed PORT) "* ]] && [[ "$BL" == *" -e HOST=127.0.0.1 "* ]] && [[ "$BL" == *"-c npm run dev -- --port \$PORT" ]]'
+ok "containerised preview: same mounts and user as dev" '[[ "$BL" == *" -v $SP/wt-boxed:$SP/wt-boxed "* ]] && [[ "$BL" == *" -u $(id -u):$(id -g) "* ]] && [[ "$BL" == *" -w $SP/wt-boxed "* ]]'
+ok "containerised preview: install ran in the container" '[ "$(dlog | grep -c "^run --rm .*--name $BX .*-c npm install$")" -eq 1 ] && grep -qx "npm install" "$SP/pm.log"'
+ok "containerised preview: dev container created first" 'dlog | grep -q "^run -d --name opsx-dev-shop-boxed "'
+: > "$FD/docker.log"
+out=$(pv stop boxed); rc=$?
+ok "stop removes the preview container"        '[ $rc -eq 0 ] && dlog | grep -qx "rm -f $BX" && [ "$(nwin boxed)" -eq 0 ] && [ ! -e "$PS_DIR/shop/boxed.container" ]'
+: > "$FD/docker.log"
+pv up boxed >/dev/null; out=$(pv stop --all); rc=$?
+ok "stop --all removes it too"                 '[ $rc -eq 0 ] && dlog | grep -qx "rm -f $BX"'
+git -C "$R" worktree remove --force "$SP/wt-boxed"; git -C "$R" branch -qD opsx/boxed
+git -C "$R" worktree remove --force "$SP/wt-hosted"; git -C "$R" branch -qD opsx/hosted
+
 # ================================================================ 4.1 close / close-all / land
 out=$(pv up add-auth)
 (cd "$R" && "$W" ensure add-auth --prompt-file "$SP/prompt.txt" --agent-cli fakecli --model default) >/dev/null 2>&1
@@ -555,11 +592,12 @@ echo feature > "$SP/wt-add-auth/feature.txt"
 git -C "$SP/wt-add-auth" add -A; git -C "$SP/wt-add-auth" commit -qm feature
 pv up add-auth >/dev/null
 LP=$(rec add-auth PORT)
-: > "$EXPOSE_LOG"
+: > "$EXPOSE_LOG"; : > "$FD/docker.log"
 out=$(cd "$R" && "$LAND" add-auth 2>&1); rc=$?
 ok "land with preview succeeds"                '[ $rc -eq 0 ] && [[ "$out" == *"Landed add-auth"* ]]'
 ok "land: no preview window, down recorded"    '[ "$(nwin add-auth)" -eq 0 ] && grep -qx "down add-auth --project shop" "$EXPOSE_LOG" && ! port_open "$LP"'
 ok "land: worktree removed"                    '[ ! -d "$SP/wt-add-auth" ]'
+ok "land: dev containers removed"              'grep -qx "rm -f opsx-dev-shop-add-auth" "$FD/docker.log" && grep -qx "rm -f opsx-dev-shop-add-auth-preview" "$FD/docker.log"'
 ok "land: preview state pruned (QA F5)"        '[ -z "$(ls "$PS_DIR/shop/" | grep "^add-auth\.")" ]'
 
 # land --dry-run prints the stop call

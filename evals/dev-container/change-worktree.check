@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Change worktree
+# level: L1
+# requirement: One container per checkout
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22"
+od true; echo "run1 exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "first run exit $rc"
+od true; echo "run2 exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "second run exit $rc"
+cat "$DLOG"
+n=$(dq run | grep -c '"opsx-dev-shop-add-auth"'); [ "$n" -eq 1 ] || fail "expected one run creating opsx-dev-shop-add-auth, got $n"
+[ "$(cnames)" = "opsx-dev-shop-add-auth" ] || fail "containers: $(cnames)"
+e=$(dq exec | grep -c '"opsx-dev-shop-add-auth"'); [ "$e" -ge 2 ] || fail "expected exec in the container twice, got $e"
+echo OK

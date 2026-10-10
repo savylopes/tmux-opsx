@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Main checkout
+# level: L1
+# requirement: One container per checkout
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo
+devyaml "$REPO" "image: golang:1.22"
+OD_CWD=$REPO od true; echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "exit $rc"
+cat "$DLOG"
+[ "$(cnames)" = "opsx-dev-shop-main" ] || fail "containers: $(cnames)"
+echo OK

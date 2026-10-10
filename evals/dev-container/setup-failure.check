@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Setup failure
+# level: L1
+# requirement: Setup on creation
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22" "setup: go mod download"
+export FAKE_DOCKER_FAIL_EXEC_MATCH="go mod download"
+od true; echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+echo "$out" | grep -q 'go mod download' || fail "message does not mention the setup line"
+dq rm | grep -q 'opsx-dev-shop-add-auth' || fail "no rm -f for the container"
+dq rm | grep -q -- '-f' || fail "rm without -f"
+[ -z "$(cnames)" ] || fail "container still exists: $(cnames)"
+echo OK

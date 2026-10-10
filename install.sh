@@ -661,12 +661,14 @@ install_opsx_run_skill() {
   install_file "$SRC/skills/opsx-run/opsx-land.sh"   "$dest/opsx-land.sh"
   install_file "$SRC/skills/opsx-run/opsx-eval.sh"   "$dest/opsx-eval.sh"
   install_file "$SRC/skills/opsx-run/opsx-preview.sh" "$dest/opsx-preview.sh"
+  install_file "$SRC/skills/opsx-run/opsx-dev.sh"    "$dest/opsx-dev.sh"
   install_file "$SRC/agents/models.conf"             "$dest/models.conf"
   chmod +x "$dest/opsx-window.sh" || die "cannot chmod +x $dest/opsx-window.sh"
   chmod +x "$dest/opsx-merge.sh"  || die "cannot chmod +x $dest/opsx-merge.sh"
   chmod +x "$dest/opsx-land.sh"   || die "cannot chmod +x $dest/opsx-land.sh"
   chmod +x "$dest/opsx-eval.sh"   || die "cannot chmod +x $dest/opsx-eval.sh"
   chmod +x "$dest/opsx-preview.sh" || die "cannot chmod +x $dest/opsx-preview.sh"
+  chmod +x "$dest/opsx-dev.sh"    || die "cannot chmod +x $dest/opsx-dev.sh"
   ok "/opsx-run -> $dest ($label)"
 }
 
@@ -1857,6 +1859,7 @@ step "Installing the ops-applier, ops-qa, ops-reviewer, ops-security, and ops-ev
 [ -f "$SRC/agents/opsx-eval.md" ] || die "missing $SRC/agents/opsx-eval.md — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-eval.sh" ] || die "missing $SRC/skills/opsx-run/opsx-eval.sh — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-preview.sh" ] || die "missing $SRC/skills/opsx-run/opsx-preview.sh — run this script from the repo checkout"
+[ -f "$SRC/skills/opsx-run/opsx-dev.sh" ] || die "missing $SRC/skills/opsx-run/opsx-dev.sh — run this script from the repo checkout"
 [ -f "$SRC/agents/models.conf" ] || die "missing $SRC/agents/models.conf — run this script from the repo checkout"
 load_agent_models claude
 load_agent_models agent

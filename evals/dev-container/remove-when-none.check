@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Remove when none
+# level: L1
+# requirement: Shell, status and removal
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22"
+od --rm; echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "expected exit 0 for --rm, got $rc"
+od --rm --all; echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "expected exit 0 for --rm --all, got $rc"
+echo OK

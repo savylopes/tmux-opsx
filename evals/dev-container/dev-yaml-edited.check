@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: dev-container / dev.yaml edited
+# level: L1
+# requirement: Recreate on config change
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22"
+od true; [ "$rc" -eq 0 ] || fail "run1 exit $rc: $out"
+: > "$EVAL_TMP/mark"; n0=$(wc -l < "$DLOG")
+devyaml "$WT" "image: golang:1.23"
+od true; echo "exit $rc"; echo "$out"; [ "$rc" -eq 0 ] || fail "run2 exit $rc"
+tail -n +$((n0+1)) "$DLOG" > "$EVAL_TMP/after.jsonl"; cat "$EVAL_TMP/after.jsonl"
+DLOG="$EVAL_TMP/after.jsonl" dq rm | grep -q 'opsx-dev-shop-add-auth' || fail "old container not removed"
+DLOG="$EVAL_TMP/after.jsonl" dq run | grep -q 'golang:1.23' || fail "no run with golang:1.23"
+echo OK

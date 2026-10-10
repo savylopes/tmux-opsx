@@ -4,6 +4,9 @@
 # Usage: opsx <command> [options]
 #   init     set up the current git repo: OpenSpec, config context skeleton,
 #            graphify ignore, .opsx/dev.yaml (see: opsx init help)
+#   dev      run a command in the checkout's dev container from
+#            .opsx/dev.yaml: opsx dev <cmd> | --shell | --status | --rm [--all]
+#            (see: opsx dev help)
 #   help     show this help
 #
 # Each command runs a script from an installed tmux-opsx skill, found in the
@@ -51,6 +54,7 @@ run_skill_script() {
 cmd=$1; shift
 case "$cmd" in
   init)           run_skill_script opsx-init/opsx-init.sh "$@" ;;
+  dev)            run_skill_script opsx-run/opsx-dev.sh "$@" ;;
   help|-h|--help) usage ;;
   *) printf 'opsx: unknown command %s\n\n' "'$cmd'" >&2; usage >&2; exit 2 ;;
 esac
