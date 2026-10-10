@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Agent text
+# level: L1
+# requirement: Agents use the dev container
+set -u
+bad=0
+for a in applier eval reviewer security qa; do
+  f="$EVAL_ROOT/agents/opsx-$a.md"
+  [ -f "$f" ] || { echo "FAIL: $f missing"; bad=1; continue; }
+  grep -q '\.opsx/dev\.yaml' "$f" || { echo "FAIL: $f does not mention .opsx/dev.yaml"; bad=1; }
+  grep -q 'opsx dev' "$f" || { echo "FAIL: $f does not mention opsx dev"; bad=1; }
+done
+[ $bad -eq 0 ] || exit 1
+echo OK

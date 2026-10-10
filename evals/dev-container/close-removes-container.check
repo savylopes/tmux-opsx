@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Close removes container
+# level: L2
+# requirement: Cleanup from opsx-run
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22"
+od true; [ "$rc" -eq 0 ] || fail "create exit $rc: $out"
+[ "$(cnames)" = "opsx-dev-shop-add-auth" ] || fail "fixture containers: $(cnames)"
+out=$(cd "$REPO" && setsid -w "$WINDOW" close add-auth </dev/null 2>&1); rc=$?
+echo "close exit $rc"; echo "$out"; cat "$DLOG"
+dq rm | grep -q 'opsx-dev-shop-add-auth' || fail "no rm -f opsx-dev-shop-add-auth recorded"
+[ -z "$(cnames)" ] || fail "container still exists"
+echo OK

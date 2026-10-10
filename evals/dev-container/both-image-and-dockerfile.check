@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Both image and dockerfile
+# level: L1
+# requirement: dev.yaml keys
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+mkdir -p "$WT/.opsx"; echo "FROM golang:1.22" > "$WT/.opsx/Dockerfile"
+devyaml "$WT" "image: golang:1.22" "dockerfile: .opsx/Dockerfile"
+od true
+echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+echo "$out" | grep -q image || fail "message does not name image"
+echo "$out" | grep -q dockerfile || fail "message does not name dockerfile"
+[ "$(dcount run)" -eq 0 ] || fail "docker run was called"
+echo OK

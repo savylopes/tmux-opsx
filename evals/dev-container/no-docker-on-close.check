@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: dev-container / No docker on close
+# level: L2
+# requirement: Cleanup from opsx-run
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+# baseline: the same close with a (container-less) docker present
+base=$(cd "$REPO" && setsid -w "$WINDOW" close c1 </dev/null 2>&1); brc=$?
+echo "baseline exit $brc: $base"
+rm -f "$FAKEBIN/docker"
+command -v docker >/dev/null && fail "fixture: docker still on PATH"
+out=$(cd "$REPO" && setsid -w "$WINDOW" close c1 </dev/null 2>&1); rc=$?
+echo "no-docker exit $rc: $out"
+[ "$rc" -eq "$brc" ] || fail "exit differs: $rc vs baseline $brc"
+echo "$out" | grep -qi 'docker' && fail "output complains about docker"
+# and with an existing change dir + dev.yaml too
+devyaml "$WT" "image: golang:1.22"
+out=$(cd "$REPO" && setsid -w "$WINDOW" close add-auth </dev/null 2>&1); rc2=$?
+echo "no-docker (dev.yaml present) exit $rc2: $out"
+[ "$rc2" -eq "$brc" ] || fail "exit $rc2 differs from baseline $brc"
+echo OK

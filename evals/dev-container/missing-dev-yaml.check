@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Missing dev.yaml
+# level: L1
+# requirement: No dev.yaml or no docker
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+od go version
+echo "exit $rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit"
+echo "$out" | grep -q 'opsx init' || fail "message does not mention opsx init"
+[ ! -s "$DLOG" ] || fail "docker was called: $(cat "$DLOG")"
+[ -z "$(cnames)" ] || fail "a container was created"
+[ ! -e "$WT/.opsx/dev.yaml" ] || fail "dev.yaml was created"
+echo OK

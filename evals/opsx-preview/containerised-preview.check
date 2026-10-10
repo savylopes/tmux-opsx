@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Containerised preview
+# level: L2
+# requirement: Preview in the dev container
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree; expose_configure dev.example.com
+devyaml "$WT" "image: node:20"
+recipe "$WT" "cmd: npm run dev" "timeout: 30"
+pv up add-auth; echo "exit $rc"; echo "$out"; cat "$DLOG"
+python3 -I - "$DLOG" <<'PY' || exit 1
+import json, sys
+runs = [json.loads(l) for l in open(sys.argv[1])]
+runs = [r for r in runs if r[:1] == ["run"] and "opsx-dev-shop-add-auth-preview" in r]
+if not runs: print("FAIL: no docker run for opsx-dev-shop-add-auth-preview"); sys.exit(1)
+r = runs[0]
+if "node:20" not in r: print("FAIL: image node:20 missing"); sys.exit(1)
+if not (any(r[i] in ("--network","--net") and r[i+1] == "host" for i in range(len(r)-1)) or "--network=host" in r): print("FAIL: no --network host"); sys.exit(1)
+envs = [r[i+1] for i in range(len(r)-1) if r[i] in ("-e","--env")] + [x.split("=",1)[1] for x in r if x.startswith("--env=")]
+if not any(e.startswith("PORT=") for e in envs): print("FAIL: PORT not in env: %s" % envs); sys.exit(1)
+tail = " ".join(r[r.index("node:20")+1:])
+if "npm run dev" not in tail: print("FAIL: command is not npm run dev: %s" % tail); sys.exit(1)
+print("OK")
+PY

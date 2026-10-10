@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Build once
+# level: L1
+# requirement: Dockerfile builds
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+mkdir -p "$WT/.opsx"; printf 'FROM golang:1.22\nRUN true\n' > "$WT/.opsx/Dockerfile"
+devyaml "$WT" "dockerfile: .opsx/Dockerfile"
+od true; [ "$rc" -eq 0 ] || fail "run1 exit $rc: $out"
+od true; [ "$rc" -eq 0 ] || fail "run2 exit $rc: $out"
+dq build
+[ "$(dcount build)" -eq 1 ] || fail "expected one build"
+dq build | grep -q '"opsx-dev/shop:' || fail "tag does not start opsx-dev/shop:"
+echo OK

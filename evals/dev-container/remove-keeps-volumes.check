@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Remove keeps volumes
+# level: L1
+# requirement: Shell, status and removal
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree
+devyaml "$WT" "image: golang:1.22" "cache: /go/pkg/mod"
+od true; [ "$rc" -eq 0 ] || fail "create exit $rc: $out"
+[ -n "$(cnames)" ] || fail "fixture: no container"
+od --rm --all; echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "exit $rc"
+[ -z "$(cnames)" ] || fail "container survived --rm --all: $(cnames)"
+cat "$DLOG"
+dq volume rm | grep -q . && fail "volume rm was recorded"
+dq volume prune | grep -q . && fail "volume prune was recorded"
+grep -q -- '-v"\?' /dev/null
+python3 -I - "$DLOG" <<'PY' || exit 1
+import json, sys
+for l in open(sys.argv[1]):
+    a = json.loads(l)
+    if a[:1] == ["rm"] and any(x in ("-v", "--volumes") for x in a): print("FAIL: rm -v removes anonymous volumes: %s" % a); sys.exit(1)
+print("OK")
+PY

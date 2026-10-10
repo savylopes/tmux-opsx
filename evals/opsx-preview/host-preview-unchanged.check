@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Host preview unchanged
+# level: L2
+# requirement: Preview in the dev container
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree; expose_configure dev.example.com
+recipe "$WT" "$HTTP_CMD" "timeout: 30"
+[ ! -e "$WT/.opsx/dev.yaml" ] || fail "fixture: dev.yaml exists"
+pv up add-auth; echo "exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "preview did not start (exit $rc)"
+port=$(route_port add-auth--shop); [ "$(http_get "$port" index.html)" = "worktree-add-auth" ] || fail "host app not served"
+pv stop add-auth
+[ ! -s "$DLOG" ] || fail "docker was called: $(cat "$DLOG")"
+echo OK

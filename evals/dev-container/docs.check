@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: dev-container / Docs
+# level: L1
+# requirement: Documentation
+set -u
+bad=0
+for t in 'opsx dev --shell' 'dockerfile:' 'cache:'; do
+  grep -qF -- "$t" "$EVAL_ROOT/README.md" || { echo "FAIL: README.md lacks '$t'"; bad=1; }
+done
+for t in 'opsx dev' 'dockerfile:' 'cache:'; do
+  grep -qF -- "$t" "$EVAL_ROOT/skills/opsx-run/SKILL.md" || { echo "FAIL: SKILL.md lacks '$t'"; bad=1; }
+done
+grep -qi 'linux' "$EVAL_ROOT/README.md" || { echo "FAIL: README does not state Linux host assumption"; bad=1; }
+grep -qi 'linux' "$EVAL_ROOT/skills/opsx-run/SKILL.md" || { echo "FAIL: SKILL.md does not state Linux host assumption"; bad=1; }
+[ $bad -eq 0 ] || exit 1
+echo OK

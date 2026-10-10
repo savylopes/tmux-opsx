@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: opsx-preview / Stop removes it
+# level: L2
+# requirement: Preview in the dev container
+set -u
+. "$EVAL_ROOT/evals/_lib/dev.sh"
+mk_repo; mk_worktree; expose_configure dev.example.com
+devyaml "$WT" "image: node:20"
+recipe "$WT" "cmd: npm run dev" "timeout: 30"
+pv up add-auth; echo "up exit $rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "preview did not start"
+pv stop add-auth; echo "stop exit $rc"; echo "$out"; cat "$DLOG"
+dq rm | grep -q 'opsx-dev-shop-add-auth-preview' || fail "no rm -f opsx-dev-shop-add-auth-preview"
+dq rm | grep -q -- '"-f"' || fail "rm without -f"
+echo OK
