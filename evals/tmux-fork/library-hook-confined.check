@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Library hook confined
+# level: L2
+# requirement: Library hook confined
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+mkhook() { printf '#!/bin/sh\ntouch "%s"\n' "$2" > "$1"; chmod +x "$1"; }
+page() { printf '<html><head><title>t</title></head><body>x</body></html>\n' | FORK_PAGE_DIR="$1" FORK_DIR="$(fdir 1)" "$FORK" page; }
+open_fork --cli claude --page-dir "$EVAL_TMP/elsewhere/3"; [ $RC -eq 0 ] || fail "open: $OUT"
+# control: confined layout runs the hook
+good="$XDG_STATE_HOME/agent-forks/explain/shop"; mkdir -p "$good"; mkhook "$good/.reindex" "$EVAL_TMP/ran-good"
+page "$good/3" >/dev/null || fail "control write"
+for i in $(seq 30); do [ -e "$EVAL_TMP/ran-good" ] && break; sleep 0.1; done
+[ -e "$EVAL_TMP/ran-good" ] || { echo "UNVERIFIABLE-ish: control hook did not run"; fail "hook not run even in the confined layout"; }
+# 1: parent not under <state>/explain/
+bad="$EVAL_TMP/elsewhere"; mkdir -p "$bad"; mkhook "$bad/.reindex" "$EVAL_TMP/ran-bad"
+page "$bad/3" >/dev/null || fail "page not written outside explain/"
+[ -s "$bad/3/index.html" ] || fail "page missing"
+# 2: .reindex a symlink
+sl="$XDG_STATE_HOME/agent-forks/explain/linked"; mkdir -p "$sl"; mkhook "$EVAL_TMP/real-hook" "$EVAL_TMP/ran-link"; ln -s "$EVAL_TMP/real-hook" "$sl/.reindex"
+page "$sl/3" >/dev/null || fail "page not written with symlink hook"
+[ -s "$sl/3/index.html" ] || fail "page missing (symlink)"
+sleep 1.5
+[ ! -e "$EVAL_TMP/ran-bad" ] || fail "hook outside explain/ was run"
+[ ! -e "$EVAL_TMP/ran-link" ] || fail "symlinked hook was run"
+echo ok

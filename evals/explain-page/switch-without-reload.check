@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Switch without reload
+# level: L1
+# requirement: Language switch
+# Runs the template's inline language script in a minimal DOM stand-in (no browser available).
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+command -v node >/dev/null || { echo "needs node"; exit 77; }
+template > "$EVAL_TMP/t.html"; [ -s "$EVAL_TMP/t.html" ] || fail "no template"
+r=$(node "$EVAL_ROOT/evals/_lib/langsim.js" "$EVAL_TMP/t.html" '{"navlang":"en-US","click":"pt"}') || fail "sim error: $r"
+echo "$r"
+j() { node -e 'const o=JSON.parse(process.argv[1]);console.log(eval("o."+process.argv[2]))' "$r" "$1"; }
+[ "$(j shown)" = pt ] || fail "PT not shown after click"
+[ "$(j stored)" = pt ] || fail "localStorage does not hold pt"
+[ "$(j 'idOwners.P1.join()')" = pt ] || fail "English article still holds ids"
+[ "$(j requests)" = 0 ] && [ "$(j reloads)" = 0 ] || fail "request or reload made by the switch"
+r0=$(node "$EVAL_ROOT/evals/_lib/langsim.js" "$EVAL_TMP/t.html" '{"navlang":"en-US"}'); grep -q '"shown":"en"' <<<"$r0" || fail "not English first: $r0"
+grep -q 'lang\]:not\|:not(\[lang' <<<"$(template)" || fail "CSS does not hide the other article"
+echo ok

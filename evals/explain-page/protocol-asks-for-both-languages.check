@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Protocol asks for both languages
+# level: L2
+# requirement: Bilingual page
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+sec=$(sed -n '/[Pp]age protocol/,$p' "$(fdir 1)/brief.md"); [ -n "$sec" ] || fail "no page protocol"
+grep -qiE 'english' <<<"$sec" && grep -qiE 'portuguese' <<<"$sec" || fail "protocol names no English/Portuguese"
+grep -qF 'lang="en"' <<<"$sec" && grep -qF 'lang="pt"' <<<"$sec" || fail "protocol lacks lang=en / lang=pt"
+grep -qiE 'identical|same' <<<"$sec" || fail "no identical-labels rule"
+grep -qiE 'same .*fork\.sh page.* write|one .*fork\.sh page|both .*(same|one) write|in the same' <<<"$sec" || fail "no 'same write' rule"
+grep -qiE 'in step|every edit|both.*edit|edit.*both' <<<"$sec" || fail "no keep-in-step-on-edit rule"
+echo ok
