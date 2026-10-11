@@ -9,9 +9,9 @@
 
 ## 2. Docs
 
-- [ ] 2.1 Update `skills/opsx-run/SKILL.md`: usage block (`land --eval` runs the eval regression gate; `--skip-eval` accepted, no-op), the `land` action row, the `opsx-land.sh` synopsis and the "Eval regression gate" bullet (off by default, `--eval` turns it on, `--skip-eval` no-op, say so when relaying); verify by grepping the file for `--skip-eval` and `eval gate` and reading every hit
-- [ ] 2.2 Update `README.md`: the components table row for `opsx-land.sh`, the `/opsx-run <change> land --skip-eval` row (now `--eval`), the `opsx-land.sh` synopsis, the "Eval regression gate" paragraph, the "Other flags" sentence and the `tests/test-eval.sh` paragraph (default-off and `--skip-eval` no-op cases); verify by grepping `README.md` for `--skip-eval`, `eval gate` and `regression gate` and reading every hit
-- [ ] 2.3 Grep `agents/` and the other `skills/*/SKILL.md` for `--skip-eval`, `eval gate` and `regression gate` and fix any text that still says land runs the gate by default; verify the grep shows only the intended wording
+- [x] 2.1 Update `skills/opsx-run/SKILL.md`: usage block (`land --eval` runs the eval regression gate; `--skip-eval` accepted, no-op), the `land` action row, the `opsx-land.sh` synopsis and the "Eval regression gate" bullet (off by default, `--eval` turns it on, `--skip-eval` no-op, say so when relaying); verify by grepping the file for `--skip-eval` and `eval gate` and reading every hit
+- [x] 2.2 Update `README.md`: the components table row for `opsx-land.sh`, the `/opsx-run <change> land --skip-eval` row (now `--eval`), the `opsx-land.sh` synopsis, the "Eval regression gate" paragraph, the "Other flags" sentence and the `tests/test-eval.sh` paragraph (default-off and `--skip-eval` no-op cases); verify by grepping `README.md` for `--skip-eval`, `eval gate` and `regression gate` and reading every hit
+- [x] 2.3 Grep `agents/` and the other `skills/*/SKILL.md` for `--skip-eval`, `eval gate` and `regression gate` and fix any text that still says land runs the gate by default; verify the grep shows only the intended wording
 
 ## 3. Integration
 
