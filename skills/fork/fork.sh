@@ -8,7 +8,8 @@
 #
 # Usage:
 #   fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]
-#                [--model <m>] [--parent-model <m>]                 < brief
+#                [--model <m>] [--parent-model <m>] [--brief-only]  < brief
+#   fork.sh native [--cli <name>] [--cwd <dir>] [--brief-only]
 #   fork.sh return                                                     < result
 #   fork.sh collect [<id>]
 #   fork.sh list
@@ -18,7 +19,8 @@
 #
 # State: ${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks/<tmux-session>/<id>/
 #   brief.md    brief (parent text + generated fork protocol), first prompt
-#   meta        key=value: parent_pane child_pane window cli model cwd created status …
+#   meta        key=value: parent_pane child_pane window cli model cwd created status
+#               context (full|brief) context_source …
 #   result.md   the child's result (written by `return`, or recovered by collect)
 #   capture.txt last pane capture (saved by collect/close when no result)
 #
@@ -39,6 +41,20 @@
 #   codex     --sandbox read-only --ask-for-approval on-request
 #   opencode  --agent plan
 #   gemini    --approval-mode plan
+#
+# Context mode: a fork is "full" (native) when the child CLI is the host CLI,
+# that CLI can fork a session natively, and native mode is not disabled; the
+# child then starts as a fork of the parent's whole conversation and the parent
+# writes only a short brief (question + role). Otherwise it is "brief": the
+# child knows only the brief the parent wrote. Native launches:
+#   claude    --resume <$CLAUDE_CODE_SESSION_ID> --fork-session (the id is taken
+#             from the environment, else recovered from the process chain)
+#   opencode  --continue --fork (only when --cwd is the parent's directory:
+#             OpenCode continues the last session of that directory)
+# Codex, Gemini and Cursor (agent) always use brief mode, as do cross-CLI forks.
+# Opt out with `open --brief-only` or FORK_NATIVE=0. `fork.sh native` prints the
+# decision `open` would make (`full <cli> <source>` or `brief <reason>`) without
+# writing anything, so the parent knows which brief to write.
 #
 # Every subcommand except `return` requires tmux. Nothing here ever sends keys
 # to the parent pane.
@@ -347,12 +363,72 @@ resolve_model() {
 }
 
 # ---------------------------------------------------------------------------
+# Native (full-context) forks
+
+valid_uuid() {
+  [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
+# The parent's Claude Code session id: $CLAUDE_CODE_SESSION_ID, else the nearest
+# ancestor's (some shells strip it). Only a well-formed UUID is printed.
+parent_session_id() {
+  local v=${CLAUDE_CODE_SESSION_ID:-}
+  if [ -n "$v" ] && valid_uuid "$v"; then printf '%s' "$v"; return 0; fi
+  if [ -z "$v" ] && v=$(recover_env_var CLAUDE_CODE_SESSION_ID) && valid_uuid "$v"; then
+    printf '%s' "$v"; return 0
+  fi
+  return 1
+}
+
+# Print `full <cli> <source>` or `brief <reason>` for child CLI $1 in cwd $2
+# ($3 = 1 for --brief-only). Order: same CLI as the host, CLI with a true fork,
+# opencode only in the parent's cwd, not disabled, claude session id found.
+native_mode() {
+  local cli=$1 cwd=$2 brief_only=${3:-0} host here there sid
+  host=$(host_cli)
+  if [ -z "$host" ]; then
+    printf 'brief host CLI not detected (child %s)' "$cli"; return 0
+  fi
+  if [ "$host" != "$cli" ]; then
+    printf 'brief cross-CLI (%s -> %s)' "$host" "$cli"; return 0
+  fi
+  case "$cli" in
+    claude|opencode) ;;
+    *) printf 'brief %s has no true fork' "$cli"; return 0 ;;
+  esac
+  if [ "$cli" = opencode ]; then
+    here=$(pwd -P)
+    there=$(cd -- "$cwd" 2>/dev/null && pwd -P) || there=$cwd
+    if [ "$here" != "$there" ]; then
+      printf 'brief cwd differs; opencode sessions are per directory'; return 0
+    fi
+  fi
+  if [ "$brief_only" = 1 ]; then
+    printf 'brief disabled (--brief-only)'; return 0
+  fi
+  if [ "${FORK_NATIVE:-1}" = 0 ]; then
+    printf 'brief disabled (FORK_NATIVE=0)'; return 0
+  fi
+  case "$cli" in
+    claude)
+      if sid=$(parent_session_id); then
+        printf 'full claude session %s' "$sid"
+      else
+        printf 'brief no CLAUDE_CODE_SESSION_ID (parent session id not found)'
+      fi
+      ;;
+    opencode) printf 'full opencode continue' ;;
+  esac
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Launch command (read-only; never bypass/force flags)
 
 # The "$(cat …)" parts are meant to stay literal: they run in the launcher.
 # shellcheck disable=SC2016
 build_launch_cmd() {
-  local cli=$1 brief=$2 id=$3 dir=$4 parent=$5 model=${6:-} script envp carve rule mf=""
+  local cli=$1 brief=$2 id=$3 dir=$4 parent=$5 model=${6:-} native=${7:-} script envp carve rule mf="" nf=""
   script=$(this_script)
   envp=$(printf 'FORK_ID=%q FORK_DIR=%q FORK_PARENT=%q FORK_SH=%q' "$id" "$dir" "$parent" "$script")
   if [ -n "$model" ]; then
@@ -361,6 +437,14 @@ build_launch_cmd() {
       *)            mf=$(printf ' -m %q' "$model") ;;
     esac
   fi
+  # $native is the native_mode line; only `full <cli> …` adds fork flags.
+  case "$native" in
+    "full claude session "*)
+      nf=${native#full claude session }
+      valid_uuid "$nf" || die "invalid parent session id '$nf'"
+      nf=$(printf ' --resume %q --fork-session' "$nf") ;;
+    "full opencode "*) nf=' --continue --fork' ;;
+  esac
   case "$cli" in
     claude)
       # Plan mode refuses mutating shell commands; allow exactly `fork.sh
@@ -368,8 +452,8 @@ build_launch_cmd() {
       # that this one command is the sanctioned exception.
       rule="Bash($script return:*)"
       carve="You are a read-only fork child (fork $id). The only permitted exception to plan mode is running '$script return' when the user asks you to return; it saves your answer to a state directory outside the repository and is not a code change. Do not exit plan mode and do not modify files."
-      printf 'exec env %s claude --permission-mode plan --allowedTools %q --append-system-prompt %q%s "$(cat %q)"' \
-        "$envp" "$rule" "$carve" "$mf" "$brief"
+      printf 'exec env %s claude%s --permission-mode plan --allowedTools %q --append-system-prompt %q%s "$(cat %q)"' \
+        "$envp" "$nf" "$rule" "$carve" "$mf" "$brief"
       ;;
     agent)
       printf 'exec env %s agent --mode ask%s "$(cat %q)"' "$envp" "$mf" "$brief"
@@ -379,7 +463,7 @@ build_launch_cmd() {
         "$envp" "$mf" "$brief"
       ;;
     opencode)
-      printf 'exec env %s opencode --agent plan%s --prompt "$(cat %q)"' "$envp" "$mf" "$brief"
+      printf 'exec env %s opencode%s --agent plan%s --prompt "$(cat %q)"' "$envp" "$nf" "$mf" "$brief"
       ;;
     gemini)
       printf 'exec env %s gemini --approval-mode plan%s -i "$(cat %q)"' "$envp" "$mf" "$brief"
@@ -398,7 +482,8 @@ protocol_footer() {
 ## Fork protocol (fork $id)
 
 - You are a **read-only fork** of another agent session running in the tmux
-  pane next to you. Answer the user's questions about the context above.
+  pane next to you. Answer the user's questions about the context above
+  (in a full-context fork: the conversation you inherited).
   Do **not** modify, create or delete files in the project, and do not run
   commands that change state. Reading files and running read-only commands
   is fine.
@@ -527,7 +612,7 @@ extract_marker_block() {
 # Subcommands
 
 cmd_open() {
-  local window=0 vertical=0 cli_opt="" cwd=$PWD model_opt="" parent_model=""
+  local window=0 vertical=0 cli_opt="" cwd=$PWD model_opt="" parent_model="" brief_only=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --window)   window=1; shift ;;
@@ -542,6 +627,7 @@ cmd_open() {
       --parent-model=*)
                   parent_model=${1#--parent-model=}; check_model --parent-model "$parent_model"; shift ;;
       --cwd)      cwd=${2:-}; shift 2 ;;
+      --brief-only) brief_only=1; shift ;;
       -h|--help)  usage; return 0 ;;
       *) die "unknown option for open: $1" ;;
     esac
@@ -553,9 +639,10 @@ cmd_open() {
   [ -d "$cwd" ] || die "cwd not found: $cwd"
   [ -t 0 ] && die "pipe the brief on stdin, e.g.  fork.sh open <<'EOF' … EOF"
 
-  local cli brief_text model
+  local cli brief_text model native
   cli=$(resolve_cli "$cli_opt") || exit 1
   model=$(resolve_model "$cli" "$model_opt" "$parent_model")
+  native=$(native_mode "$cli" "$cwd" "$brief_only")
   brief_text=$(cat)
   [ -n "${brief_text//[[:space:]]/}" ] || die "the brief on stdin is empty."
 
@@ -580,6 +667,8 @@ cmd_open() {
   meta_set mode "$([ "$window" -eq 1 ] && echo window || echo pane)" "$dir"
   meta_set session "$sess" "$dir"
   meta_set question "$(question_line "$dir/brief.md")" "$dir"
+  meta_set context "${native%% *}" "$dir"
+  meta_set context_source "${native#* }" "$dir"
   meta_set status opening "$dir"
 
   # The launch line lives in a small bash script so it does not depend on the
@@ -588,7 +677,7 @@ cmd_open() {
     printf '#!/usr/bin/env bash\n'
     printf '# fork %s child launcher (generated by fork.sh open)\n' "$id"
     printf 'cd %q || exit 1\n' "$cwd"
-    build_launch_cmd "$cli" "$dir/brief.md" "$id" "$dir" "$parent" "$model" || exit 1
+    build_launch_cmd "$cli" "$dir/brief.md" "$id" "$dir" "$parent" "$model" "$native" || exit 1
     printf '\n'
   } > "$dir/launch.sh" || die "cannot write $dir/launch.sh"
   launch=$(printf 'bash %q' "$dir/launch.sh")
@@ -621,6 +710,11 @@ cmd_open() {
   [ "$window" -eq 0 ] && arrange_layout "$parent" "$vertical"
 
   printf 'fork %s pane %s cli %s model %s\n' "$id" "$child" "$cli" "${model:-default}"
+  case "$native" in
+    "full claude session "*) printf '# context: full (claude --resume %s --fork-session)\n' "${native#full claude session }" ;;
+    "full opencode "*)       printf '# context: full (opencode --continue --fork)\n' ;;
+    *)                       printf '# context: brief (%s)\n' "${native#brief }" ;;
+  esac
   printf '# state: %s\n' "$dir"
   printf '# collect later with: %s collect %s\n' "$script" "$id"
 }
@@ -757,24 +851,26 @@ cmd_collect() {
 }
 
 cmd_list() {
-  local sdir i dir st child cli model q any=0
+  local sdir i dir st child cli model ctx q any=0
   require_tmux
   sdir=$(session_dir) || exit 1
   for i in $(fork_ids "$sdir"); do
     dir=$sdir/$i
     if [ "$any" -eq 0 ]; then
-      printf '%-4s %-18s %-9s %-20s %-6s %s\n' ID STATUS CLI MODEL PANE QUESTION
+      printf '%-4s %-18s %-9s %-20s %-7s %-6s %s\n' ID STATUS CLI MODEL CONTEXT PANE QUESTION
       any=1
     fi
     st=$(meta_get status "$dir")
     child=$(meta_get child_pane "$dir")
     cli=$(meta_get cli "$dir")
     model=$(meta_get model "$dir")
+    ctx=$(meta_get context "$dir")
     q=$(meta_get question "$dir")
     if [ "$st" != closed ] && ! pane_is_fork "$child" "$dir"; then
       st="$st (pane gone)"
     fi
-    printf '%-4s %-18s %-9s %-20s %-6s %s\n' "$i" "${st:-?}" "${cli:--}" "${model:-default}" "${child:--}" "${q:--}"
+    # Forks opened before context modes existed were brief forks.
+    printf '%-4s %-18s %-9s %-20s %-7s %-6s %s\n' "$i" "${st:-?}" "${cli:--}" "${model:-default}" "${ctx:-brief}" "${child:--}" "${q:--}"
   done
   [ "$any" -eq 1 ] || printf 'no forks in tmux session %s\n' "$(current_session)"
 }
@@ -845,6 +941,25 @@ cmd_detect_cli() {
   printf '\n'
 }
 
+# Print the context mode `open` would use; reads no stdin, writes nothing,
+# needs no tmux. Exit 0 for both `full` and `brief`.
+cmd_native() {
+  local cli_opt="" cwd=$PWD brief_only=0 cli
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cli) cli_opt=${2:-}; [ -n "$cli_opt" ] || die "--cli needs a value"; shift 2 ;;
+      --cwd) cwd=${2:-}; shift 2 ;;
+      --brief-only) brief_only=1; shift ;;
+      -h|--help) usage; return 0 ;;
+      *) die "unknown option for native: $1" ;;
+    esac
+  done
+  [ -d "$cwd" ] || die "cwd not found: $cwd"
+  cli=$(resolve_cli "$cli_opt") || exit 1
+  native_mode "$cli" "$cwd" "$brief_only"
+  printf '\n'
+}
+
 usage() {
   sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$(this_script)"
 }
@@ -856,7 +971,8 @@ case "${1:-}" in
   list)       shift; cmd_list "$@" ;;
   close)      shift; cmd_close "$@" ;;
   detect-cli) shift; cmd_detect_cli "$@" ;;
+  native)     shift; cmd_native "$@" ;;
   help|-h|--help) usage ;;
   '') usage >&2; exit 1 ;;
-  *) die "unknown subcommand: $1 (expected open|return|collect|list|close|detect-cli|help)" ;;
+  *) die "unknown subcommand: $1 (expected open|return|collect|list|close|native|detect-cli|help)" ;;
 esac

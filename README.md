@@ -591,7 +591,7 @@ Per CLI, the installer:
 
 ### Fork
 
-`/fork` opens a **read-only child agent** beside the one you are talking to, already briefed with the current conversation, so you can ask side questions ("why did we pick X?", "where is Y handled?") without derailing the main thread. It is independent of OpenSpec and `/opsx-run`, and works from Claude Code, Cursor CLI, Codex CLI, OpenCode and Gemini CLI. It needs tmux.
+`/fork` opens a **read-only child agent** beside the one you are talking to that already knows the current conversation (on Claude Code and OpenCode it is a native fork of it, elsewhere it gets a summary brief), so you can ask side questions ("why did we pick X?", "where is Y handled?") without derailing the main thread. It is independent of OpenSpec and `/opsx-run`, and works from Claude Code, Cursor CLI, Codex CLI, OpenCode and Gemini CLI. It needs tmux.
 
 ```
 ┌ tmux window ───────────────────────────┬──────────────────────────┐
@@ -605,18 +605,31 @@ Per CLI, the installer:
 
 | Command | Where | What it does |
 |---|---|---|
-| `/fork ["question"]` | parent | writes a brief (question + 5–15 lines of context) and opens the child in a side-by-side pane (~40% width) |
+| `/fork ["question"]` | parent | opens the child in a side-by-side pane (~40% width): a native fork of this conversation when possible (the brief is just the question), else a summary brief (question + 5–15 lines of context) |
+| `/fork --brief ["question"]` | parent | force the summary brief: the child sees only the brief, never the parent's conversation |
 | `/fork --vertical …` / `/fork --window …` | parent | split top/bottom, or open a new window `fork-<id>` instead |
 | `/fork --cli <claude\|agent\|codex\|opencode\|gemini> …` | parent | child CLI (default: the parent's) |
 | `/fork --model <m> …` | parent | child model (default: `$FORK_MODEL`, else the parent's model when the child uses the same CLI, else the CLI's default) |
 | `/fork return` | child | saves a short result (answer, evidence, unresolved) and notifies the parent |
 | `/fork collect [id]` | parent | reads the result into the parent (default: most recently returned) |
-| `/fork list` | parent | id, status, CLI, MODEL (`default` = the CLI's default), pane and question of every fork in this tmux session |
+| `/fork list` | parent | id, status, CLI, MODEL (`default` = the CLI's default), CONTEXT (`full` / `brief`), pane and question of every fork in this tmux session |
 | `/fork close <id>` / `--all` | parent | saves a capture if there is no result, kills the pane/window, keeps the state |
 
 With more than one child beside the parent, the window switches to `main-vertical` so the parent stays the large pane.
 
 **Model.** A fork runs on the parent's model by default: the `/fork` skill always passes the parent agent's own model id as `--parent-model`, and `fork.sh` applies it only when the child runs on the same CLI as the parent (for OpenCode only in `provider/model` form). Precedence is `--model` > `$FORK_MODEL` > inherited parent model (same CLI only) > the CLI's default (no model flag). Each CLI gets its own flag (`--model` for claude and agent, `-m` for codex, opencode and gemini); ids are never mapped across CLIs. Values that are empty, contain whitespace or start with `-` are rejected before anything opens. The chosen model is shown on the `open` line (`fork 3 pane %7 cli claude model haiku`, or `model default`), in `meta` and in `/fork list`. Called directly: `fork.sh open --cli claude --model haiku <<<'## Question …'`. `$FORK_HOST_CLI` (a CLI name, or `none`) overrides host CLI detection.
+
+**Native forks (full context).** When the child runs on the same CLI as the parent and that CLI can fork a session, the child starts as a fork of the parent's whole conversation: a new session seeded with the full transcript, while the parent's own session is never written to. The parent then writes only the question, not a context summary, and the child can answer "why did we pick X three hours ago?" from the history itself.
+
+| Child CLI (same as the parent) | Native launch | Notes |
+|---|---|---|
+| Claude Code | `claude --resume <parent session id> --fork-session …` | the id comes from `$CLAUDE_CODE_SESSION_ID` (recovered from the process chain when a shell strips it); works with any `--cwd` |
+| OpenCode | `opencode --continue --fork …` | "the last session of this directory", so only when the child runs in the parent's directory; if another OpenCode session in the same project was used more recently, it is picked instead (use `/fork --brief`) |
+| Codex, Gemini, Cursor | — | always the summary brief (no true fork on the command line) |
+
+*Brief fallback:* the summary brief is used automatically for cross-CLI forks (e.g. a Codex child of a Claude parent), for Codex / Gemini / Cursor, for an OpenCode child with a different `--cwd`, when no Claude session id is found, and when forced with `/fork --brief` (`fork.sh open --brief-only`) or `FORK_NATIVE=0`. A brief-mode launch is exactly the pre-native launch line. `fork.sh native [--cli …] [--cwd …]` prints the decision before anything opens (`full claude session <id>` or `brief <reason>`); the skill runs it to decide which brief to write. `open` prints the mode on a `# context: full …` / `# context: brief …` line, `meta` records `context=full|brief` and `context_source`, and `/fork list` shows it in the CONTEXT column. All read-only flags, the allow rule, the appended system prompt and the model flags are the same in both modes.
+
+*What a full-context child inherits:* everything the parent saw, including anything sensitive that appeared in the conversation (pasted tokens, file contents, command output), and the parent's context-window usage: a parent close to compaction gives a child close to compaction, and the first turn processes the whole transcript (for Claude it normally hits the prompt cache). Use `/fork --brief` when you want a clean, small child.
 
 **Notify, never push.** On return the parent pane gets a tmux message and a title badge (`fork 1 ✓`, also in the pane option `@fork_badge`). Nothing is ever typed into the parent; you decide when to `/fork collect`.
 
@@ -634,7 +647,7 @@ With more than one child beside the parent, the window switches to `main-vertica
 
 **State** lives outside the repo, in `${XDG_STATE_HOME:-~/.local/state}/agent-forks/<tmux-session>/<id>/` (`brief.md`, `meta`, `launch.sh`, `result.md`, `capture.txt`). It is kept after `close` and on `--uninstall`; delete old forks by hand when you like.
 
-`bash tests/test-fork.sh` exercises `fork.sh` on a private tmux server with fake agent CLIs (open/return/collect/list/close, badges, layout, marker recovery, concurrent ids, model selection and inheritance).
+`bash tests/test-fork.sh` exercises `fork.sh` on a private tmux server with fake agent CLIs (open/return/collect/list/close, badges, layout, marker recovery, concurrent ids, model selection and inheritance, native forks and their brief fallbacks).
 
 ---
 
