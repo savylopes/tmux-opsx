@@ -16,7 +16,8 @@ X=$REPO/skills/explain/explain.sh
 F=$REPO/skills/fork/fork.sh
 SP=$(mktemp -d "${TMPDIR:-/tmp}/explain-test.XXXXXX")
 L="tmux -L explain-test-$$"
-trap '$L kill-server 2>/dev/null; rm -rf "$SP"' EXIT
+L2="tmux -L explain-test2-$$"
+trap '$L kill-server 2>/dev/null; $L2 kill-server 2>/dev/null; rm -rf "$SP"' EXIT
 
 # fake agent CLIs (log args + FORK_* env, then idle)
 mkdir -p "$SP/fakebin"
@@ -40,6 +41,8 @@ if [ "\$mode" = unconfigured ]; then
   echo "expose: not configured — run install.sh --expose-domain <domain> first" >&2
   exit 3
 fi
+[ "\$mode" = slow ] && [ "\$1" = up ] && { : > "$SP/expose.inside"; sleep 2; rm -f "$SP/expose.inside"; }
+if [ "\$mode" = fail ] && [ "\$1" = up ]; then echo "expose: caddy admin API timed out" >&2; exit 1; fi
 case "\$1" in
   up)    echo "exposed 127.0.0.1:\$2"; echo "https://explain--shop.example.test" ;;
   share) shift 2; echo "share link (\$*):"; echo "https://explain--shop.example.test/?opsx_share=tok123" ;;
@@ -159,6 +162,17 @@ ok "template: no external resource besides the pinned Mermaid" '[ "$(grep -oE "(
 ok "brief: both languages in the template note and the protocol" 'grep -q "Languages: English and Portuguese" $SD/$FID/brief.md && grep -q "<article lang=\"pt\">" $SD/$FID/brief.md && sed -n "/^## Page protocol/,\$p" $SD/$FID/brief.md | grep -q "Two languages, one write"'
 ok "library: bilingual title listed" 'grep -q "Landing explained · Como o landing funciona" $ROOT/index.html && curl -s "http://127.0.0.1:$PORT/" | grep -q "Como o landing funciona"'
 ok "page: bilingual page served with the CSP" 'curl -s "http://127.0.0.1:$PORT/1/" | grep -q "<article lang=\"pt\">" && curl -sI "http://127.0.0.1:$PORT/1/" | grep -qi "^Content-Security-Policy: default-src"'
+# the switch and the reload poll as behaviour, node only (no browser needed)
+if command -v node >/dev/null 2>&1; then
+  so=$(node "$REPO/tests/explain-lang-sim.mjs" lang $SP/tpl.html 2>&1); src=$?; echo "$so"
+  ok "sim: language switch, deep links, hand-over by label ($(echo "$so" | grep -c ^PASS) checks)" '[ $src -eq 0 ] && ! echo "$so" | grep -q "^FAIL"'
+  so=$(node "$REPO/tests/explain-lang-sim.mjs" poll $SP/tpl.html 2>&1); src=$?; echo "$so"
+  ok "sim: page poll ignores errors/redirects, sees a same-second rewrite" '[ $src -eq 0 ] && ! echo "$so" | grep -q "^FAIL"'
+  so=$(node "$REPO/tests/explain-lang-sim.mjs" poll $ROOT/index.html 2>&1); src=$?
+  ok "sim: library index poll likewise" '[ $src -eq 0 ] && ! echo "$so" | grep -q "^FAIL"'
+else
+  echo "SKIP sim: no node"
+fi
 # the switch itself, in a real headless Chromium against the real server (CSP in force)
 chrome=${EXPLAIN_TEST_CHROME:-}
 if [ -z "$chrome" ]; then
@@ -175,7 +189,18 @@ if [ -n "$chrome" ] && command -v node >/dev/null 2>&1 && node -e 'process.exit(
 else
   echo "SKIP browser: language switch (no runnable Chromium or node >= 22; set EXPLAIN_TEST_CHROME)"
 fi
-ok "page: served at /1/ with Last-Modified" 'curl -sI "http://127.0.0.1:$PORT/1/" | grep -qi "^Last-Modified:"'
+ok "page: served at /1/ with Last-Modified and an ETag" 'curl -sI "http://127.0.0.1:$PORT/1/" | grep -qi "^Last-Modified:" && curl -sI "http://127.0.0.1:$PORT/1/" | grep -qi "^ETag: \"[0-9a-f]\{32\}\""'
+# F5: a rewrite in the same second with the same length still changes what the poll compares
+hv() { curl -sI "http://127.0.0.1:$PORT/1/" | tr -d '\r' | grep -i "^$1:"; }
+cp $ROOT/1/index.html $SP/page1.keep
+printf '<html><head><title>x</title></head><body>AAAA</body></html>\n' > $ROOT/1/index.html; touch -d '2026-01-01 00:00:00' $ROOT/1/index.html
+e1=$(hv ETag); m1=$(hv Last-Modified); c1=$(hv Content-Length)
+printf '<html><head><title>x</title></head><body>BBBB</body></html>\n' > $ROOT/1/index.html; touch -d '2026-01-01 00:00:00' $ROOT/1/index.html
+e2=$(hv ETag); m2=$(hv Last-Modified); c2=$(hv Content-Length)
+ok "etag: same-second, same-length rewrite changes the ETag" '[ "$m1" = "$m2" ] && [ "$c1" = "$c2" ] && [ -n "$e1" ] && [ "$e1" != "$e2" ]'
+cp $SP/page1.keep $ROOT/1/index.html
+# F2: /<n> keeps the query
+ok "redirect: /1?lang=pt -> /1/?lang=pt" '[ "$(curl -sI "http://127.0.0.1:$PORT/1?lang=pt" | tr -d "\r" | sed -n "s/^Location: //Ip")" = "/1/?lang=pt" ] && [ "$(curl -sI "http://127.0.0.1:$PORT/1" | tr -d "\r" | sed -n "s/^Location: //Ip")" = "/1/" ]'
 # security (F1-F4): CSP and headers from the server, Host allowlist, no internal files
 hdr=$(curl -sI "http://127.0.0.1:$PORT/1/")
 csp=$(printf '%s\n' "$hdr" | tr -d '\r' | awk 'tolower($0) ~ /^content-security-policy:/ { sub(/^[^:]*: */, ""); print }')
@@ -199,6 +224,10 @@ rm -rf $ROOT/2
 o3=$($X open "third topic" --window </dev/null 2>&1)
 ok "ids: deleted page id is not reused" '[ "$(echo "$o3" | tail -n1 | cut -d" " -f2)" = 3 ] && [ ! -d $ROOT/2 ]'
 ok "placeholder: says it in English and Portuguese" 'grep -q "<p lang=\"en\">" $ROOT/3/index.html && grep -q "<p lang=\"pt\">" $ROOT/3/index.html'
+if command -v node >/dev/null 2>&1; then
+  so=$(node "$REPO/tests/explain-lang-sim.mjs" poll $ROOT/3/index.html 2>&1); src=$?
+  ok "sim: placeholder poll ignores errors/redirects" '[ $src -eq 0 ] && ! echo "$so" | grep -q "^FAIL"'
+fi
 
 # --- worktree: same root and exposure name ---------------------------------
 ow=$(cd "$SP/wt-change" && $X open "from the worktree" --window </dev/null 2>&1); FW=$(echo "$ow" | awk '/^fork /{print $2; exit}')
@@ -241,6 +270,57 @@ ok "stop without expose.sh: still stops" '[ -z "$(tagged)" ] && [ ! -f $ROOT/.se
 echo ok > $SP/expose.mode
 e=$($X open "bad cli" --cli nosuchcli </dev/null 2>&1); rc=$?
 ok "fork failure: non-zero, page discarded, id kept" '[ $rc -ne 0 ] && [ ! -d $ROOT/6 ] && [ -f $ROOT/.ids/6 ]'
+PORT=$(rec port)
+# --- F1: re-exposure keeps the public host working ---------------------------
+pub() { curl -s -o /dev/null -w '%{http_code}' --max-time 2 -H "Host: explain--shop.example.test" "http://127.0.0.1:$PORT/1/"; }
+echo slow > $SP/expose.mode; rm -f $SP/expose.inside
+$X serve >/dev/null 2>&1 & bg=$!
+for _ in $(seq 50); do [ -f $SP/expose.inside ] && break; sleep 0.1; done
+during=$(pub); inside=$([ -f $SP/expose.inside ] && echo yes)
+wait $bg
+ok "re-exposure: the public host answers 200 while expose.sh up runs" '[ "$inside" = yes ] && [ "$during" = 200 ] && [ "$(pub)" = 200 ]'
+echo fail > $SP/expose.mode
+o=$($X serve 2>&1); rc=$?
+ok "re-exposure: a failed up keeps the public host (route may still be live)" '[ $rc -eq 0 ] && [[ "$o" == *"exit 1"* ]] && grep -qx "explain--shop.example.test" $ROOT/.hosts && [ "$(pub)" = 200 ]'
+echo ok > $SP/expose.mode; $X serve >/dev/null 2>&1
+
+# --- F5: `--` and stdin ----------------------------------------------------
+o=$($X open --window -- "-v is a topic" </dev/null 2>&1); rc=$?; n=$(echo "$o" | tail -n1 | cut -d" " -f2)
+ok "open --: a topic starting with - after --" '[ $rc -eq 0 ] && grep -qx "topic=-v is a topic" $ROOT/$n/.meta'
+o=$($X -- "--also a topic" --window </dev/null 2>&1); rc=$?
+ok "explain.sh -- <topic> --window: everything after -- is the topic" '[ $rc -eq 2 ] && [[ "$o" == *"one topic only"* ]]'
+o=$($X -- "--also a topic" </dev/null 2>&1); rc=$?; n=$(echo "$o" | tail -n1 | cut -d" " -f2); FD=$(echo "$o" | awk '/^fork /{print $2; exit}')
+ok "explain.sh -- <topic>: opens it" '[ $rc -eq 0 ] && grep -qx "topic=--also a topic" $ROOT/$n/.meta'
+$F close $FD >/dev/null 2>&1
+o=$($X open --window "a" -- "b" </dev/null 2>&1); rc=$?
+ok "open: a second topic after -- refused" '[ $rc -eq 2 ] && [[ "$o" == *"one topic only"* ]]'
+t0=$(date +%s)
+o=$(EXPLAIN_STDIN_WAIT=1 timeout 30 $X open "idle stdin" --window < <(sleep 40) 2>&1); rc=$?
+t1=$(date +%s); n=$(echo "$o" | tail -n1 | cut -d" " -f2); FI=$(echo "$o" | awk '/^fork /{print $2; exit}')
+ok "open: an idle non-TTY stdin does not hang it" '[ $rc -eq 0 ] && [ $((t1 - t0)) -lt 15 ] && [[ "$o" == *"no notes on stdin"* ]] && [ -f $ROOT/$n/.meta ]'
+o=$(printf '## Focus\n- piped notes arrive\n' | $X open "piped" --window 2>&1); FP=$(echo "$o" | awk '/^fork /{print $2; exit}')
+sleep 0.5
+ok "open: piped notes still reach the brief" 'grep -q "piped notes arrive" $SD/$FP/brief.md'
+$F close $FI >/dev/null 2>&1; $F close $FP >/dev/null 2>&1
+
+# --- F5: a second tmux server reuses the server, never orphans it ------------
+env -u TMUX $L2 -f /dev/null new-session -d -s es2 -x 200 -y 50 -c "$SP/shop" 'exec sleep 3000'
+sock2=$($L2 display -p '#{socket_path}'); pid2=$($L2 display -p '#{pid}'); P2=$($L2 display -p -t es2 '#{pane_id}')
+W=$(rec window); PORT=$(rec port)
+o=$(TMUX="$sock2,$pid2,0" TMUX_PANE=$P2 $X serve 2>&1); rc=$?
+ok "second tmux server: reuses the running server and says where it is" '[ $rc -eq 0 ] && [ "$(rec window)" = "$W" ] && [ "$(rec port)" = "$PORT" ] && [ -z "$($L2 list-windows -a -F "#{@opsx_explain}" | grep shop)" ] && [[ "$o" == *"another tmux server"* ]]'
+l=$(TMUX="$sock2,$pid2,0" TMUX_PANE=$P2 $X list)
+ok "second tmux server: list names the server's tmux socket" 'echo "$l" | grep -q "^server: running on 127.0.0.1:$PORT (window $W, tmux server "'
+o=$(TMUX="$sock2,$pid2,0" TMUX_PANE=$P2 $X stop 2>&1)
+ok "second tmux server: stop reaches the window on the first server" '[ -z "$(tagged)" ] && ! answers $PORT && [ ! -f $ROOT/.server ]'
+$X serve >/dev/null 2>&1
+o=$(TMUX="$sock2,$pid2,0" TMUX_PANE=$P2 $X serve 2>&1)
+$L kill-window -t "$(rec window)" 2>/dev/null; sleep 0.3
+o=$(TMUX="$sock2,$pid2,0" TMUX_PANE=$P2 $X serve 2>&1); rc=$?
+ok "second tmux server: window gone on the first -> started here, one server" '[ $rc -eq 0 ] && [ -z "$(tagged)" ] && [ "$($L2 list-windows -a -F "#{@opsx_explain}" | grep -c shop)" -eq 1 ] && answers $(rec port)'
+TMUX="$sock2,$pid2,0" TMUX_PANE=$P2 $X stop >/dev/null 2>&1
+$X serve >/dev/null 2>&1; PORT=$(rec port)
+
 $X stop >/dev/null
 ok "help mentions open/share/list/stop" 'h=$($X help); for w in open share list stop; do [[ "$h" == *"explain.sh $w"* ]] || exit 1; done'
 

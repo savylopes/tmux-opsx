@@ -79,7 +79,7 @@ Every block has a visible label in the left margin and an HTML id equal to it; c
 | `C<n>` | code block |
 | `N<n>` | callout / note |
 
-The user tells the **fork pane** what to change: "expand P7", "D2: the arrow from cache to db is wrong", "add a table after S3 comparing the options", "drop N2". The fork rewrites the whole page, both languages, with one `fork.sh page`, applies every change to the English and the Portuguese article alike, keeps every existing label (an edited block keeps its label, new blocks get the next unused number, removed labels are never reused) and records them in `manifest.tsv` beside the page (`label<TAB>one-line summary`), which it reads before every rewrite. The open browser reloads within a few seconds (it polls the page's `Last-Modified` every 2 s).
+The user tells the **fork pane** what to change: "expand P7", "D2: the arrow from cache to db is wrong", "add a table after S3 comparing the options", "drop N2". The fork rewrites the whole page, both languages, with one `fork.sh page`, applies every change to the English and the Portuguese article alike, keeps every existing label (an edited block keeps its label, new blocks get the next unused number, removed labels are never reused) and records them in `manifest.tsv` beside the page (`label<TAB>one-line summary`), which it reads before every rewrite. The open browser reloads within a few seconds (it polls the page's `ETag` and `Last-Modified` every 2 s and ignores error answers, so a page open on a phone never reloads into an error).
 
 ## Sharing, library, stop
 
@@ -91,9 +91,9 @@ Pages live in `${XDG_STATE_HOME:-~/.local/state}/agent-forks/explain/<project>/<
 
 ## Page template
 
-`explain.sh open` appends this skeleton to the brief. The fork keeps the `<style>`, the language switch (`<nav class="opsx-lang">`), every `<script>` block and the Mermaid script tag (exact version and `integrity` hash, which the server's Content-Security-Policy allows), and replaces the titles and the content of both articles. Labels are drawn in the margin from `data-label` by CSS; a click in the margin copies `#<label>`; the page reloads itself when the served file changes (HEAD polling of `Last-Modified` every 2 s); Mermaid comes from a CDN, pinned with Subresource Integrity and sent without a referrer (the diagram source stays readable as text when the CDN is unreachable).
+`explain.sh open` appends this skeleton to the brief. The fork keeps the `<style>`, the language switch (`<nav class="opsx-lang">`), every `<script>` block and the Mermaid script tag (exact version and `integrity` hash, which the server's Content-Security-Policy allows), and replaces the titles and the content of both articles. Labels are drawn in the margin from `data-label` by CSS; a click in the margin copies `#<label>`; the page reloads itself when the served file changes (HEAD polling of `ETag` — a content hash — `Last-Modified` and `Content-Length` every 2 s; only a direct 2xx answer counts, so errors and login redirects never replace the page); Mermaid comes from a CDN, pinned with Subresource Integrity and sent without a referrer (the diagram source stays readable as text when the CDN is unreachable).
 
-**Two languages.** Every page carries the whole explanation twice: `<article lang="en">` (English) and `<article lang="pt">` (Portuguese), each with its own `<h1>` and the **same labelled blocks in the same order** (same `data-label`, same `id`; the source repeats each id once per language on purpose). The EN / PT switch at the top shows one article without a reload and remembers the choice in `localStorage`; the first choice is `?lang=en|pt` in the URL, else the remembered one, else Portuguese when the browser language starts with `pt`, else English. The script keeps the ids only on the shown article, so `<url>#P7` (or `<url>?lang=pt#P7`) lands on P7 in the shown language and click-to-copy works in both. Diagrams are duplicated (node text translated, same structure, same `D<n>` in both articles); Mermaid renders only the shown article's diagrams, the other ones on the first switch. `<title>` holds both titles, `English title · Título em português` (the library index shows it as is; the tab shows the shown article's `<h1>`). Without JavaScript both articles are shown one after the other.
+**Two languages.** Every page carries the whole explanation twice: `<article lang="en">` (English) and `<article lang="pt">` (Portuguese), each with its own `<h1>` and the **same labelled blocks in the same order** (same `data-label`, same `id`; the source repeats each id once per language on purpose). The EN / PT switch at the top shows one article without a reload and remembers the choice in `localStorage`; the first choice is `?lang=en|pt` in the URL, else the remembered one, else Portuguese when the browser language starts with `pt`, else English. The script keeps the ids only on the shown article, so `<url>#P7` (or `<url>?lang=pt#P7`) lands on P7 in the shown language and click-to-copy works in both. Without a `#label` in the URL, a switch keeps the reader on the same block: the labelled block at the top of the screen is found by its label in the other article and scrolled to the same place. Diagrams are duplicated (node text translated, same structure, same `D<n>` in both articles); Mermaid renders only the shown article's diagrams, the other ones on the first switch. `<title>` holds both titles, `English title · Título em português` (the library index shows it as is; the tab shows the shown article's `<h1>`). Without JavaScript both articles are shown one after the other.
 
 <!-- explain-page-template -->
 ```html
@@ -168,6 +168,27 @@ if (window.mermaid) mermaid.initialize({startOnLoad: false, theme: matchMedia('(
     var run = null;
     if (window.mermaid && cur) { try { run = mermaid.run({nodes: cur.querySelectorAll('pre.mermaid:not([data-processed])')}); } catch (x) {} }
     if (scroll) { jump(); if (run && run.then) run.then(jump, jump); }
+    return run;
+  }
+  // Without a #label, a switch keeps the reader on the same block: the innermost labelled block
+  // at the top of the viewport (else the section around it) and its offset, found again by label.
+  function anchor() {
+    try {
+      if (!window.scrollY) return null;
+      var arts = document.querySelectorAll('article[lang]'), cur = null, els, a = null, i, r;
+      for (i = 0; i < arts.length; i++) if (arts[i].getAttribute('lang') === root.getAttribute('data-show')) cur = arts[i];
+      els = cur ? cur.querySelectorAll('[data-label]') : [];
+      for (i = 0; i < els.length; i++) {
+        r = els[i].getBoundingClientRect();
+        if (r.bottom <= 8) continue;
+        a = {label: els[i].getAttribute('data-label'), top: r.top};
+        if (r.top > 8 || !els[i].querySelector('[data-label]')) break;
+      }
+      return a;
+    } catch (x) { return null; }
+  }
+  function restore(a) {
+    try { var el = document.getElementById(a.label); if (el) window.scrollBy(0, el.getBoundingClientRect().top - a.top); } catch (x) {}
   }
   var first = pick(); root.setAttribute('data-show', first); root.lang = first;
   document.addEventListener('DOMContentLoaded', function () {
@@ -180,7 +201,8 @@ if (window.mermaid) mermaid.initialize({startOnLoad: false, theme: matchMedia('(
     var l = b.getAttribute('data-set-lang');
     try { localStorage.setItem(KEY, l); } catch (x) {}
     try { var u = new URL(location.href); if (u.searchParams.has('lang')) { u.searchParams.set('lang', l); history.replaceState(null, '', u.href); } } catch (x) {}
-    show(l, true);
+    var a = location.hash ? null : anchor(), run = show(l, !a);
+    if (a) { restore(a); if (run && run.then) run.then(function () { restore(a); }, function () {}); }
   });
   window.addEventListener('hashchange', jump);
 })();
@@ -260,14 +282,19 @@ document.addEventListener('click', function (e) {
   if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(tag).then(function () { done(true); }, function () { done(false); }); }
   else { var t = document.createElement('textarea'); t.value = tag; document.body.appendChild(t); t.select(); var ok = false; try { ok = document.execCommand('copy'); } catch (x) {} t.remove(); done(ok); }
 });
-// Reload when the served page changes (HEAD poll of Last-Modified every 2 s).
+// Reload when the served page changes: HEAD poll every 2 s of ETag (content hash), Last-Modified
+// and Content-Length. Only a direct 2xx answer counts; errors (421, 5xx, proxy) and redirects
+// (login) are ignored, so the page never reloads into an error or a login screen.
 (function () {
   var last = null;
   function poll() {
     fetch(location.pathname, {method: 'HEAD', cache: 'no-store'}).then(function (r) {
-      var m = (r.headers.get('Last-Modified') || '') + '|' + (r.headers.get('Content-Length') || '');
-      if (last !== null && m !== last) { location.reload(); return; }
-      last = m; setTimeout(poll, 2000);
+      if (r.ok && !r.redirected) {
+        var m = [r.headers.get('ETag'), r.headers.get('Last-Modified'), r.headers.get('Content-Length')].join('|');
+        if (last !== null && m !== last) { location.reload(); return; }
+        last = m;
+      }
+      setTimeout(poll, 2000);
     }).catch(function () { setTimeout(poll, 2000); });
   }
   poll();
