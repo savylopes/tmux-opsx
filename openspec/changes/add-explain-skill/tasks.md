@@ -12,7 +12,7 @@
 ## 2. explain.sh: project root, server, exposure, library
 
 - [x] 2.1 Create `skills/explain/explain.sh` with the usage header, `die`/`say` helpers, project resolution identical to `expose.sh` (basename of the dir holding the common git dir), and the pages root `${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks/explain/<project>/`; verify with a scratch repo and a worktree that both resolve the same root
-- [x] 2.2 Implement the server: `pick_port` (free loopback port), `launch.sh` running `python3 -m http.server --bind 127.0.0.1 <port> --directory <root>`, a detached tmux window named `ox >explain` tagged `@opsx_explain=<project>`, the `.server` record, and a readiness wait (HEAD `/` up to 10 s); reuse when the recorded window exists with the tag and the port answers, else restart; verify in `tests/test-explain.sh` (private tmux server, scratch state) that a first call creates one tagged window and a listening port, a second call creates nothing new, and a stale record is replaced
+- [x] 2.2 Implement the server: `pick_port` (free loopback port), `launch.sh` running `python3 -m http.server --bind 127.0.0.1 <port> --directory <root>` (replaced by `.serve.py` in 6.1), a detached tmux window named `ox >explain` tagged `@opsx_explain=<project>`, the `.server` record, and a readiness wait (HEAD `/` up to 10 s); reuse when the recorded window exists with the tag and the port answers, else restart; verify in `tests/test-explain.sh` (private tmux server, scratch state) that a first call creates one tagged window and a listening port, a second call creates nothing new, and a stale record is replaced
 - [x] 2.3 Implement the exposure step: `expose.sh up <port> --name explain` (found like `opsx-preview.sh` finds it: `$OPSX_EXPOSE_SH`, sibling skill dir, PATH), URL taken from its last line; on exit 3 print the local URL and the `install.sh --expose-domain` hint and continue; verify in `tests/test-explain.sh` with a fake `expose.sh` that logs `up <port> --name explain` and with a fake that exits 3
 - [x] 2.4 Implement page ids (`.ids/<n>` with noclobber, never reused), `<n>/.meta` (topic, created, fork id, tmux session) and the `.reindex` script written into the root that regenerates `index.html` (id, title from `<title>`, created, fork, link to `/<n>/`); verify in `tests/test-explain.sh` that two pages yield ids 1 and 2, `.reindex` lists both titles, and a deleted page's id is not reused
 - [x] 2.5 Implement `explain.sh open "<topic>" [--window] [--vertical] [--cli <c>] [--model <m>] [--parent-model <m>]`: allocate the id, assemble the brief from stdin (the parent's text, written by the skill) plus the page URL line, call `fork.sh open --page-dir <root>/<n> …` with the brief on stdin, print the page URL and relay the fork line; refuse an empty topic; verify in `tests/test-explain.sh` with the fake CLIs that the fork's `meta` has the page dir, `brief.md` contains the topic and the URL, and the output names `/<n>/`
@@ -33,6 +33,13 @@
 
 - [x] 5.1 Run `bash tests/test-fork.sh`, `bash tests/test-explain.sh`, `shellcheck` on `fork.sh`, `explain.sh` and `install.sh`, and `openspec validate add-explain-skill --strict`; verify all pass
 - [ ] 5.2 Manual walk-through on this machine with `/expose` configured: `/explain "how /opsx-run land works"`, open the URL on a second device via the owner link, ask the fork to expand one `P` label and fix one `D` label, confirm the page updates and labels stay stable, `/explain share --ttl 1h`, `/explain list`, `/explain stop`; record the outcome in the apply report
+
+## 6. Security review fixes
+
+- [x] 6.1 F1/F2/F4: replace `python3 -m http.server` with `.serve.py` written by `explain.sh` (server-side CSP and security headers, `/`, `/<n>/` and `index.html` only, GET/HEAD, Host allowlist from `.hosts`), root 700 and files 600; verify in `tests/test-explain.sh` (CSP and headers, 421 for a foreign Host, 404 for internal files, modes)
+- [x] 6.2 F3: pin Mermaid to `11.17.2/dist/mermaid.min.js` with SRI and `referrerpolicy="no-referrer"` in the template; verify the brief carries the hash
+- [x] 6.3 F5: page protocol forbids secrets, tokens and credentials; verify in `tests/test-fork.sh`
+- [x] 6.4 F6: `fork.sh page` runs `.reindex` only under `<state root>/explain/<project>/`, never a symlink; verify in `tests/test-fork.sh`
 
 ## Workflow follow-up
 

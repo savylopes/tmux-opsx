@@ -61,6 +61,13 @@ Each fork SHALL have a state directory `${XDG_STATE_HOME:-$HOME/.local/state}/ag
 - **WHEN** `fork.sh page` runs with empty stdin
 - **THEN** it exits non-zero and `index.html` is unchanged
 
+### Requirement: Library hook confined
+After an `index.html` write, `fork.sh page` SHALL run `<page_dir>/../.reindex` only when `<page_dir>/..` lies directly under `<state root>/explain/` and the hook is an executable regular file (not a symlink) owned by the user.
+
+#### Scenario: Library hook confined
+- **WHEN** `fork.sh page` writes a page whose parent directory is not under `<state root>/explain/`, or whose `.reindex` is a symlink
+- **THEN** the page is written and that `.reindex` is not run
+
 ### Requirement: Page command allowed in read-only mode
 When a fork has a page directory, the child's read-only launch SHALL allow exactly `fork.sh page` in addition to `fork.sh return` (for Claude Code, a second narrow `--allowedTools` rule and a sentence in the appended system prompt), and the launch SHALL still carry no bypass flags. On a CLI whose sandbox blocks the command, the page protocol SHALL tell the child to report that the page cannot be written and stop, never to print the HTML into the pane.
 
