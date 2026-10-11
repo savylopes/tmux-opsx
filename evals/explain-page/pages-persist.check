@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Pages persist
+# level: L2
+# requirement: Page files and library
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open "p"; run_explain open "q"; run_explain open "r"; [ $RC -eq 0 ] || fail "$OUT"
+printf '<html><head><title>T3</title></head><body>three</body></html>\n' | FORK_PAGE_DIR="$ROOT/3" FORK_DIR="$(fdir 3)" "$FORK" page >/dev/null || fail write
+"$FORK" close 3 >/dev/null 2>&1
+run_explain stop; [ $RC -eq 0 ] || fail "stop rc=$RC: $OUT"
+[ -f "$ROOT/3/index.html" ] && grep -q three "$ROOT/3/index.html" || fail "page 3 gone"
+echo ok

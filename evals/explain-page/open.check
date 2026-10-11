@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Open
+# level: L2
+# requirement: Open an explain fork
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open "how landing works"; [ $RC -eq 0 ] || fail "rc=$RC: $OUT"
+grep -qE '^fork 1 ' <<<"$OUT" || fail "no fork line: $OUT"
+last=$(tail -1 <<<"$OUT")
+grep -qE 'https?://[^ ]*explain--shop[^ ]*/1/' <<<"$last" || fail "page URL (explain--shop.../1/) not on last line: $last"
+b="$(fdir 1)/brief.md"; [ -f "$b" ] || fail "no brief.md"
+grep -q 'how landing works' "$b" || fail "topic not in brief"
+grep -qi 'page protocol' "$b" || fail "no page protocol section"
+grep -q "^page_dir=$ROOT/1\$" "$(fdir 1)/meta" || fail "page_dir not recorded: $(cat "$(fdir 1)/meta")"
+echo ok

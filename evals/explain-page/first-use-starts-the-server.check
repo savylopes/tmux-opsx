@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: explain-page / First use starts the server
+# level: L2
+# requirement: Explain server and exposure per project
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "rc=$RC: $OUT"
+[ "$(tagged_count)" = 1 ] || fail "expected one window tagged @opsx_explain=$PROJ"
+port=$(sed -n 's/^port=//p' "$ROOT/.server"); [ -n "$port" ] || fail "no port recorded"
+curl -s -o /dev/null -I --max-time 3 "http://127.0.0.1:$port/" || fail "nothing answers on $port"
+ss -ltn 2>/dev/null | grep -q "127.0.0.1:$port " || fail "not listening on loopback $port"
+grep -qx "up $port --name explain" "$EXPOSE_LOG" || fail "expose log: $(cat "$EXPOSE_LOG")"
+echo ok

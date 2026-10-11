@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Stable labels across a rewrite
+# level: L3
+# requirement: Addressable blocks
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+[ -n "${EVAL_AGENT_CLI:-}" ] || { echo "needs an agent CLI (L3)"; exit 77; }
+echo "UNVERIFIABLE: label stability is the fork agent's behaviour; deterministic part (protocol text) is covered by protocol-present" ; exit 77
+echo ok

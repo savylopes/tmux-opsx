@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Reload on change
+# level: L2
+# requirement: Diagrams and rendering
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+tpl=$(template)
+grep -q 'Last-Modified' <<<"$tpl" && grep -q "method: *'HEAD'" <<<"$tpl" && grep -q 'location.reload' <<<"$tpl" || fail "template does not poll Last-Modified and reload"
+ms=$(grep -oE 'set(Timeout|Interval)\(poll, *[0-9]+\)' <<<"$tpl" | grep -oE '[0-9]+' | head -1)
+[ -n "$ms" ] && [ "$ms" -le 5000 ] || fail "poll interval '$ms' ms not within a few seconds"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+l1=$(curl -sI "http://127.0.0.1:$port/1/" | grep -i '^last-modified'); [ -n "$l1" ] || fail "server sends no Last-Modified"
+sleep 1.2
+printf '<html><head><title>n</title></head><body>new</body></html>\n' | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page >/dev/null || fail w
+l2=$(curl -sI "http://127.0.0.1:$port/1/" | grep -i '^last-modified')
+[ "$l1" != "$l2" ] || fail "Last-Modified unchanged after rewrite ($l1)"
+echo ok

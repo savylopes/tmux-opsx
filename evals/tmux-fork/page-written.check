@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Page written
+# level: L2
+# requirement: Page write from the child
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+d="$EVAL_TMP/x/3"
+doc='<!doctype html><html><head><title>Doc</title></head><body>hello</body></html>'
+OUT=$(printf '%s\n' "$doc" | FORK_PAGE_DIR="$d" FORK_DIR="$EVAL_TMP/nofork" "$FORK" page 2>&1); RC=$?
+[ $RC -eq 0 ] || fail "rc=$RC: $OUT"
+grep -qF "$doc" "$d/index.html" || fail "content not written"
+grep -qF "$d/index.html" <<<"$OUT" || fail "path not printed: $OUT"
+echo ok

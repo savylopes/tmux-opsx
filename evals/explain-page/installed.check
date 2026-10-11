@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Installed
+# level: L1
+# requirement: Install and documentation
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install) || fail "install failed: $out"
+for d in .claude .cursor .agents .codex .config/opencode .gemini; do
+  [ -f "$HOME/$d/skills/explain/SKILL.md" ] || fail "no SKILL.md in $d"
+  [ -x "$HOME/$d/skills/explain/explain.sh" ] || fail "explain.sh not executable in $d"
+done
+( cd "$EVAL_ROOT" && ./install.sh --help 2>&1 ) | grep -q -- '--skip-explain' || fail "--help lacks --skip-explain"
+mkdir -p "$XDG_STATE_HOME/agent-forks/explain/x"; echo keep > "$XDG_STATE_HOME/agent-forks/explain/x/keep"
+out=$(run_install --uninstall) || fail "uninstall: $out"
+for d in .claude .cursor .agents .codex .config/opencode .gemini; do [ ! -e "$HOME/$d/skills/explain" ] || fail "not removed: $d"; done
+[ -f "$XDG_STATE_HOME/agent-forks/explain/x/keep" ] || fail "pages dir touched"
+echo ok

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Reuse
+# level: L2
+# requirement: Explain server and exposure per project
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "first: $OUT"
+w1=$(T list-windows -a | wc -l); port=$(sed -n 's/^port=//p' "$ROOT/.server")
+run_explain open y; [ $RC -eq 0 ] || fail "second: $OUT"
+[ "$(tagged_count)" = 1 ] || fail "second tagged window"
+[ "$(sed -n 's/^port=//p' "$ROOT/.server")" = "$port" ] || fail "port changed"
+# fork pane adds one; the server window must not
+[ "$(grep -c '^up ' "$EXPOSE_LOG")" -ge 1 ] || fail "no up"
+grep '^up ' "$EXPOSE_LOG" | sort -u | wc -l | grep -qx 1 || fail "different up calls: $(cat "$EXPOSE_LOG")"
+grep -q "^page 2 https\?://[^ ]*/2/\$" <<<"$OUT" || fail "page 2 line: $OUT"
+curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/2/" | grep -qx 200 || fail "page 2 not served"
+echo ok

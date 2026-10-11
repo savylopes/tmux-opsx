@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Share link
+# level: L2
+# requirement: Share, list and stop
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain share --for acme --ttl 3d; [ $RC -eq 0 ] || fail "rc=$RC: $OUT"
+grep -qx 'share explain --for acme --ttl 3d' "$EXPOSE_LOG" || fail "expose log: $(cat "$EXPOSE_LOG")"
+[ "$(tail -1 <<<"$OUT")" = "https://explain--shop.example.test/?k=LINK" ] || fail "last line: $(tail -1 <<<"$OUT")"
+echo ok

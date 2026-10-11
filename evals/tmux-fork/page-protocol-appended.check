@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Page protocol appended
+# level: L2
+# requirement: Brief content
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+open_fork --cli claude --page-dir "$EVAL_TMP/pages/3"; [ $RC -eq 0 ] || fail "open: $OUT"
+b="$(fdir 1)/brief.md"
+grep -qF 'fork.sh page' "$b" || fail "no fork.sh page in brief"
+last=$(grep -n -i 'page protocol' "$b" | tail -1 | cut -d: -f1); [ -n "$last" ] || fail "no page protocol section"
+fp=$(grep -n -i 'fork protocol\|fork.sh return' "$b" | head -1 | cut -d: -f1)
+[ "$last" -gt "${fp:-0}" ] || fail "page protocol not after fork protocol"
+[ "$(sed -n '/[Pp]age protocol/,$p' "$b" | grep -c 'fork.sh page')" -ge 1 ] || fail "page command not in last section"
+open_fork --cli claude; [ $RC -eq 0 ] || fail "open2: $OUT"
+if grep -qF 'fork.sh page' "$(fdir 2)/brief.md" || grep -qi 'page protocol' "$(fdir 2)/brief.md"; then fail "page section in non-page fork"; fi
+echo ok

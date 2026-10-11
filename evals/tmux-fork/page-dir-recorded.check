@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Page dir recorded
+# level: L2
+# requirement: Fork state and ids
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+open_fork --cli claude --page-dir /x/explain/shop/3; [ $RC -eq 0 ] || fail "open: $OUT"
+grep -qx 'page_dir=/x/explain/shop/3' "$(fdir 1)/meta" || fail "meta: $(cat "$(fdir 1)/meta")"
+wait_args claude >/dev/null
+grep -q 'FORK_PAGE_DIR=/x/explain/shop/3' "$(fdir 1)/launch.sh" || fail "launch.sh lacks FORK_PAGE_DIR"
+open_fork --cli claude; [ $RC -eq 0 ] || fail "open2: $OUT"
+grep -qx 'page_dir=' "$(fdir 2)/meta" || fail "meta2: $(cat "$(fdir 2)/meta")"
+grep -q FORK_PAGE_DIR "$(fdir 2)/launch.sh" && fail "FORK_PAGE_DIR in non-page fork"
+echo ok

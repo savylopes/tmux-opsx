@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Protocol present
+# level: L2
+# requirement: Page protocol in the brief
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+b="$(fdir 1)/brief.md"
+for w in 'fork.sh page' 'manifest.tsv' 'Mermaid'; do grep -qF -- "$w" "$b" || fail "brief lacks $w"; done
+grep -qE 'S P D T C N|S<n>.*P<n>.*D<n>.*T<n>.*C<n>.*N<n>' "$b" || fail "brief lacks label prefixes S P D T C N"
+echo ok

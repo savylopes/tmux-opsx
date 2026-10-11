@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Stop
+# level: L2
+# requirement: Share, list and stop
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+before=$(cd "$ROOT" && find . -name 'index.html' -path './[0-9]*' | sort | xargs md5sum)
+run_explain stop; [ $RC -eq 0 ] || fail "stop rc=$RC: $OUT"
+grep -qx 'down explain' "$EXPOSE_LOG" || fail "expose down not called: $(cat "$EXPOSE_LOG")"
+[ "$(tagged_count)" = 0 ] || fail "tagged window remains"
+after=$(cd "$ROOT" && find . -name 'index.html' -path './[0-9]*' | sort | xargs md5sum)
+[ "$before" = "$after" ] || fail "pages changed"
+run_explain stop; [ $RC -eq 0 ] || fail "second stop (nothing running) rc=$RC: $OUT"
+echo ok

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Deep link
+# level: L2
+# requirement: Addressable blocks
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+tpl=$(template); [ -n "$tpl" ] || fail "no template in SKILL.md"
+grep -qE '<[a-z]+ [^>]*id="([SPDTCN][0-9.]+)"[^>]*data-label="\1"' <<<"$tpl" || fail "template blocks lack id == data-label"
+grep -q 'content:attr(data-label)' <<<"$tpl" || grep -q 'content: *attr(data-label)' <<<"$tpl" || fail "label not drawn visibly from data-label"
+grep -q 'clipboard' <<<"$tpl" || fail "no click-to-copy"
+grep -q "'#'\|\"#\"" <<<"$tpl" || fail "copy does not build #label"
+# a page with P7 + manifest written through fork.sh page
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+{ echo '<!doctype html><html><head><title>t</title></head><body>'; echo '<p id="P7" data-label="P7">seven</p></body></html>'; } | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page >/dev/null || fail w
+printf 'P7\tseven summary\n' | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page --manifest >/dev/null || fail m
+grep -q 'id="P7"' "$ROOT/1/index.html" && grep -qP '^P7\t' "$ROOT/1/manifest.tsv" || fail "P7 not addressable"
+echo ok

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Outside a fork
+# level: L2
+# requirement: Page write from the child
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+detached 'unset FORK_DIR FORK_PAGE_DIR FORK_ID; echo "<html>x</html>" | "$FORK" page; echo rc=$?'
+grep -q '^rc=1$' <<<"$DOUT_TXT" || fail "expected exit 1: $DOUT_TXT"
+grep -qi 'not a fork' <<<"$DOUT_TXT" || fail "does not say not a fork: $DOUT_TXT"
+echo ok

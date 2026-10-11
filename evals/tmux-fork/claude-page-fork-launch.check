@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Claude page fork launch
+# level: L2
+# requirement: Page command allowed in read-only mode
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+open_fork --cli claude --page-dir /x/3; [ $RC -eq 0 ] || fail "open: $OUT"
+a=$(wait_args claude)
+grep -qF 'fork.sh page' "$FAKE_LOG/claude.args" || fail "no allow rule for fork.sh page: $a"
+grep -qF 'fork.sh return' "$FAKE_LOG/claude.args" || fail "no allow rule for fork.sh return: $a"
+has_arg claude plan || fail "no plan permission mode: $a"
+grep -q -- '--permission-mode' "$FAKE_LOG/claude.args" || fail "no --permission-mode"
+grep -qiE 'dangerously|bypass|--yolo|--force' "$FAKE_LOG/claude.args" && fail "bypass flag: $a"
+grep -q 'Bash(.*fork.sh page' "$FAKE_LOG/claude.args" || fail "page rule is not a Bash(...) allow rule: $a"
+echo ok
