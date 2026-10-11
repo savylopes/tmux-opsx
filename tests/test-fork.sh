@@ -19,7 +19,8 @@ for c in claude agent codex opencode gemini; do
 name=$(basename "$0")
 { printf 'CLI=%s
 ' "$name"; for a in "$@"; do printf 'ARG=%s
-' "${a:0:60}"; done; env | grep '^FORK_' ; } > "$FORK_DIR/fake-$name.log"
+' "${a:0:60}"; case $a in Bash\(*) printf 'RULE=%s
+' "$a" ;; esac; done; env | grep '^FORK_' ; } > "$FORK_DIR/fake-$name.log"
 echo "fake $name started for fork $FORK_ID"
 exec sleep 600
 EOF
@@ -327,6 +328,60 @@ ok "list: CONTEXT header" 'echo "$l" | head -n1 | grep -Eq "^ID +STATUS +CLI +MO
 ok "list: full row" 'echo "$l" | grep -Eq "^$NC +[a-z]+ +claude +[^ ]+ +full +%[0-9]+ "'
 ok "list: brief row" 'echo "$l" | grep -Eq "^$NB +[a-z]+ +claude +[^ ]+ +brief +%[0-9]+ "'
 ok "help lists native and --brief-only" 'h=$($F help); [[ "$h" == *"fork.sh native"* ]] && [[ "$h" == *--brief-only* ]]'
+$F close --all >/dev/null
+
+# ---------------------------------------------------------------------------
+# page forks (--page-dir, fork.sh page, allow rule, page protocol)
+export FORK_HOST_CLI=none
+o=$(printf '## Question\npage q\n' | $F open --window --cli claude --page-dir /x/3); PG=${o#fork }; PG=${PG%% *}
+o=$(printf '## Question\nplain q\n' | $F open --window --cli claude); NP0=${o#fork }; NP0=${NP0%% *}
+sleep 1.5
+ok "page: meta page_dir=/x/3" 'grep -qx "page_dir=/x/3" $SD/$PG/meta'
+ok "page: child env FORK_PAGE_DIR" 'grep -qx "FORK_PAGE_DIR=/x/3" $SD/$PG/fake-claude.log'
+ok "page: no flag -> page_dir= and no env" 'grep -qx "page_dir=" $SD/$NP0/meta && ! grep -q "^FORK_PAGE_DIR=" $SD/$NP0/fake-claude.log'
+ok "page: claude allows return and page" 'grep -Fqx "RULE=Bash($F return:*)" $SD/$PG/fake-claude.log && grep -Fqx "RULE=Bash($F page:*)" $SD/$PG/fake-claude.log && [ "$(grep -c "^RULE=" $SD/$PG/fake-claude.log)" -eq 2 ]'
+ok "page: plain fork allows only return" 'grep -Fqx "RULE=Bash($F return:*)" $SD/$NP0/fake-claude.log && [ "$(grep -c "^RULE=" $SD/$NP0/fake-claude.log)" -eq 1 ]'
+ok "page: launch.sh has both rules / only return" '[ "$(grep -o "Bash" $SD/$PG/launch.sh | wc -l)" -eq 2 ] && grep -q "page:" $SD/$PG/launch.sh && [ "$(grep -o "Bash" $SD/$NP0/launch.sh | wc -l)" -eq 1 ] && ! grep -q "page:" $SD/$NP0/launch.sh'
+ok "page: plan mode, no bypass" 'grep -qx "ARG=--permission-mode" $SD/$PG/fake-claude.log && grep -qx "ARG=plan" $SD/$PG/fake-claude.log && ! grep -Eq "bypass|--force|--yolo|--auto|dangerously|--trust|skip-trust" $SD/$PG/fake-claude.log $SD/$PG/launch.sh'
+ok "page: carve-out names both commands" 'c=$(source <(sed -n "s/.*--append-system-prompt \(.*\) \"\$(cat .*/printf \"%s\" \1/p" $SD/$PG/launch.sh)); [[ "$c" == *"$F page"* ]] && [[ "$c" == *"$F return"* ]]'
+ok "page: brief has page protocol" 'grep -q "## Page protocol" $SD/$PG/brief.md && grep -q "$F page" $SD/$PG/brief.md && grep -q "manifest.tsv" $SD/$PG/brief.md && grep -q "S P D T C N" $SD/$PG/brief.md && grep -qi mermaid $SD/$PG/brief.md'
+ok "page: protocol is the last section" '[ "$(grep "^## " $SD/$PG/brief.md | tail -n1)" = "## Page protocol (fork $PG)" ]'
+ok "page: protocol says stop, no markers" 'sed -n "/^## Page protocol/,\$p" $SD/$PG/brief.md > $SP/pp; grep -q "stop" $SP/pp && ! grep -q "FORK-RESULT" $SP/pp'
+ok "page: plain brief has no page protocol" '! grep -q "Page protocol" $SD/$NP0/brief.md && ! grep -q "manifest.tsv" $SD/$NP0/brief.md'
+ok "page: relative --page-dir rejected" 'e=$(printf q | $F open --cli claude --page-dir rel/3 2>&1); [ $? -ne 0 ] && [[ "$e" == *absolute* ]]'
+
+PR=$SP/pages/proj; PD=$PR/3; mkdir -p $PR
+o=$(printf '<!doctype html><title>v1</title>\n' | FORK_PAGE_DIR=$PD $F page); rc=$?
+ok "page: writes index.html, prints path" '[ $rc -eq 0 ] && grep -q "<title>v1</title>" $PD/index.html && [ "$o" = "$PD/index.html" ]'
+o=$(printf 'S1\tsection one\nP1\tpara one\n' | FORK_PAGE_DIR=$PD $F page --manifest); rc=$?
+ok "page: --manifest writes manifest.tsv only" '[ $rc -eq 0 ] && [ "$o" = "$PD/manifest.tsv" ] && grep -qx "P1	para one" $PD/manifest.tsv && grep -q "v1" $PD/index.html'
+ok "page: no temp files left" '[ -z "$(find $PD -name ".page.*")" ]'
+cp $PD/index.html $SP/idx.before
+e=$(FORK_PAGE_DIR=$PD $F page </dev/null 2>&1); rc=$?
+ok "page: empty stdin -> exit 2, unchanged" '[ $rc -eq 2 ] && cmp -s $PD/index.html $SP/idx.before'
+e=$(printf '  \n' | FORK_PAGE_DIR=$PD $F page 2>&1); rc=$?
+ok "page: blank stdin -> exit 2" '[ $rc -eq 2 ] && cmp -s $PD/index.html $SP/idx.before'
+e=$(cd /; printf '<p>x</p>\n' | env -u FORK_DIR -u FORK_PAGE_DIR -u TMUX -u TMUX_PANE $F page 2>&1); rc=$?
+ok "page: outside a fork -> exit 1 not a fork" '[ $rc -eq 1 ] && [[ "$e" == *"not a fork"* ]]'
+e=$(printf '<p>x</p>\n' | env -u FORK_PAGE_DIR FORK_DIR=$SD/$NP0 $F page 2>&1); rc=$?
+ok "page: fork without page dir -> exit 4 naming --page-dir" '[ $rc -eq 4 ] && [[ "$e" == *--page-dir* ]]'
+e=$(printf '<p>x</p>\n' | env -u FORK_DIR -u FORK_PAGE_DIR TMUX_PANE=$($L display -p -t "$(awk -F= "/^child_pane=/{print \$2}" $SD/$NP0/meta)" "#{pane_id}") $F page 2>&1); rc=$?
+ok "page: plain fork via pane option -> exit 4" '[ $rc -eq 4 ]'
+chmod a-w $PD; e=$(printf '<p>new</p>\n' | FORK_PAGE_DIR=$PD $F page 2>&1); rc=$?; chmod u+w $PD
+ok "page: unwritable -> exit 3, unchanged" '[ $rc -eq 3 ] && cmp -s $PD/index.html $SP/idx.before && [ -z "$(find $PD -name ".page.*")" ]'
+# page dir from meta (no FORK_PAGE_DIR in env)
+o=$(printf '## Question\nmeta q\n' | $F open --window --cli claude --page-dir $PR/7); PM=${o#fork }; PM=${PM%% *}
+o=$(printf '<p>from meta</p>\n' | env -u FORK_PAGE_DIR FORK_DIR=$SD/$PM $F page); rc=$?
+ok "page: dir from meta, created if missing" '[ $rc -eq 0 ] && [ "$o" = "$PR/7/index.html" ] && grep -q "from meta" $PR/7/index.html'
+# .reindex hook: runs after index.html writes (status ignored), not after --manifest
+printf '#!/usr/bin/env bash\ntouch "%s/reindexed"\nexit 7\n' "$SP" > $PR/.reindex; chmod +x $PR/.reindex
+rm -f $SP/reindexed; o=$(printf '<p>r</p>\n' | FORK_PAGE_DIR=$PD $F page); rc=$?
+ok "page: .reindex run, exit status ignored" '[ $rc -eq 0 ] && [ -f $SP/reindexed ] && [ "$o" = "$PD/index.html" ]'
+rm -f $SP/reindexed; printf 'P1\tx\n' | FORK_PAGE_DIR=$PD $F page --manifest >/dev/null
+ok "page: --manifest does not reindex" '[ ! -f $SP/reindexed ]'
+chmod -x $PR/.reindex; printf '<p>r2</p>\n' | FORK_PAGE_DIR=$PD $F page >/dev/null
+ok "page: non-executable .reindex skipped" '[ ! -f $SP/reindexed ]'
+ok "help lists page and --page-dir" 'h=$($F help); [[ "$h" == *"fork.sh page"* ]] && [[ "$h" == *--page-dir* ]]'
 $F close --all >/dev/null
 
 # unknown cli / empty brief
