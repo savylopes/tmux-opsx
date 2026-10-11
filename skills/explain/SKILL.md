@@ -40,7 +40,7 @@ explain.sh share [--for <r>] [--ttl <d>] [--list] [--revoke <r|id|all>]
 explain.sh list | stop | serve | root
 ```
 
-Run it from the project directory (it derives `<project>` from the main checkout's folder name, the same for every worktree). Never start `python3 -m http.server`, `tmux new-window` or `expose.sh up` for pages yourself.
+Run it from the project directory (it derives `<project>` from the main checkout's folder name, the same for every worktree). Never start a web server, `tmux new-window` or `expose.sh up` for pages yourself.
 
 ## Parent: `/explain "<topic>"`
 
@@ -83,7 +83,7 @@ The user tells the **fork pane** what to change: "expand P7", "D2: the arrow fro
 
 ## Sharing, library, stop
 
-- `"$EXPLAIN_SH" share --for acme --ttl 3d` → a share link for the whole explain host of this project (every page in the library), last line of output. `--list` shows links, `--revoke <r|id|all>` removes them. Give the user the link; do not open it.
+- `"$EXPLAIN_SH" share --for acme --ttl 3d` → a share link for the whole explain host of this project (**every page in the library**, not one page), last line of output. Tell the user so before handing it to a client. `--list` shows links, `--revoke <r|id|all>` removes them. Give the user the link; do not open it.
 - `"$EXPLAIN_SH" list` → pages, server state, URL. The library index is also the root URL `https://explain--<project>.<domain>/`.
 - `"$EXPLAIN_SH" stop` → `expose.sh down explain`, kills the `ox >explain` window (tag `@opsx_explain=<project>`), keeps every page. The next `/explain` starts it again. `/opsx-run` `close-all` never touches it.
 
@@ -91,7 +91,7 @@ Pages live in `${XDG_STATE_HOME:-~/.local/state}/agent-forks/explain/<project>/<
 
 ## Page template
 
-`explain.sh open` appends this skeleton to the brief. The fork keeps the `<style>`, both `<script>` blocks and the Mermaid script tag, and replaces the title and the body content. Labels are drawn in the margin from `data-label` by CSS; a click in the margin copies `#<label>`; the page reloads itself when the served file changes (HEAD polling of `Last-Modified` every 2 s); Mermaid comes from a CDN (the diagram source stays readable as text when the CDN is unreachable).
+`explain.sh open` appends this skeleton to the brief. The fork keeps the `<style>`, every `<script>` block and the Mermaid script tag (exact version and `integrity` hash, which the server's Content-Security-Policy allows), and replaces the title and the body content. Labels are drawn in the margin from `data-label` by CSS; a click in the margin copies `#<label>`; the page reloads itself when the served file changes (HEAD polling of `Last-Modified` every 2 s); Mermaid comes from a CDN, pinned with Subresource Integrity and sent without a referrer (the diagram source stays readable as text when the CDN is unreachable).
 
 <!-- explain-page-template -->
 ```html
@@ -122,9 +122,9 @@ section[data-label]::before{top:.55rem}
 #opsx-toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:.35rem .8rem;border-radius:6px;font-size:.85rem;opacity:0;transition:opacity .2s;pointer-events:none}
 @media (max-width:40rem){body{padding-left:3rem;font-size:16px}[data-label]::before{left:-3rem;width:2.6rem;font-size:10px}}
 </style>
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-mermaid.initialize({startOnLoad: true, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default'});
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js" integrity="sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+if (window.mermaid) mermaid.initialize({startOnLoad: true, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default'});
 </script>
 </head>
 <body>
@@ -190,3 +190,4 @@ document.addEventListener('click', function (e) {
 - One page per fork; one fork per page. To explain another topic, run `/explain` again (a new page id).
 - The fork is read-only apart from `fork.sh page` (page and manifest) and `fork.sh return`; on CLIs whose read-only mode blocks `fork.sh page` (Gemini, Cursor, OpenCode plan, Codex without approval), the fork says the page cannot be written and stops — open the fork with `--cli claude` instead.
 - Pages are served behind the expose login; nothing leaves the machine unless the user creates a share link. Never put secrets into a page.
+- The server, not the page, enforces the safety rules: it serves only `/`, `/<id>/` and their `index.html` (no listings, dotfiles, manifests or `launch.sh`), answers only to `127.0.0.1`, `localhost` and the expose host, and sends a strict Content-Security-Policy (inline scripts and the pinned Mermaid file only; no external images, fonts, styles, frames or fetches; no forms) with `Referrer-Policy: no-referrer`. Keep the template's Mermaid tag exactly (pinned version and `integrity` hash) or diagrams will not render.
