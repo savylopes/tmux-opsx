@@ -39,12 +39,17 @@ Alternative: always write the full brief and let `open` drop the context section
 host cli detected                 else brief "host CLI not detected"
 child cli == host cli             else brief "cross-CLI (<host> -> <child>)"
 cli in {claude, opencode}         else brief "<cli> has no true fork"
-opencode: cwd == parent cwd       else brief "cwd differs; opencode sessions are per directory"
+opencode: cwd == session dir      else brief "cwd differs from the opencode session directory ..."
 no --brief-only, FORK_NATIVE != 0 else brief "disabled (...)"
 claude: session id found          else brief "no CLAUDE_CODE_SESSION_ID ..."
+        and not stale             else brief "stale CLAUDE_CODE_SESSION_ID ..."
 ```
 
-Session id lookup: `$CLAUDE_CODE_SESSION_ID`, else `recover_env_var CLAUDE_CODE_SESSION_ID`. The id is validated as a UUID before it reaches a command line; a malformed value in the environment counts as no id (brief), it does not trigger the ancestor search.
+Session id lookup: `$CLAUDE_CODE_SESSION_ID`, else `recover_session_id`. The id is validated as a UUID before it reaches a command line; a malformed value in the environment counts as no id (brief), it does not trigger the ancestor search.
+
+`recover_session_id` (review finding F1) does not reuse the generic `recover_env_var`. The claude process and the tmux server keep the `CLAUDE_CODE_SESSION_ID` they were launched with: a tmux server started from a Claude shell, and every claude started from one of its panes, carry an earlier conversation's id, while only the shells claude spawns get the live id (observed on this host: claude and tmux server held `d93a2975-…`, the Bash tool shell `494f3484-…`). So the walk stops at the first claude process (comm `claude`, or args matching `claude` / `claude-code`) or tmux process and never takes the id from it; it takes the nearest ancestor below that boundary. Pane shells inherit the server's environment, so a candidate equal to the boundary process's id or to the `$TMUX` server's id is rejected as stale. Stale or missing ids give `brief stale CLAUDE_CODE_SESSION_ID …` / `brief no CLAUDE_CODE_SESSION_ID …`: a visible fallback instead of a wrong session. A claude process above the candidate is not required, because the "Stripped environment" scenario (and hosts forced with `FORK_HOST_CLI`) have none.
+
+OpenCode session directory (review finding F3): `--continue` picks the last session of the directory the child runs in, which must equal the directory the parent's OpenCode session runs in. That is the working directory of the nearest `opencode` ancestor process (`/proc/<pid>/cwd`); the agent's shell may have `cd`'d elsewhere. Without such an ancestor (tests, `FORK_HOST_CLI`), `pwd -P` is used.
 
 The cwd rule existed because Claude stores sessions per project directory and it was not verified that `--resume` finds an id from another directory. If a spike shows it does, the rule can be dropped for Claude without touching the specs' other scenarios (the "Different cwd" scenario would then need revisiting, so run the spike first; task 1.1).
 

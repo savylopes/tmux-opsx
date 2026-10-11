@@ -11,7 +11,7 @@ command -v tmux >/dev/null 2>&1 || { echo "tmux is required"; exit 1; }
 REPO=$(cd -- "$(dirname -- "$0")/.." && pwd)
 F=$REPO/skills/fork/fork.sh
 SP=$(mktemp -d "${TMPDIR:-/tmp}/fork-test.XXXXXX")
-trap 'tmux -L "fork-test-$$" kill-server 2>/dev/null; rm -rf "$SP"' EXIT
+trap 'tmux -L "fork-test-$$" kill-server 2>/dev/null; tmux -L "fork-test-stale-$$" kill-server 2>/dev/null; rm -rf "$SP"' EXIT
 mkdir -p "$SP/fakebin"
 for c in claude agent codex opencode gemini; do
   cat > "$SP/fakebin/$c" <<'EOF'
@@ -239,6 +239,35 @@ R=22222222-3333-4444-8555-666666666666
 # ancestor holding the variable is the outer bash with $R.
 n=$(CLAUDE_CODE_SESSION_ID=$R bash -c 'env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude bash -c "\"\$0\" native --cli claude; :" "$0"; :' "$F")
 ok "native: stripped env recovered from ancestor" '[ "$n" = "full claude session $R" ]'
+# Stale ids (F1): the claude process and the tmux server keep the id they were
+# launched with. A bash symlinked as `claude` stands in for the claude process.
+T=33333333-4444-4555-8666-777777777777
+mkdir -p "$SP/pbin" "$SP/oc"; ln -sf "$(command -v bash)" "$SP/pbin/claude"; ln -sf "$(command -v bash)" "$SP/pbin/opencode"
+n=$(CLAUDE_CODE_SESSION_ID=$T "$SP/pbin/claude" -c 'env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude bash -c "\"\$0\" native --cli claude; :" "$0"; :' "$F")
+ok "native: id only on the claude process -> brief, not resumed" '[[ "$n" == "brief "*CLAUDE_CODE_SESSION_ID* ]] && [[ "$n" != *"$T"* ]]'
+n=$(CLAUDE_CODE_SESSION_ID=$T "$SP/pbin/claude" -c 'CLAUDE_CODE_SESSION_ID=$1 bash -c "env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude bash -c \"\\\"\\\$0\\\" native --cli claude; :\" \"\$0\"; :" "$0"; :' "$F" "$R")
+ok "native: live id below the claude process -> full with it" '[ "$n" = "full claude session $R" ]'
+n=$(CLAUDE_CODE_SESSION_ID=$T "$SP/pbin/claude" -c 'CLAUDE_CODE_SESSION_ID=$1 bash -c "env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude bash -c \"\\\"\\\$0\\\" native --cli claude; :\" \"\$0\"; :" "$0"; :' "$F" "$T")
+ok "native: ancestor id equal to the claude process's -> brief stale" '[[ "$n" == "brief stale CLAUDE_CODE_SESSION_ID"* ]]'
+L2="tmux -L fork-test-stale-$$"
+CLAUDE_CODE_SESSION_ID=$T $L2 -f /dev/null new-session -d -s st 'exec sleep 300'
+$L2 run-shell "env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude PATH='$PATH' '$F' native --cli claude > '$SP/stale.native' 2>&1"
+$L2 kill-server 2>/dev/null
+ok "native: id only from a stale tmux server -> brief stale" 'grep -q "^brief stale CLAUDE_CODE_SESSION_ID" $SP/stale.native && ! grep -q "$T" $SP/stale.native'
+# OpenCode session directory (F3): the opencode process's cwd, not the shell's.
+# The `opencode` process stays in $SP/oc; its child shell (the agent's) cd's.
+n=$(cd "$SP/oc" && "$SP/pbin/opencode" -c 'bash -c "cd \"\$1\" && FORK_HOST_CLI=opencode \"\$0\" native --cli opencode; :" "$0" "$1"; :' "$F" "$SP")
+ok "native: opencode shell cd'd away from the session dir -> brief" '[[ "$n" == "brief cwd differs"* ]]'
+n=$(cd "$SP/oc" && "$SP/pbin/opencode" -c 'bash -c "cd \"\$1\" && FORK_HOST_CLI=opencode \"\$0\" native --cli opencode --cwd \"\$2\"; :" "$0" "$1" "$2"; :' "$F" "$SP" "$SP/oc")
+ok "native: opencode --cwd = session dir -> full" '[ "$n" = "full opencode continue" ]'
+# Missing option values (F4): a clear error, no loop.
+for sub in native open detect-cli; do
+  for opt in --cwd --cli; do
+    [ "$sub" = detect-cli ] && [ "$opt" = --cwd ] && continue
+    e=$(timeout 5 "$F" $sub $opt </dev/null 2>&1); rc=$?
+    ok "$sub $opt without value -> error" '[ $rc -eq 1 ] && [[ "$e" == *"$opt needs a value"* ]]'
+  done
+done
 before=$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l)
 ok "native: needs no stdin, writes nothing" 'FORK_HOST_CLI=claude $F native </dev/null >/dev/null && [ "$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l)" -eq "$before" ]'
 # No id: run on the tmux server (child of init, started without the variable)

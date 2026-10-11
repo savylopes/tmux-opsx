@@ -48,9 +48,12 @@
 # writes only a short brief (question + role). Otherwise it is "brief": the
 # child knows only the brief the parent wrote. Native launches:
 #   claude    --resume <$CLAUDE_CODE_SESSION_ID> --fork-session (the id is taken
-#             from the environment, else recovered from the process chain)
-#   opencode  --continue --fork (only when --cwd is the parent's directory:
-#             OpenCode continues the last session of that directory)
+#             from the environment, else recovered from the process chain below
+#             the claude process; an id only the claude process or tmux server
+#             holds may be stale and falls back to brief)
+#   opencode  --continue --fork (only when --cwd is the OpenCode session's
+#             directory, the cwd of the opencode process: OpenCode continues
+#             the last session of that directory)
 # Codex, Gemini and Cursor (agent) always use brief mode, as do cross-CLI forks.
 # Opt out with `open --brief-only` or FORK_NATIVE=0. `fork.sh native` prints the
 # decision `open` would make (`full <cli> <source>` or `brief <reason>`) without
@@ -369,22 +372,102 @@ valid_uuid() {
   [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
 }
 
-# The parent's Claude Code session id: $CLAUDE_CODE_SESSION_ID, else the nearest
-# ancestor's (some shells strip it). Only a well-formed UUID is printed.
+# Read variable $2 from /proc/$1/environ (empty when unset or unreadable).
+proc_env_var() {
+  [ -r "/proc/$1/environ" ] || return 0
+  { tr '\0' '\n' < "/proc/$1/environ"; } 2>/dev/null \
+    | awk -v n="$2" 'index($0, n "=") == 1 { print substr($0, length(n) + 2); exit }'
+}
+
+# Is pid $1 a Claude Code process (native binary or node running claude-code)?
+is_claude_proc() {
+  local comm args
+  comm=$(ps -o comm= -p "$1" 2>/dev/null | tr -d ' ')
+  case "$comm" in claude|Claude) return 0 ;; esac
+  args=$(ps -o args= -p "$1" 2>/dev/null) || return 1
+  printf '%s' "$args" | grep -Eq -- '(^|/)claude( |$)|claude-code'
+}
+
+# Is pid $1 a tmux server/client process?
+is_tmux_proc() {
+  case "$(ps -o comm= -p "$1" 2>/dev/null)" in tmux*) return 0 ;; esac
+  return 1
+}
+
+# Recover CLAUDE_CODE_SESSION_ID from the parent chain. The claude process and
+# the tmux server keep the id they were *launched* with, which can belong to an
+# earlier conversation (a tmux server started from a Claude shell, a claude
+# started from such a pane), so they are never read: the walk takes the nearest
+# ancestor below them, and an id equal to one of those launch-time values is
+# rejected as stale (pane shells inherit the server's). Prints the id; returns
+# 1 when none was found, 2 when only a stale id was found.
+recover_session_id() {
+  local pid=$$ i=0 v cand="" stale="" tpid
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$i" -lt 30 ]; do
+    if is_claude_proc "$pid" || is_tmux_proc "$pid"; then
+      v=$(proc_env_var "$pid" CLAUDE_CODE_SESSION_ID)
+      [ -n "$v" ] && stale="$stale $v"
+      break
+    fi
+    if [ -z "$cand" ]; then
+      cand=$(proc_env_var "$pid" CLAUDE_CODE_SESSION_ID)
+    fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    i=$((i + 1))
+  done
+  [ -n "$cand" ] || return 1
+  # The tmux server of this session, also when it is not on the chain.
+  if [ -n "${TMUX:-}" ]; then
+    tpid=${TMUX#*,}; tpid=${tpid%%,*}
+    case "$tpid" in
+      ''|*[!0-9]*) ;;
+      *) v=$(proc_env_var "$tpid" CLAUDE_CODE_SESSION_ID); [ -n "$v" ] && stale="$stale $v" ;;
+    esac
+  fi
+  case " $stale " in *" $cand "*) return 2 ;; esac
+  printf '%s' "$cand"
+}
+
+# The parent's Claude Code session id: $CLAUDE_CODE_SESSION_ID, else recovered
+# by recover_session_id (some shells strip it). Only a well-formed UUID is
+# printed. Returns 1 when no id was found, 2 when only a stale one was.
 parent_session_id() {
-  local v=${CLAUDE_CODE_SESSION_ID:-}
-  if [ -n "$v" ] && valid_uuid "$v"; then printf '%s' "$v"; return 0; fi
-  if [ -z "$v" ] && v=$(recover_env_var CLAUDE_CODE_SESSION_ID) && valid_uuid "$v"; then
+  local v=${CLAUDE_CODE_SESSION_ID:-} rc
+  if [ -n "$v" ]; then
+    valid_uuid "$v" || return 1
     printf '%s' "$v"; return 0
   fi
-  return 1
+  v=$(recover_session_id); rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  valid_uuid "$v" || return 1
+  printf '%s' "$v"
+}
+
+# The directory the OpenCode session runs in: the cwd of the nearest opencode
+# ancestor process (the agent's shell may have cd'd elsewhere), else this
+# shell's directory.
+opencode_session_dir() {
+  local pid=$$ i=0 comm args d
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$i" -lt 30 ]; do
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
+    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    if [ "$comm" = opencode ] || printf '%s' "$args" | grep -Eq -- '(^|/)opencode( |$)'; then
+      if d=$(readlink "/proc/$pid/cwd" 2>/dev/null) && [ -d "$d" ]; then
+        (cd -- "$d" && pwd -P); return 0
+      fi
+      break
+    fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    i=$((i + 1))
+  done
+  pwd -P
 }
 
 # Print `full <cli> <source>` or `brief <reason>` for child CLI $1 in cwd $2
 # ($3 = 1 for --brief-only). Order: same CLI as the host, CLI with a true fork,
 # opencode only in the parent's cwd, not disabled, claude session id found.
 native_mode() {
-  local cli=$1 cwd=$2 brief_only=${3:-0} host here there sid
+  local cli=$1 cwd=$2 brief_only=${3:-0} host here there sid rc
   host=$(host_cli)
   if [ -z "$host" ]; then
     printf 'brief host CLI not detected (child %s)' "$cli"; return 0
@@ -397,10 +480,10 @@ native_mode() {
     *) printf 'brief %s has no true fork' "$cli"; return 0 ;;
   esac
   if [ "$cli" = opencode ]; then
-    here=$(pwd -P)
+    here=$(opencode_session_dir)
     there=$(cd -- "$cwd" 2>/dev/null && pwd -P) || there=$cwd
     if [ "$here" != "$there" ]; then
-      printf 'brief cwd differs; opencode sessions are per directory'; return 0
+      printf 'brief cwd differs from the opencode session directory (%s); opencode sessions are per directory' "$here"; return 0
     fi
   fi
   if [ "$brief_only" = 1 ]; then
@@ -411,8 +494,11 @@ native_mode() {
   fi
   case "$cli" in
     claude)
-      if sid=$(parent_session_id); then
+      sid=$(parent_session_id); rc=$?
+      if [ "$rc" -eq 0 ]; then
         printf 'full claude session %s' "$sid"
+      elif [ "$rc" -eq 2 ]; then
+        printf 'brief stale CLAUDE_CODE_SESSION_ID (the only id found is the one the claude process or tmux server was launched with; parent session id not verified)'
       else
         printf 'brief no CLAUDE_CODE_SESSION_ID (parent session id not found)'
       fi
@@ -617,7 +703,8 @@ cmd_open() {
     case "$1" in
       --window)   window=1; shift ;;
       --vertical) vertical=1; shift ;;
-      --cli)      cli_opt=${2:-}; [ -n "$cli_opt" ] || die "--cli needs a value"; shift 2 ;;
+      --cli)      [ -n "${2:-}" ] || die "--cli needs a value"
+                  cli_opt=$2; shift 2 ;;
       --model)    [ $# -ge 2 ] || die "--model needs a value"
                   model_opt=$2; check_model --model "$model_opt"; shift 2 ;;
       --model=*)  model_opt=${1#--model=}; check_model --model "$model_opt"; shift ;;
@@ -626,7 +713,8 @@ cmd_open() {
                   parent_model=$2; check_model --parent-model "$parent_model"; shift 2 ;;
       --parent-model=*)
                   parent_model=${1#--parent-model=}; check_model --parent-model "$parent_model"; shift ;;
-      --cwd)      cwd=${2:-}; shift 2 ;;
+      --cwd)      [ -n "${2:-}" ] || die "--cwd needs a value"
+                  cwd=$2; shift 2 ;;
       --brief-only) brief_only=1; shift ;;
       -h|--help)  usage; return 0 ;;
       *) die "unknown option for open: $1" ;;
@@ -933,7 +1021,8 @@ cmd_detect_cli() {
   local cli_opt=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cli) cli_opt=${2:-}; shift 2 ;;
+      --cli) [ -n "${2:-}" ] || die "--cli needs a value"
+             cli_opt=$2; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
@@ -947,8 +1036,10 @@ cmd_native() {
   local cli_opt="" cwd=$PWD brief_only=0 cli
   while [ $# -gt 0 ]; do
     case "$1" in
-      --cli) cli_opt=${2:-}; [ -n "$cli_opt" ] || die "--cli needs a value"; shift 2 ;;
-      --cwd) cwd=${2:-}; shift 2 ;;
+      --cli) [ -n "${2:-}" ] || die "--cli needs a value"
+             cli_opt=$2; shift 2 ;;
+      --cwd) [ -n "${2:-}" ] || die "--cwd needs a value"
+             cwd=$2; shift 2 ;;
       --brief-only) brief_only=1; shift ;;
       -h|--help) usage; return 0 ;;
       *) die "unknown option for native: $1" ;;

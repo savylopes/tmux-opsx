@@ -67,6 +67,13 @@ When the child CLI is the host CLI, that CLI has a true fork, the child's cwd is
 - **WHEN** the host is Claude Code and no session id is available
 - **THEN** `fork.sh native --cli claude` prints `brief` with a reason naming the session id, and `open` launches without `--resume`
 
+### Requirement: Stale session id
+The process-chain recovery SHALL NOT take the id from the claude process or a tmux server, which keep the id they were launched with (possibly an earlier conversation's), and SHALL reject a recovered id equal to theirs as stale, falling back to brief mode instead of resuming a session it cannot attribute to the parent.
+
+#### Scenario: Stale id
+- **WHEN** `CLAUDE_CODE_SESSION_ID` is unset in the shell running `fork.sh` and the only id on the process chain is held by the claude process or the tmux server (or equals theirs)
+- **THEN** `fork.sh native --cli claude` prints `brief` with a reason naming the session id, and `open` launches without `--resume`
+
 ### Requirement: Fallback to brief mode
 `fork.sh open` SHALL use brief mode, launching exactly as before this change, when any of these holds: the child CLI differs from the host CLI; the CLI is Codex, Gemini or Cursor; the CLI is OpenCode and `--cwd` names a directory other than the parent's; `--brief-only` is given; `FORK_NATIVE` is `0`. Brief mode SHALL never add `--resume`, `--fork-session`, `--continue` or `--fork`.
 
@@ -89,8 +96,15 @@ The working directory SHALL restrict native mode only for OpenCode, whose `--con
 - **WHEN** the host is Claude Code with session id `S` and `fork.sh open --cli claude --cwd /other/dir` runs
 - **THEN** the launch has `--resume S` and `--fork-session` and `meta` has `context=full`
 
+### Requirement: OpenCode session directory
+For OpenCode the child's `--cwd` SHALL be compared with the session's directory, the working directory of the nearest `opencode` ancestor process (else the shell's directory), not with wherever the agent's shell has changed to.
+
+#### Scenario: OpenCode shell changed directory
+- **WHEN** the host is OpenCode started in directory `D`, the agent's shell has `cd`'d to another directory and `fork.sh native --cli opencode` runs with no `--cwd`
+- **THEN** it prints `brief` (cwd differs), and with `--cwd D` it prints `full opencode continue`
+
 ### Requirement: Native mode query
-`fork.sh native [--cli <name>] [--cwd <dir>]` SHALL resolve the child CLI exactly as `open` would and print one line: `full <cli> <source>` when a native fork would be used, else `brief <reason>`. It SHALL exit 0 in both cases, write nothing and not require a brief on stdin.
+`fork.sh native [--cli <name>] [--cwd <dir>]` SHALL resolve the child CLI exactly as `open` would and print one line: `full <cli> <source>` when a native fork would be used, else `brief <reason>`. It SHALL exit 0 in both cases, write nothing and not require a brief on stdin. `--cli` or `--cwd` given without a value (in `native` or `open`) SHALL fail with a "needs a value" error.
 
 #### Scenario: Full
 - **WHEN** the host is Claude Code with session id `S` and `fork.sh native` runs
@@ -99,6 +113,10 @@ The working directory SHALL restrict native mode only for OpenCode, whose `--con
 #### Scenario: Brief with reason
 - **WHEN** `fork.sh native --cli gemini` runs on a Claude Code host
 - **THEN** it prints a line starting with `brief` that names gemini, and exits 0
+
+#### Scenario: Missing option value
+- **WHEN** `fork.sh native --cwd` runs with no value after `--cwd`
+- **THEN** it exits 1 with `--cwd needs a value`
 
 ### Requirement: Open reports the context mode
 The `open` output SHALL include a `# context: full …` or `# context: brief …` line after the first line, leaving the first line's `fork <id> pane <pane> cli <cli> model <m>` form unchanged.
