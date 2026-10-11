@@ -15,7 +15,12 @@
 
 ## 3. Integration
 
-- [ ] 3.1 Run `bash tests/test-eval.sh` and `~/.claude/skills/opsx-run/opsx-eval.sh --change land-eval-opt-in --json` from the worktree after ops-eval has written its checks (expect MISSING only for scenarios ops-eval has not yet covered); then `opsx-land.sh land-eval-opt-in --dry-run` from the worktree's main checkout and confirm the output shows the off line and no eval run; record results in this file
+- [x] 3.1 Run `bash tests/test-eval.sh` and `~/.claude/skills/opsx-run/opsx-eval.sh --change land-eval-opt-in --json` from the worktree after ops-eval has written its checks (expect MISSING only for scenarios ops-eval has not yet covered); then `opsx-land.sh land-eval-opt-in --dry-run` from the worktree's main checkout and confirm the output shows the off line and no eval run; record results in this file
+
+  - Results (2026-10-11, worktree `opsx/land-eval-opt-in`):
+    - `bash tests/test-eval.sh`: passed 49, failed 0.
+    - `opsx-eval.sh --change land-eval-opt-in --json`: 10 total, 8 PASS, 2 FAIL, 2 MISSING. MISSING = `Eval gate off by default`, `Dry run shows the gate state` (not yet written by ops-eval). FAIL = `eval-regression-blocks-land`, `new-failure-only-warns`: both still call `run_land` without `--eval`, so with the new default land proceeds; ops-eval must add `--eval` to them (design.md - Evals). `skip-eval` PASS.
+    - `opsx-land.sh land-eval-opt-in --dry-run --no-close --force-tasks` from the main checkout: prints `==> Eval gate` / `eval gate off (pass --eval to run the regression gate)`, no eval run; the dry-run merge step stops on the main checkout's pre-existing uncommitted WIP (unrelated to this change); `main` and the stash list unchanged.
 
 ## Workflow follow-up
 
