@@ -67,9 +67,10 @@
 # the brief and (Claude) allows `fork.sh page` beside `fork.sh return`. The
 # child runs `fork.sh page < html` to replace <dir>/index.html atomically, or
 # `fork.sh page --manifest < tsv` for <dir>/manifest.tsv; nothing else is ever
-# written. After an index.html write, <dir>/../.reindex is run when it exists
-# and is executable (its exit status is ignored): /explain installs it there to
-# regenerate the library index. The page dir comes from $FORK_PAGE_DIR, the
+# written (mode 600). After an index.html write, <dir>/../.reindex is run
+# (its exit status is ignored) only when <dir>/.. sits directly under
+# <state root>/explain/ and the hook is an executable regular file owned by
+# the user: /explain installs it there to regenerate the library index. The page dir comes from $FORK_PAGE_DIR, the
 # process chain, or the fork's meta.
 #
 # Every subcommand except `return` and `page` requires tmux. Nothing here ever sends keys
@@ -664,6 +665,15 @@ page_protocol() {
 - The user asks for edits by label ("expand P7", "the arrow in D2 is wrong"):
   change those blocks, keep every other label, rewrite the whole page and the
   manifest with the commands above, then say which labels changed.
+- **Never put secrets in the page**: no API keys, tokens, passwords,
+  cookies, private keys, connection strings, environment values or other
+  credentials you saw in the conversation or in tool output, not even
+  partially or "redacted by hand". Name the setting instead (\`\$STRIPE_KEY\`,
+  "the owner key"). The page may be shared beyond the user.
+- The page is served with a strict Content-Security-Policy: no external
+  scripts except the pinned Mermaid tag from the template, no external
+  images, fonts, styles, frames or fetches, no forms. Keep everything inline
+  (\`data:\` URIs for images) and do not add other external resources.
 - If \`$script page\` is refused, blocked by a sandbox, needs an approval
   the user declines, or exits non-zero, tell the user the page cannot be
   written from this fork and stop. Do not print the HTML into this pane
@@ -974,6 +984,19 @@ cmd_return() {
   fi
 }
 
+# F6: `fork.sh page` is auto-approved in page forks, so the library hook it
+# runs must be the one explain.sh wrote: <pd>/../.reindex only when <pd>'s
+# parent is a project root directly under <state root>/explain, and the hook
+# is a regular file (not a symlink) owned by the current user.
+reindex_allowed() {
+  local pd=$1 parent xroot hook
+  hook=$pd/../.reindex
+  [ -f "$hook" ] && [ ! -L "$hook" ] && [ -x "$hook" ] && [ -O "$hook" ] || return 1
+  parent=$(cd -- "$pd/.." 2>/dev/null && pwd -P) || return 1
+  xroot=$(cd -- "$(state_root)/explain" 2>/dev/null && pwd -P) || return 1
+  [ "$(dirname -- "$parent")" = "$xroot" ]
+}
+
 # Write the calling fork's page (index.html) or, with --manifest, its
 # manifest.tsv. Never writes anywhere but the fork's page directory.
 cmd_page() {
@@ -1008,12 +1031,12 @@ cmd_page() {
   if ! { mkdir -p -- "$pd" 2>/dev/null \
          && tmp=$(mktemp "$pd/.page.XXXXXX" 2>/dev/null) \
          && printf '%s\n' "$content" > "$tmp" 2>/dev/null \
-         && chmod 644 "$tmp" 2>/dev/null \
+         && chmod 600 "$tmp" 2>/dev/null \
          && mv -f -- "$tmp" "$target" 2>/dev/null; }; then
     [ -n "$tmp" ] && rm -f -- "$tmp" 2>/dev/null
     die "could not write $target (sandbox or permissions?). The page was not changed — tell the user and stop." 3
   fi
-  if [ "$manifest" -eq 0 ] && [ -f "$pd/../.reindex" ] && [ -x "$pd/../.reindex" ]; then
+  if [ "$manifest" -eq 0 ] && reindex_allowed "$pd"; then
     "$pd/../.reindex" </dev/null >/dev/null 2>&1 || true
   fi
   printf '%s\n' "$target"

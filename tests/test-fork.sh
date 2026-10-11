@@ -350,7 +350,7 @@ ok "page: protocol says stop, no markers" 'sed -n "/^## Page protocol/,\$p" $SD/
 ok "page: plain brief has no page protocol" '! grep -q "Page protocol" $SD/$NP0/brief.md && ! grep -q "manifest.tsv" $SD/$NP0/brief.md'
 ok "page: relative --page-dir rejected" 'e=$(printf q | $F open --cli claude --page-dir rel/3 2>&1); [ $? -ne 0 ] && [[ "$e" == *absolute* ]]'
 
-PR=$SP/pages/proj; PD=$PR/3; mkdir -p $PR
+PR=$XDG_STATE_HOME/agent-forks/explain/proj; PD=$PR/3; mkdir -p $PR
 o=$(printf '<!doctype html><title>v1</title>\n' | FORK_PAGE_DIR=$PD $F page); rc=$?
 ok "page: writes index.html, prints path" '[ $rc -eq 0 ] && grep -q "<title>v1</title>" $PD/index.html && [ "$o" = "$PD/index.html" ]'
 o=$(printf 'S1\tsection one\nP1\tpara one\n' | FORK_PAGE_DIR=$PD $F page --manifest); rc=$?
@@ -382,6 +382,23 @@ rm -f $SP/reindexed; printf 'P1\tx\n' | FORK_PAGE_DIR=$PD $F page --manifest >/d
 ok "page: --manifest does not reindex" '[ ! -f $SP/reindexed ]'
 chmod -x $PR/.reindex; printf '<p>r2</p>\n' | FORK_PAGE_DIR=$PD $F page >/dev/null
 ok "page: non-executable .reindex skipped" '[ ! -f $SP/reindexed ]'
+# F6: .reindex only beside page dirs under <state root>/explain, never a symlink
+chmod +x $PR/.reindex
+OR=$SP/pages/proj; mkdir -p $OR; cp $PR/.reindex $OR/.reindex
+rm -f $SP/reindexed; o=$(printf '<p>o</p>\n' | FORK_PAGE_DIR=$OR/3 $F page); rc=$?
+ok "page: .reindex outside the explain root not run" '[ $rc -eq 0 ] && [ "$o" = "$OR/3/index.html" ] && [ ! -f $SP/reindexed ]'
+mkdir -p $XDG_STATE_HOME/agent-forks/explain/proj2/9 $XDG_STATE_HOME/agent-forks/explain/deep/proj
+ln -s $PR/.reindex $XDG_STATE_HOME/agent-forks/explain/proj2/.reindex
+rm -f $SP/reindexed; printf '<p>s</p>\n' | FORK_PAGE_DIR=$XDG_STATE_HOME/agent-forks/explain/proj2/9 $F page >/dev/null
+ok "page: symlinked .reindex not run" '[ ! -f $SP/reindexed ]'
+cp $PR/.reindex $XDG_STATE_HOME/agent-forks/explain/.reindex
+rm -f $SP/reindexed; printf '<p>d</p>\n' | FORK_PAGE_DIR=$XDG_STATE_HOME/agent-forks/explain/deep $F page >/dev/null
+ok "page: .reindex of the explain dir itself not run" '[ ! -f $SP/reindexed ]'
+rm -f $XDG_STATE_HOME/agent-forks/explain/.reindex
+rm -f $SP/reindexed; printf '<p>r3</p>\n' | FORK_PAGE_DIR=$PD $F page >/dev/null
+ok "page: .reindex under the explain root still run" '[ -f $SP/reindexed ]'
+ok "page: page file is private (600)" '[ "$(stat -c %a $PD/index.html)" = 600 ]'
+ok "page: protocol forbids secrets" 'grep -q "Never put secrets in the page" $SP/pp && grep -qi "credentials" $SP/pp && grep -q "Content-Security-Policy" $SP/pp'
 ok "help lists page and --page-dir" 'h=$($F help); [[ "$h" == *"fork.sh page"* ]] && [[ "$h" == *--page-dir* ]]'
 $F close --all >/dev/null
 
