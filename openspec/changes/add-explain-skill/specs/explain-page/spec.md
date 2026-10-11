@@ -16,8 +16,19 @@ Turns a topic from the current agent session into a clean, diagrammed, addressab
 - **WHEN** `/explain` runs without a topic
 - **THEN** the skill asks for one and opens nothing
 
+### Requirement: Open arguments and notes
+Everything after `--` SHALL be the topic of `explain.sh open`, even when it starts with `-`. Notes on a stdin that is not a TTY SHALL be read, but `open` SHALL NOT wait more than a few seconds for the first byte of an idle stdin.
+
+#### Scenario: Topic after --
+- **WHEN** `explain.sh open --window -- "-v is a topic"` runs
+- **THEN** the page's topic is `-v is a topic`
+
+#### Scenario: Idle stdin
+- **WHEN** `explain.sh open "x"` runs with a stdin pipe that stays open and receives nothing
+- **THEN** it opens the fork without notes within a few seconds and says that no notes arrived
+
 ### Requirement: Explain server and exposure per project
-The explain skill SHALL serve `${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks/explain/<project>/` with a loopback-only static server in a tmux window tagged `@opsx_explain=<project>`, started on first use and reused afterwards, and SHALL publish its port once through `expose.sh up <port> --name explain`. `<project>` SHALL be the main checkout's folder name.
+The explain skill SHALL serve `${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks/explain/<project>/` with a loopback-only static server in a tmux window tagged `@opsx_explain=<project>`, started on first use and reused afterwards, and SHALL publish its port once through `expose.sh up <port> --name explain`. `<project>` SHALL be the main checkout's folder name. A server started from another tmux server SHALL be reused and reported (and reached by `stop`), never left running unrecorded.
 
 #### Scenario: First use starts the server
 - **WHEN** `/explain "x"` runs with no explain server for the project
@@ -31,6 +42,10 @@ The explain skill SHALL serve `${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks
 - **WHEN** `expose.sh up` fails with its not-configured message
 - **THEN** the skill prints the local `http://127.0.0.1:<port>/` URL, names `install.sh --expose-domain`, and the fork still opens
 
+#### Scenario: Second tmux server
+- **WHEN** `/explain serve` runs from a second tmux server while the server window lives on the first
+- **THEN** no second server starts, the output names the other tmux server, and `/explain stop` from the second one closes the window on the first
+
 #### Scenario: Same project from a worktree
 - **WHEN** `/explain "x"` runs inside a change worktree of project `shop`
 - **THEN** the pages root and the exposure name are those of `shop`, not of the worktree folder
@@ -43,18 +58,26 @@ Pages are written by a fork whose context may hold untrusted text, so the explai
 - **THEN** the response has a `Content-Security-Policy` with `default-src 'none'`, `connect-src 'self'`, `img-src 'self' data:`, `form-action 'none'` and a `script-src` naming only `'unsafe-inline'` and the pinned Mermaid URL, and `Referrer-Policy: no-referrer`
 
 ### Requirement: Page server serves only pages
-The explain server SHALL serve only `/`, `/<id>/` and their `index.html`, over GET and HEAD, with no directory listings, dotfiles, `launch.sh`, `.meta` or `manifest.tsv`. The pages root SHALL be private to the user (directory 700, files 600).
+The explain server SHALL serve only `/`, `/<id>/` and their `index.html`, over GET and HEAD (`/<id>` SHALL redirect to `/<id>/` keeping its query string), with no directory listings, dotfiles, `launch.sh`, `.meta` or `manifest.tsv`. The pages root SHALL be private to the user (directory 700, files 600).
 
 #### Scenario: Internal files not served
 - **WHEN** `/launch.sh`, `/.server`, `/1/.meta`, `/1/manifest.tsv` or `/.ids/` is requested
 - **THEN** each answers 404
 
+#### Scenario: Bare page path keeps the query
+- **WHEN** `/1?lang=pt` is requested
+- **THEN** the server redirects to `/1/?lang=pt`
+
 ### Requirement: Page server checks the Host
-The explain server SHALL answer 421 to any `Host` other than `127.0.0.1`, `localhost` or the current expose host of the project.
+The explain server SHALL answer 421 to any `Host` other than `127.0.0.1`, `localhost` or the current expose host of the project. The accepted expose host SHALL change only on a known outcome: replaced after a successful `expose.sh up`, cleared when expose is not configured. While `expose.sh up` runs, and after any other failure of it, the previous expose host SHALL keep being accepted.
 
 #### Scenario: Foreign Host rejected
 - **WHEN** a request reaches the loopback port with `Host: evil.example`
 - **THEN** the server answers 421, while `Host: explain--<project>.<domain>` (after a successful exposure) and `127.0.0.1` get the page
+
+#### Scenario: Re-exposure keeps the host
+- **WHEN** `/explain "another topic"` runs while page 1 is open on another device through the expose host
+- **THEN** every request with the expose host gets the page while `expose.sh up` runs, and after an `up` that fails with any exit other than not-configured
 
 ### Requirement: Page files and library
 Each page SHALL be one self-contained `index.html` at `<root>/<page-id>/`, with `manifest.tsv` (label, one-line summary) beside it. `<page-id>` SHALL be unique per project and SHALL NOT be reused. The root `index.html` SHALL list every page with title, creation time and fork id, regenerated whenever a page is written. Pages SHALL survive `fork.sh close` and `/explain stop`.
@@ -104,6 +127,13 @@ The page SHALL show one language at a time with a visible EN / PT switch near th
 - **WHEN** a page is opened at `?lang=pt#P1`
 - **THEN** the Portuguese article is shown, exactly one element in the live document has `id="P1"`, and it is the Portuguese `P1`
 
+### Requirement: Switch keeps the reading position
+Without a `#<label>` fragment, a language switch SHALL keep the reader on the same block: the labelled block at the top of the screen SHALL be at the same place in the other language.
+
+#### Scenario: Switch keeps the reading position
+- **WHEN** the reader has scrolled so that `P2` is at the top of the screen, with no fragment in the URL, and clicks the other language
+- **THEN** `P2` of the other language is at the top of the screen at the same offset
+
 ### Requirement: Diagrams and rendering
 Pages SHALL render diagrams with Mermaid loaded from a CDN as one exact-version file with a Subresource Integrity hash and `referrerpolicy="no-referrer"`, falling back to inline SVG or an ASCII `<pre>` block when Mermaid cannot express the diagram, each still carrying a `D<n>` label. Pages SHALL need no build step and SHALL reload themselves when the served file changes, by polling the file's `Last-Modified` header.
 
@@ -114,6 +144,17 @@ Pages SHALL render diagrams with Mermaid loaded from a CDN as one exact-version 
 #### Scenario: Reload on change
 - **WHEN** `index.html` is rewritten while open in a browser
 - **THEN** the page reloads within a few seconds without user action
+
+### Requirement: Reload poll
+The reload poll SHALL also compare an `ETag` that the server derives from the file's content, so a rewrite within the same second and with the same length is seen. Only a direct 2xx answer SHALL count: an error status (421, 5xx) or a redirect SHALL never reload the page.
+
+#### Scenario: Same-second rewrite
+- **WHEN** a page is rewritten twice within one second with content of the same length
+- **THEN** the served `ETag` differs between the two versions
+
+#### Scenario: Error answers do not reload
+- **WHEN** a poll of an open page gets a 421, a 5xx or a redirect
+- **THEN** the page does not reload and keeps polling
 
 ### Requirement: Share, list and stop
 `/explain share [--for <recipient>] [--ttl <dur>] [--list] [--revoke <r|id|all>]` SHALL call `expose.sh share explain …` and print the link as its last line; the link opens the whole page library of the project, which the skill text and the brief SHALL say. `/explain list` SHALL print the project's pages (id, title, created, fork id) and the server state. `/explain stop` SHALL run `expose.sh down explain`, kill the tagged window and keep every page; it SHALL exit 0 when nothing is running.

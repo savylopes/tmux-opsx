@@ -48,6 +48,14 @@
 - [x] 7.3 Page protocol in `fork.sh` and the brief text in `explain.sh`: both languages in one write, identical labels, diagrams duplicated per language, both titles in `<title>`; bilingual placeholder page; verify in `tests/test-fork.sh` and `tests/test-explain.sh`
 - [x] 7.4 README "Explain" section: bilingual pages, the switch, `?lang=`; verify the full test suites, shellcheck and the library index with a bilingual title
 
+## 8. Review round 2 fixes
+
+- [x] 8.1 F1: `expose_server` replaces `.hosts` atomically and only on an outcome (success → the new host; not configured → empty); while `expose.sh up` runs and after any other failure the old host keeps working; the reload poll (template, library index, placeholder) counts only direct 2xx answers; verify in `tests/test-explain.sh` with a slow and a failing fake `expose.sh`, and the poll in `tests/explain-lang-sim.mjs`
+- [x] 8.2 F2: `/<n>` redirects to `/<n>/` with its query string; verify `Location: /1/?lang=pt`. The expose owner-login redirect (`skills/expose/expose.sh`) still drops the query; left unchanged (not owned by this change)
+- [x] 8.3 F3: `tests/explain-lang-sim.mjs`, a node-only behavioural check of the switch, deep links, hand-over and the reload poll (DOM stand-in with layout), run by `tests/test-explain.sh` wherever node exists
+- [x] 8.4 F4: a switch without `#label` hands the reader over by label (the labelled block at the top of the screen keeps its offset in the other language, again after Mermaid renders); verify in the node check
+- [x] 8.5 F5: server `ETag` (content hash) polled with `Last-Modified`; `open` waits at most `$EXPLAIN_STDIN_WAIT` (3 s) for the first byte of a non-TTY stdin; everything after `--` is the topic (`open` and the top level); the `.server` record keeps the tmux socket, so a second tmux server reuses, reports and stops the server instead of orphaning it, and a restart kills the recorded server process; verify in `tests/test-explain.sh`
+
 ## Workflow follow-up
 
 - Archive the change after the project's review requirements are satisfied.
