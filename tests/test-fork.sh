@@ -365,7 +365,8 @@ e=$(cd /; printf '<p>x</p>\n' | env -u FORK_DIR -u FORK_PAGE_DIR -u TMUX -u TMUX
 ok "page: outside a fork -> exit 1 not a fork" '[ $rc -eq 1 ] && [[ "$e" == *"not a fork"* ]]'
 e=$(printf '<p>x</p>\n' | env -u FORK_PAGE_DIR FORK_DIR=$SD/$NP0 $F page 2>&1); rc=$?
 ok "page: fork without page dir -> exit 4 naming --page-dir" '[ $rc -eq 4 ] && [[ "$e" == *--page-dir* ]]'
-e=$(printf '<p>x</p>\n' | env -u FORK_DIR -u FORK_PAGE_DIR TMUX_PANE=$($L display -p -t "$(awk -F= "/^child_pane=/{print \$2}" $SD/$NP0/meta)" "#{pane_id}") $F page 2>&1); rc=$?
+CP0=$(awk -F= '/^child_pane=/{print $2}' $SD/$NP0/meta)
+e=$(printf '<p>x</p>\n' | env -u FORK_DIR -u FORK_PAGE_DIR TMUX_PANE="$CP0" $F page 2>&1); rc=$?
 ok "page: plain fork via pane option -> exit 4" '[ $rc -eq 4 ]'
 chmod a-w $PD; e=$(printf '<p>new</p>\n' | FORK_PAGE_DIR=$PD $F page 2>&1); rc=$?; chmod u+w $PD
 ok "page: unwritable -> exit 3, unchanged" '[ $rc -eq 3 ] && cmp -s $PD/index.html $SP/idx.before && [ -z "$(find $PD -name ".page.*")" ]'
