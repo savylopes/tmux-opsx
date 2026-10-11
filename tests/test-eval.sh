@@ -169,23 +169,23 @@ newrepo() {
 }
 land() { ( cd "$1" && shift && "$LAND" chg --no-close "$@" ) 2>&1; }
 
-# 1. regression blocks and restores target
+# 1. --eval: regression blocks and restores target
 R=$SP/land1; newrepo "$R" with-evals
 echo broken > "$R/app.txt"; git -C "$R" commit -qam "break app"
 git -C "$R" checkout -q main; before=$(git -C "$R" rev-parse main)
-out=$(land "$R"); rc=$?
+out=$(land "$R" --eval); rc=$?
 ok "land: regression blocks"                  '[ "$rc" -ne 0 ] && grep -q "EVAL_REGRESSION" <<<"$out" && grep -q "REGRESSION auth/login-ok" <<<"$out"'
 ok "land: target restored to pre-merge"       '[ "$(git -C "$R" rev-parse main)" = "$before" ]'
 ok "land: nothing archived"                   '[ -d "$R/openspec/changes/chg" ] && [ ! -d "$R/openspec/changes/archive" ]'
 ok "land: branch kept after block"            'git -C "$R" show-ref -q refs/heads/opsx/chg'
 ok "land: no temp worktrees left"             '[ "$(git -C "$R" worktree list | wc -l)" -eq 1 ]'
 
-# 2. new failing check only warns
+# 2. --eval: new failing check only warns
 R=$SP/land2; newrepo "$R" with-evals
 mkcheck "$R" auth new-check "New check" L1 'exit 1'
 git -C "$R" add -A; git -C "$R" commit -qm "add failing check"
 git -C "$R" checkout -q main
-out=$(land "$R"); rc=$?
+out=$(land "$R" --eval); rc=$?
 ok "land: new failure warns and continues"    '[ "$rc" -eq 0 ] && grep -q "FAIL auth/new-check (not a regression" <<<"$out" && [ -d "$R/openspec/changes/archive/chg" ]'
 
 # 3. no evals/ -> silent skip
@@ -195,20 +195,41 @@ git -C "$R" checkout -q main
 out=$(land "$R"); rc=$?
 ok "land: no evals/ skips silently"           '[ "$rc" -eq 0 ] && ! grep -qi "eval" <<<"$out"'
 
-# 4. --skip-eval bypasses a regression
+# 4. --skip-eval is an accepted no-op: note printed, regression does not block
 R=$SP/land4; newrepo "$R" with-evals
 echo broken > "$R/app.txt"; git -C "$R" commit -qam "break app"
 git -C "$R" checkout -q main
 out=$(land "$R" --skip-eval); rc=$?
-ok "land: --skip-eval bypasses eval"          '[ "$rc" -eq 0 ] && grep -q "eval skipped (--skip-eval)" <<<"$out" && ! grep -q REGRESSION <<<"$out"'
+ok "land: --skip-eval prints no-op note"      'grep -q "eval gate is off by default; --skip-eval is a no-op" <<<"$out"'
+ok "land: --skip-eval does not block"         '[ "$rc" -eq 0 ] && ! grep -q REGRESSION <<<"$out" && [ -d "$R/openspec/changes/archive/chg" ]'
 
 # 5. L3 never runs during land
 R=$SP/land5; newrepo "$R" with-evals
 mkcheck "$R" agent l3 "Agentic" L3 'exit 1'
 echo more >> "$R/app.txt"; git -C "$R" add -A; git -C "$R" commit -qm "add l3"
 git -C "$R" checkout -q main
-out=$(land "$R"); rc=$?
-ok "land: L3 not run, not blocking"           '[ "$rc" -eq 0 ] && ! grep -q "agent/l3" <<<"$out"'
+out=$(land "$R" --eval); rc=$?
+ok "land: L3 not run, not blocking"           '[ "$rc" -eq 0 ] && grep -q "Eval gate (merged result)" <<<"$out" && ! grep -q "agent/l3" <<<"$out"'
+
+# 6. default (no --eval): gate off, a planted regression lands and archives
+R=$SP/land6; newrepo "$R" with-evals
+echo broken > "$R/app.txt"; git -C "$R" commit -qam "break app"
+git -C "$R" checkout -q main; tip=$(git -C "$R" rev-parse opsx/chg)
+mkdir -p "$SP/tmp6"
+out=$(TMPDIR=$SP/tmp6 land "$R"); rc=$?
+ok "land: default prints gate-off line"       'grep -q "eval gate off (pass --eval to run the regression gate)" <<<"$out" && ! grep -q "no-op" <<<"$out"'
+ok "land: default runs no eval"               '! grep -q "REGRESSION\|baseline\|merged result" <<<"$out" && [ -z "$(ls -A "$SP/tmp6")" ]'
+ok "land: default lands and archives"         '[ "$rc" -eq 0 ] && git -C "$R" merge-base --is-ancestor "$tip" main && [ -d "$R/openspec/changes/archive/chg" ]'
+
+# 7. --dry-run shows the gate state, with and without --eval, and changes nothing
+R=$SP/land7; newrepo "$R" with-evals
+echo more >> "$R/app.txt"; git -C "$R" commit -qam change
+git -C "$R" checkout -q main; before=$(git -C "$R" rev-parse main)
+out=$(land "$R" --dry-run); rc=$?
+ok "land: --dry-run shows gate off"           '[ "$rc" -eq 0 ] && grep -q "eval gate off (pass --eval" <<<"$out" && ! grep -q "opsx-eval.sh --all" <<<"$out"'
+out2=$(land "$R" --dry-run --eval); rc2=$?
+ok "land: --dry-run --eval shows would run"   '[ "$rc2" -eq 0 ] && grep -q "would run:.*opsx-eval.sh --all --json on main" <<<"$out2" && ! grep -q "eval gate off" <<<"$out2"'
+ok "land: --dry-run changes nothing"          '[ "$(git -C "$R" rev-parse main)" = "$before" ] && [ -d "$R/openspec/changes/chg" ] && [ ! -d "$R/openspec/changes/archive" ]'
 
 echo
 echo "passed $pass, failed $fail"
