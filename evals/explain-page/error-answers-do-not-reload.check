@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Error answers do not reload
+# level: L1
+# requirement: Reload poll
+# Runs the template's poll script with scripted fetch answers (no browser available).
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+command -v node >/dev/null || { echo "needs node"; exit 77; }
+template > "$EVAL_TMP/t.html"; [ -s "$EVAL_TMP/t.html" ] || fail "no template"
+cat > "$EVAL_TMP/poll.js" <<'JS'
+const fs = require('fs'), vm = require('vm');
+const html = fs.readFileSync(process.argv[2], 'utf8');
+const all = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(x => x[1]).find(s => /location\.reload/.test(s) && /fetch\(/.test(s)) || '';
+// the self-contained IIFE that holds the reload poll
+const at = all.search(/var last = null/), st = all.lastIndexOf('(function () {', at), en = all.indexOf('})();', at);
+const src = at >= 0 && st >= 0 && en > at ? all.slice(st, en + 5) : null;
+if (!src) { console.log('NOSCRIPT'); process.exit(3); }
+const queue = [], timers = []; let reloads = 0, fetches = 0;
+const resp = (status, h, redirected) => ({ ok: status >= 200 && status < 300, status, redirected: !!redirected, headers: { get: k => h[k] ?? null } });
+const ctx = { location: { pathname: '/1/', reload() { reloads++; } },
+  fetch() { fetches++; const r = queue.shift(); return r instanceof Error ? Promise.reject(r) : Promise.resolve(r); },
+  setTimeout: f => { timers.push(f); return timers.length; }, console };
+ctx.window = ctx; vm.createContext(ctx);
+const tick = async () => { await new Promise(r => setImmediate(r)); const f = timers.shift(); if (f) f(); await new Promise(r => setImmediate(r)); };
+(async () => {
+  const page = { ETag: '"a"', 'Last-Modified': 'x', 'Content-Length': '5' };
+  queue.push(resp(200, page)); vm.runInContext(src, ctx); await new Promise(r => setImmediate(r));
+  const out = [];
+  const step = async (name, r) => { queue.push(r); const f0 = fetches; await tick(); out.push(`${name}: reloads=${reloads} polling=${timers.length === 1 && fetches > f0}`); };
+  await step('421', resp(421, { 'Content-Length': '20' }));
+  await step('503', resp(503, { 'Content-Length': '0' }));
+  await step('500', resp(500, {}));
+  await step('redirect', resp(200, { 'Content-Length': '900' }, true));
+  await step('302-as-redirected-nonok', resp(302, {}, true));
+  const bad0 = out.filter(l => !/reloads=0 polling=true/.test(l));
+  queue.push(resp(200, page)); await tick();
+  queue.push(resp(200, { ...page, ETag: '"b"' })); await tick();
+  out.push('control (direct 2xx, new ETag): reloads=' + reloads);
+  console.log(out.join('\n'));
+  if (!bad0.length && reloads !== 1) process.exit(2);
+  const bad = bad0;
+  process.exit(bad.length ? 1 : 0);
+})();
+JS
+node "$EVAL_TMP/poll.js" "$EVAL_TMP/t.html" || fail "poll reloaded or stopped polling on an error answer"
+echo ok

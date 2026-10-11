@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Idle stdin
+# level: L2
+# requirement: Open arguments and notes
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+mkfifo "$EVAL_TMP/in"
+sleep 60 > "$EVAL_TMP/in" & holder=$!     # keeps the pipe open, never writes
+trap 'kill $holder 2>/dev/null; T kill-server >/dev/null 2>&1; rm -rf "$TSOCK_DIR"' EXIT
+b0=$(date +%s); printf "n\n" | "$EXPLAIN" open base >/dev/null 2>&1; base=$(( $(date +%s) - b0 ))   # baseline cost of an open on this machine
+s=$(date +%s)
+OUT=$(timeout 30 "$EXPLAIN" open "x" < "$EVAL_TMP/in" 2>&1); RC=$?
+d=$(( $(date +%s) - s ))
+[ $RC -eq 0 ] || fail "rc=$RC after ${d}s: $OUT"
+[ "$d" -le $((base + 8)) ] || fail "took ${d}s on an idle stdin, baseline open ${base}s (expected about 3s more)"
+grep -qi 'no notes' <<<"$OUT" || fail "does not say that no notes arrived: $OUT"
+grep -q '^page 2 ' <<<"$OUT" || fail "fork not opened: $OUT"
+echo "ok (${d}s)"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Same-second rewrite
+# level: L2
+# requirement: Reload poll
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+w() { printf '<html><head><title>t</title></head><body>%s</body></html>\n' "$1" | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page >/dev/null || fail "page write"; }
+et() { curl -sI --max-time 3 "http://127.0.0.1:$port/1/" | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}'; }
+w AAAAAAAA; e1=$(et); w BBBBBBBB; e2=$(et)
+echo "e1=$e1 e2=$e2"
+[ -n "$e1" ] && [ -n "$e2" ] || fail "server sends no ETag"
+[ "$e1" != "$e2" ] || fail "ETag unchanged after a same-length rewrite"
+w BBBBBBBB; [ "$(et)" = "$e2" ] || fail "ETag not stable for unchanged content"
+echo ok

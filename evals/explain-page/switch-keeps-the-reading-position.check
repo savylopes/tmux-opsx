@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Switch keeps the reading position
+# level: L1
+# requirement: Switch keeps the reading position
+# Template script run in a DOM stand-in with a layout where PT blocks are taller than EN ones.
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+command -v node >/dev/null || { echo "needs node"; exit 77; }
+template > "$EVAL_TMP/t.html"; [ -s "$EVAL_TMP/t.html" ] || fail "no template"
+for off in 0 12; do
+  r=$(node "$EVAL_ROOT/evals/_lib/handover.js" "$EVAL_TMP/t.html" P2 $off) || fail "sim error: $r"
+  echo "$r"
+  j() { node -e 'const o=JSON.parse(process.argv[1]);console.log(o[process.argv[2]])' "$r" "$1"; }
+  [ "$(j error)" = undefined ] || fail "$(j error)"
+  [ "$(j shown)" = pt ] || fail "PT not shown"
+  [ "$(j enTop)" != "$(j ptTop)" ] || fail "sim layout gave P2 the same position in both languages"
+  [ "$(j topAfter)" = "$(j expectedTop)" ] || fail "offset $off: PT P2 top at $(j topAfter) px, expected $(j expectedTop)"
+done
+echo ok

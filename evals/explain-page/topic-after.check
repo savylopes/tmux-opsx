@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Topic after --
+# level: L2
+# requirement: Open arguments and notes
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+OUT=$(printf 'Focus: test\n' | "$EXPLAIN" open --window -- "-v is a topic" 2>&1); RC=$?
+[ $RC -eq 0 ] || fail "rc=$RC: $OUT"
+grep -q '^page 1 ' <<<"$OUT" || fail "no page line: $OUT"
+grep -rqxF 'topic=-v is a topic' "$ROOT/1/.meta" || fail "topic not recorded: $(cat "$ROOT/1/.meta")"
+grep -rqF -- '-v is a topic' "$(fdir 1)/brief.md" || fail "brief.md lacks the topic"
+echo ok

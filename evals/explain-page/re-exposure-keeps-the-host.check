@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Re-exposure keeps the host
+# level: L2
+# requirement: Page server checks the Host
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+printf '<html><head><title>t</title></head><body>hi</body></html>\n' | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page >/dev/null || fail w
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+H="explain--$PROJ.example.test"
+c() { curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: $H" "http://127.0.0.1:$port/1/"; }
+[ "$(c)" = 200 ] || fail "expose host not accepted after the first exposure: $(c)"
+# a slower fake expose: up sleeps, then exits with $EXPOSE_UP_RC
+cat > "$EVAL_TMP/slow-expose.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$EXPOSE_LOG"
+case "$1" in
+  up) sleep "${EXPOSE_UP_SLEEP:-4}"; [ "${EXPOSE_UP_RC:-0}" = 0 ] && echo "https://explain--shop.example.test/"; exit "${EXPOSE_UP_RC:-0}" ;;
+  *) echo "fake: $*" ;;
+esac
+SH
+chmod +x "$EVAL_TMP/slow-expose.sh"; export OPSX_EXPOSE_SH="$EVAL_TMP/slow-expose.sh"
+for rc in 0 1 5; do
+  export EXPOSE_UP_RC=$rc EXPOSE_UP_SLEEP=4
+  : > "$EXPOSE_LOG"
+  ( printf 'n\n' | "$EXPLAIN" open "again $rc" >"$EVAL_TMP/open.$rc.out" 2>&1 ) & bg=$!
+  i=0; while ! grep -q '^up ' "$EXPOSE_LOG" && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+  grep -q '^up ' "$EXPOSE_LOG" || { wait $bg; fail "rc=$rc: expose up never called: $(cat "$EVAL_TMP/open.$rc.out")"; }
+  for k in 1 2 3; do [ "$(c)" = 200 ] || fail "rc=$rc: while 'expose.sh up' runs the expose host got $(c)"; sleep 0.3; done
+  wait $bg
+  [ "$(c)" = 200 ] || fail "after an 'expose.sh up' exiting $rc the expose host got $(c) (expected 200)"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Host: evil.example' "http://127.0.0.1:$port/1/")" = 421 ] || fail "rc=$rc: foreign host no longer 421"
+done
+echo ok

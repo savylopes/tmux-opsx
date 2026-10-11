@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Second tmux server
+# level: L2
+# requirement: Explain server and exposure per project
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+[ "$(tagged_count)" = 1 ] || fail "no server window on the first tmux server"
+S2="fk2$$"
+T2() { env -u TMUX -u TMUX_PANE tmux -L "$S2" -f /dev/null "$@"; }
+trap 'T2 kill-server >/dev/null 2>&1; T kill-server >/dev/null 2>&1; rm -rf "$TSOCK_DIR"' EXIT
+mkdir -p "$EVAL_TMP/work2"
+T2 new-session -d -s s2 -x 200 -y 50 -c "$EVAL_TMP/work2" 'exec sleep 86400' || { echo "cannot start 2nd tmux"; exit 77; }
+tm2="$(T2 display -p -t s2 '#{socket_path},#{pid},0')"; pane2="$(T2 display -p -t s2 '#{pane_id}')"
+[ "$tm2" != "$TMUX" ] || fail "second server is not distinct"
+x2() { ( export TMUX="$tm2" TMUX_PANE="$pane2"; cd "$EVAL_TMP/shop" && "$EXPLAIN" "$@" 2>&1 ); }
+before=$(sed -n 's/^window=//p' "$ROOT/.server")
+out=$(x2 serve); rc=$?; echo "$out"
+[ $rc -eq 0 ] || fail "serve from the second server rc=$rc"
+T2 list-windows -a -F '#{@opsx_explain}' | grep -qx "$PROJ" && fail "a second server window was started on the second tmux server"
+[ "$(tagged_count)" = 1 ] || fail "first server's window count changed"
+[ "$(sed -n 's/^window=//p' "$ROOT/.server")" = "$before" ] || fail "server record replaced"
+grep -qiE 'other tmux|another tmux|tmux server' <<<"$out" || fail "output does not name the other tmux server"
+out=$(x2 stop); rc=$?; echo "$out"
+[ $rc -eq 0 ] || fail "stop from the second server rc=$rc"
+i=0; while [ "$(tagged_count)" != 0 ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+[ "$(tagged_count)" = 0 ] || fail "window on the first tmux server still alive after stop from the second"
+echo ok
