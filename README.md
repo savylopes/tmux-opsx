@@ -50,7 +50,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `/opsx-run` skill | `~/.claude/skills/opsx-run/` · `~/.cursor/skills/opsx-run/` · `~/.agents/skills/opsx-run/` · `$CODEX_HOME/skills/opsx-run/` · `~/.config/opencode/skills/opsx-run/` · `~/.gemini/skills/opsx-run/` | The lifecycle: apply, verify, archive, land, close — one window per change |
 | `opsx-window.sh` | `~/.claude/skills/opsx-run/` | All tmux mechanics — session/window lookup, literal-text sends, rename suppression, closing |
 | `opsx-merge.sh` | `~/.claude/skills/opsx-run/` | Merge the change branch into a target (default `main`) — no archive or cleanup |
-| `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — OpenSpec gates, eval regression gate, then `opsx-merge.sh`, archive, branch/worktree cleanup |
+| `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — OpenSpec gates, eval regression gate (with `--eval`), then `opsx-merge.sh`, archive, branch/worktree cleanup |
 | `opsx-eval.sh` | `~/.claude/skills/opsx-run/` | Runs a repo's saved eval suite (`evals/`) with no LLM — scorecard, coverage, `--json`, regression compare |
 | `opsx-preview.sh` | `~/.claude/skills/opsx-run/` | Runs a change's app (or the main checkout) from its worktree in a tagged tmux window and publishes it through `/expose` — recipe, port, health wait, stop |
 | `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` · `~/.cursor/agents/opsx-applier.md` · `~/.codex/agents/ops-applier.toml` · `~/.config/opencode/agents/ops-applier.md` · `~/.gemini/agents/opsx-applier.md` | Implements the change in an isolated worktree on `opsx/<change>` |
@@ -344,7 +344,7 @@ Propose a change the normal OpenSpec way, then hand it to tmux-opsx:
 | `/opsx-run <change> land --into develop` | Same, into another branch |
 | `/opsx-run <change> land --force-tasks` | Same, but skips the unchecked-tasks gate |
 | `/opsx-run <change> land --skip-merge` | Already merged: skip merge, still archive + cleanup |
-| `/opsx-run <change> land --skip-eval` | Same as `land`, but bypasses the eval regression gate |
+| `/opsx-run <change> land --eval` | Same as `land`, but runs the eval regression gate (off by default; `--skip-eval` is an accepted no-op) |
 | `/opsx-run <change> close` | Closes that change's window and stops its preview |
 | `/opsx-run close-all` | Closes every tmux-opsx window in the session and stops every preview in the project (asks first) |
 | `/opsx-run list` | Shows the windows in the current session (or the project's, from outside tmux) |
@@ -398,7 +398,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-preview.sh prune
 
 ~/.claude/skills/opsx-run/opsx-merge.sh <change> [--into <branch>] [--dry-run]
-~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--skip-merge] [--force-tasks] [--skip-eval] [--dry-run]
+~/.claude/skills/opsx-run/opsx-land.sh <change> [--into <branch>] [--skip-merge] [--force-tasks] [--eval] [--skip-eval] [--dry-run]
 
 ~/.claude/skills/opsx-run/opsx-eval.sh [--change <c>] [--capability <cap>]... [--all] [--agentic] [--trials N] [--json] [--root <dir>]
 ~/.claude/skills/opsx-run/opsx-eval.sh --compare <baseline.json> <current.json>
@@ -474,9 +474,10 @@ When a change is done, one command finishes it:
 ```bash
 /opsx-run add-auth land                 # into main
 /opsx-run add-auth land --into develop  # into another branch
+/opsx-run add-auth land --eval          # also run the eval regression gate
 ```
 
-**OpenSpec gates → eval baseline → `opsx-merge.sh --stay` → eval regression check → `openspec archive` → commit → remove worktree → delete branch → close window.**
+**OpenSpec gates → eval baseline (`--eval` only) → `opsx-merge.sh --stay` → eval regression check (`--eval` only) → `openspec archive` → commit → remove worktree → delete branch → close window.**
 
 Nothing happens unless every gate passes:
 
@@ -491,9 +492,9 @@ Nothing happens unless every gate passes:
 
 **Not gated on land:** ops-eval, ops-reviewer or ops-security PASS — you can land without ever running them.
 
-**Eval regression gate.** When the target or the change branch has an `evals/` directory, land runs `opsx-eval.sh` (L1 + L2 only — L3 never runs at land) on the target in a temporary worktree (baseline), merges, then runs it on the merged result. A check that **passed on the target and fails after the merge blocks** the land: it prints `EVAL_REGRESSION` and the checks, resets the target to its pre-merge commit, and archives nothing. New failures (no baseline), UNVERIFIABLE and MISSING results only warn. No `evals/` → skipped silently; `--skip-eval` bypasses it; `--skip-merge` skips it (no pre-merge baseline).
+**Eval regression gate.** Off by default, because it runs the whole suite twice: plain `land` runs no evals and, when `evals/` exists, prints one `eval gate off (pass --eval to run the regression gate)` line. Pass `--eval` to turn it on: when the target or the change branch has an `evals/` directory, land runs `opsx-eval.sh` (L1 + L2 only — L3 never runs at land) on the target in a temporary worktree (baseline), merges, then runs it on the merged result. A check that **passed on the target and fails after the merge blocks** the land: it prints `EVAL_REGRESSION` and the checks, resets the target to its pre-merge commit, and archives nothing. New failures (no baseline), UNVERIFIABLE and MISSING results only warn. No `evals/` → skipped silently; `--skip-eval` is still accepted but is a no-op (it prints a note that the gate is already off); `--dry-run` shows whether the gate would run; `--skip-merge` skips it (no pre-merge baseline).
 
-Run it with `--dry-run` first to see exactly what it would do. Other flags: `--branch <name>` when discovery guesses wrong, `--skip-specs` for tooling/doc changes, `--force-tasks` to land with unchecked boxes still in `tasks.md`, `--skip-merge` when the branch is already in the target, `--skip-eval` to bypass the eval regression gate, `--no-close`, `--keep-branch`, `--keep-worktree`.
+Run it with `--dry-run` first to see exactly what it would do. Other flags: `--branch <name>` when discovery guesses wrong, `--skip-specs` for tooling/doc changes, `--force-tasks` to land with unchecked boxes still in `tasks.md`, `--skip-merge` when the branch is already in the target, `--eval` to run the eval regression gate (`--skip-eval` is an accepted no-op), `--no-close`, `--keep-branch`, `--keep-worktree`.
 
 **It never pushes.** The merge, archive and commit stay local, and it prints the `git push origin <branch>` to run when you're ready.
 
@@ -535,11 +536,11 @@ Spec fidelity by execution: every `#### Scenario` in the change's delta specs be
 - **Layout:** `evals/eval.yaml` (optional `setup`, `teardown`, `env`, `timeout` — default 60s — and `agentic: {trials, threshold, cli}`) plus `evals/<capability>/<scenario-slug>.check`.
 - **Check contract:** any executable with `# scenario: <capability> / <Scenario title>` and `# level: L1|L2|L3` headers. Exit `0` PASS, `77` UNVERIFIABLE, anything else or a timeout FAIL; stdout/stderr is the evidence. Checks get `EVAL_ROOT`, a fresh `EVAL_TMP`, the `env` from `eval.yaml` and whatever `setup` wrote to `$EVAL_ENV_FILE`.
 - **Levels:** L1 script/API contracts and L2 environment behaviour (tmux on a private socket, filesystem) always run; L3 agent-in-the-loop checks run only with `--agentic`, N trials, PASS when the pass count reaches `threshold` (default: all trials).
-- **Runner:** `opsx-eval.sh --change <c>` also lists scenarios without a check as MISSING; `--json` keeps full evidence; exit 0 no FAIL, 1 FAIL, 2 config/runner error. Usable by hand or in CI. At land it guards against regressions (see [Landing a change](#landing-a-change)).
+- **Runner:** `opsx-eval.sh --change <c>` also lists scenarios without a check as MISSING; `--json` keeps full evidence; exit 0 no FAIL, 1 FAIL, 2 config/runner error. Usable by hand or in CI. With `land --eval` it guards against regressions (off by default; see [Landing a change](#landing-a-change)).
 
 This repo's own suite config is `evals/eval.yaml` (scratch `HOME` + private tmux server via `evals/setup.sh` / `evals/teardown.sh`).
 
-`bash tests/test-eval.sh` exercises the runner against fixture suites (exit-code mapping, timeout, teardown on failure and interrupt, L3 NOT RUN and pass rate, MISSING, `--json`, compare) and the land gate in scratch repos with a fake `openspec` (regression blocks and restores the target, new failures warn, no `evals/` skips, `--skip-eval`).
+`bash tests/test-eval.sh` exercises the runner against fixture suites (exit-code mapping, timeout, teardown on failure and interrupt, L3 NOT RUN and pass rate, MISSING, `--json`, compare) and the land gate in scratch repos with a fake `openspec` (with `--eval`: regression blocks and restores the target, new failures warn; no `evals/` skips silently; the gate is off by default and a planted regression lands; `--skip-eval` is a no-op with a note; `--dry-run` shows the gate state with and without `--eval`).
 
 ### ops-reviewer
 

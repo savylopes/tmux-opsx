@@ -53,7 +53,8 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 /opsx-run <change> land --into develop  # ... into another branch
 /opsx-run <change> land --force-tasks   # ... even when tasks.md still has unchecked boxes
 /opsx-run <change> land --skip-merge    # already merged: skip merge, still archive + cleanup
-/opsx-run <change> land --skip-eval     # bypass the eval regression gate
+/opsx-run <change> land --eval          # ... and run the eval regression gate (off by default)
+/opsx-run <change> land --skip-eval     # accepted, no-op: the gate is already off by default
 /opsx-run <change> close                # close that change's window and stop its preview
 /opsx-run close-all                     # close every opsx window in the session and stop every preview in the project
 /opsx-run list                          # show the windows in this session
@@ -95,7 +96,7 @@ Preview URLs need a login like every exposure (owner cookie from `expose.sh url 
 
 Preview windows are titled `ox ><change>` (ASCII, so non-UTF-8 clients show it as-is) and tagged `@opsx_preview=<change>`, never `@opsx_change`, so they are never mistaken for the agent window.
 
-The saved eval suite is run by `~/.claude/skills/opsx-run/opsx-eval.sh` (no LLM; `--help` for options). ops-eval calls it; `land` calls it for the regression gate; you can run it by hand or in CI:
+The saved eval suite is run by `~/.claude/skills/opsx-run/opsx-eval.sh` (no LLM; `--help` for options). ops-eval calls it; `land --eval` calls it for the regression gate; you can run it by hand or in CI:
 
 ```
 opsx-eval.sh [--change <c>] [--capability <cap>]... [--all] [--agentic] [--trials N] [--json] [--root <dir>]
@@ -179,7 +180,7 @@ Both `openspec` and the window's agent CLI run from the current working director
 | `close` | — | Nothing; `opsx-window.sh close <c>` stops the change's preview (route, app, window) and kills that window |
 | `close-all` | Confirm with **AskUserQuestion** first — this kills several live sessions at once | Nothing; `opsx-window.sh close --all` also stops every preview in the project |
 | `merge` | Runs `opsx-merge.sh <change> [--into <branch>]` **inline**; `--no-ff` merge only — keeps the branch, worktree and window | Nothing |
-| `land` | Runs `opsx-land.sh`, which runs the eval regression gate (when `evals/` exists), calls `opsx-merge.sh --stay`, then archive + cleanup (cleanup stops the change's preview before removing the worktree). If the branch is already in the target (exit 2 / `ALREADY_MERGED`), **AskUserQuestion** whether to skip the merge and finish cleanup; on yes, re-run with `--skip-merge` and the same flags. Do not tell the user to archive by hand. | Nothing — the window is closed as the last step |
+| `land` | Runs `opsx-land.sh`, which runs the eval regression gate only with `--eval` (off by default; `--skip-eval` is an accepted no-op), calls `opsx-merge.sh --stay`, then archive + cleanup (cleanup stops the change's preview before removing the worktree). If the branch is already in the target (exit 2 / `ALREADY_MERGED`), **AskUserQuestion** whether to skip the merge and finish cleanup; on yes, re-run with `--skip-merge` and the same flags. Do not tell the user to archive by hand. | Nothing — the window is closed as the last step |
 
 `verify` and `archive` deliberately run their read-only `openspec` checks in **this** session: they are fast, and a failed gate should be reported to the user immediately rather than discovered inside a window they are not watching.
 
@@ -375,7 +376,7 @@ opsx-merge.sh <change> [--into <branch>] [--branch <name>] [--stay] [--dry-run]
 
 ```
 opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
-             [--skip-merge] [--force-tasks] [--skip-eval] [--no-close]
+             [--skip-merge] [--force-tasks] [--eval] [--skip-eval] [--no-close]
              [--keep-branch] [--keep-worktree] [--dry-run]
 ```
 
@@ -388,7 +389,7 @@ opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
   - Options: **Skip merge and finish cleanup** / **Stop**
   - On skip: re-run `opsx-land.sh <change> --skip-merge` with the same `--into` / `--branch` / `--force-tasks` / … flags. `--skip-merge` checks out the target and runs archive + cleanup only; it refuses if the branch still has unmerged commits.
   - On stop: leave the change as-is.
-- **Eval regression gate.** When the target or the change branch has `evals/`, land runs `opsx-eval.sh --all --json` (L1 + L2 only, never `--agentic`) on the target in a temporary worktree (**baseline**), merges, then runs it again on the merged result (**current**). A check that PASSed on the baseline and FAILs on the merged result **blocks**: land prints `EVAL_REGRESSION` and the regressed checks, resets the target to its pre-merge commit, archives nothing, and exits non-zero — relay the regressions and suggest `/opsx-run <change> "fix the eval regression in <check>"` or `/opsx-run <change> eval`. Other FAIL / UNVERIFIABLE / MISSING results only **warn**. No `evals/` → skipped silently. `--skip-eval` bypasses it (say so when relaying). `--skip-merge` skips it too (no pre-merge baseline). ops-eval / ops-reviewer / ops-security verdicts are still never required.
+- **Eval regression gate.** Off by default: plain `land` runs no evals and, when `evals/` exists, prints one `eval gate off (pass --eval to run the regression gate)` line (say so when relaying). `--eval` turns it on: when the target or the change branch has `evals/`, land runs `opsx-eval.sh --all --json` (L1 + L2 only, never `--agentic`) on the target in a temporary worktree (**baseline**), merges, then runs it again on the merged result (**current**). A check that PASSed on the baseline and FAILs on the merged result **blocks**: land prints `EVAL_REGRESSION` and the regressed checks, resets the target to its pre-merge commit, archives nothing, and exits non-zero — relay the regressions and suggest `/opsx-run <change> "fix the eval regression in <check>"` or `/opsx-run <change> eval`. Other FAIL / UNVERIFIABLE / MISSING results only **warn**. No `evals/` → skipped silently, with or without `--eval`. `--skip-eval` is accepted as a no-op and prints a note that the gate is already off (with `--eval` too, `--eval` wins). `--dry-run` prints the off line, or with `--eval` the `would run:` line. `--skip-merge` skips it too (no pre-merge baseline). ops-eval / ops-reviewer / ops-security verdicts are still never required.
 - Branch discovery is the same as `merge`.
 - On merge conflict `opsx-merge.sh` aborts and restores; the fix is a normal window instruction: `/opsx-run <change> "resolve the conflicts merging <branch> into <target>"`.
 
