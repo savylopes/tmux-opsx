@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Stripped environment
+# level: L2
+# requirement: Parent session discovery
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude
+detached "CLAUDE_CODE_SESSION_ID=$SID bash -c 'env -u CLAUDE_CODE_SESSION_ID bash -c \"\$FORK native --cli claude\"; exit \$?'"
+case "$DOUT_TXT" in "full claude session $SID"*) ;; *) fail "native: $DOUT_TXT";; esac
+detached "CLAUDE_CODE_SESSION_ID=$SID bash -c 'env -u CLAUDE_CODE_SESSION_ID bash -c \"echo q | \$FORK open --cli claude\"; exit \$?'"
+a=$(wait_args claude)
+[ "$(grep -x -A1 -- '--resume' "$FAKE_LOG/claude.args" | sed -n 2p)" = "$SID" ] || fail "launch did not use ancestor id: $a / $DOUT_TXT"
+echo ok

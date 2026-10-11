@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Short brief in full-context mode
+# level: L2
+# requirement: Brief content
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+r=$("$FORK" native --cli claude); case "$r" in full*) ;; *) fail "native said: $r";; esac
+open_fork --cli claude
+[ $RC -eq 0 ] || fail "open exit $RC: $OUT"
+b="$(fdir 1)/brief.md"; [ -f "$b" ] || fail "no brief.md"
+grep -q 'what does foo do' "$b" || fail "question missing"
+grep -qiE 'read-only|do not modify|must not modify' "$b" || fail "read-only role missing"
+grep -qi 'fork return\|fork protocol' "$b" || fail "fork protocol missing"
+if grep -qiE '^#+ .*context' "$b"; then fail "brief.md has a context section heading"; fi
+echo "ok: short brief"

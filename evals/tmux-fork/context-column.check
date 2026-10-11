@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Context column
+# level: L2
+# requirement: List and close forks
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+open_fork --cli claude; [ $RC -eq 0 ] || fail "open1: $OUT"
+open_fork --cli claude --brief-only; [ $RC -eq 0 ] || fail "open2: $OUT"
+l=$("$FORK" list)
+head -1 <<<"$l" | grep -q 'CONTEXT' || fail "no CONTEXT header: $l"
+grep -E '^1 ' <<<"$l" | grep -qw full || fail "row 1: $l"
+grep -E '^2 ' <<<"$l" | grep -qw brief || fail "row 2: $l"
+echo ok

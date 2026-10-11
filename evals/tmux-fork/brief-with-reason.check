@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Brief with reason
+# level: L1
+# requirement: Native mode query
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+out=$("$FORK" native --cli gemini </dev/null 2>&1); rc=$?
+[ $rc -eq 0 ] || fail "exit $rc"
+case "$out" in brief*) ;; *) fail "got: $out";; esac
+grep -qi gemini <<<"$out" || fail "reason does not name gemini: $out"
+echo ok

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Full
+# level: L1
+# requirement: Native mode query
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+out=$("$FORK" native </dev/null 2>&1); rc=$?
+[ $rc -eq 0 ] || fail "exit $rc"
+[ "$out" = "full claude session $SID" ] || fail "got: $out"
+[ -z "$(ls -A "$XDG_STATE_HOME/agent-forks" 2>/dev/null)" ] || fail "native wrote state"
+echo ok

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / OpenCode native launch
+# level: L2
+# requirement: Native fork
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=opencode
+open_fork --cli opencode; [ $RC -eq 0 ] || fail "open: $OUT"
+a=$(wait_args opencode)
+for f in --continue --fork --agent --prompt; do has_arg opencode $f || fail "no $f: $a"; done
+[ "$(grep -x -A1 -- '--agent' "$FAKE_LOG/opencode.args" | sed -n 2p)" = plan ] || fail "agent not plan: $a"
+echo ok

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Context recorded
+# level: L2
+# requirement: Fork state and ids
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+open_fork --cli claude; [ $RC -eq 0 ] || fail "open1: $OUT"
+open_fork --cli claude --brief-only; [ $RC -eq 0 ] || fail "open2: $OUT"
+grep -q '^context=full' "$(fdir 1)/meta" || fail "fork 1 meta: $(cat $(fdir 1)/meta)"
+grep -q "$SID" "$(fdir 1)/meta" || fail "session id not in fork 1 meta"
+grep -qx 'context=brief' "$(fdir 2)/meta" || fail "fork 2 meta: $(cat $(fdir 2)/meta)"
+echo ok

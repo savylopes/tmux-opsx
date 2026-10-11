@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Cross-CLI fork
+# level: L2
+# requirement: Fallback to brief mode
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+open_fork --cli codex; [ $RC -eq 0 ] || fail "open: $OUT"
+a=$(wait_args codex)
+grep -qxE -- '--resume|--fork-session|--continue|--fork|resume|fork' "$FAKE_LOG/codex.args" && fail "native flag in codex launch: $a"
+has_arg codex --sandbox || fail "codex read-only flags missing: $a"
+grep -qx 'context=brief' "$(fdir 1)/meta" || fail "meta: $(cat $(fdir 1)/meta)"
+echo ok

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Context line
+# level: L2
+# requirement: Open reports the context mode
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+open_fork --cli claude; [ $RC -eq 0 ] || fail "open: $OUT"
+head -1 <<<"$OUT" | grep -qE '^fork 1 pane %[0-9]+ cli claude model [^ ]+$' || fail "first line: $(head -1 <<<"$OUT")"
+sed 1d <<<"$OUT" | grep -q '^# context: full' || fail "no context line: $OUT"
+echo ok
