@@ -2006,8 +2006,6 @@ else
   install_explain_skill "$OPENCODE_EXPLAIN_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
   install_explain_skill "$GEMINI_EXPLAIN_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
   [ "$SKIP_FORK" -eq 1 ] && note "/explain needs the /fork skill (installed without --skip-fork)"
-  [ -n "$EXPOSE_DOMAIN" ] || [ -f "$EXPOSE_ENV" ] \
-    || note "/explain pages are served on this machine only until /expose is set up (--expose-domain <domain>)"
 fi
 info ""
 
