@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / README
+# level: L1
+# requirement: Documentation
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+R="$EVAL_ROOT/README.md"
+for w in '--fork-session' '--brief'; do grep -qF -- "$w" "$R" || fail "README lacks $w"; done
+grep -qi 'brief' "$R" && grep -qiE 'fall ?back' "$R" || fail "no brief fallback text"
+grep -qi 'CONTEXT' "$R" || fail "no CONTEXT column mention"
+echo ok

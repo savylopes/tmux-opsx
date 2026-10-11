@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Claude in another cwd
+# level: L2
+# requirement: Working directory and native mode
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+open_fork --cli claude --cwd "$EVAL_TMP/other"; [ $RC -eq 0 ] || fail "open: $OUT"
+a=$(wait_args claude)
+[ "$(grep -x -A1 -- '--resume' "$FAKE_LOG/claude.args" | sed -n 2p)" = "$SID" ] || fail "no --resume $SID: $a"
+has_arg claude --fork-session || fail "no --fork-session: $a"
+grep -q '^context=full' "$(fdir 1)/meta" || fail "meta: $(cat $(fdir 1)/meta)"
+echo ok

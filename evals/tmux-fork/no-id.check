@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / No id
+# level: L2
+# requirement: Parent session discovery
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude
+detached '"$FORK" native --cli claude; echo rc=$?'
+head -1 <<<"$DOUT_TXT" | grep -q '^brief' || fail "native: $DOUT_TXT"
+head -1 <<<"$DOUT_TXT" | grep -qi 'session' || fail "reason does not name the session id: $DOUT_TXT"
+detached 'echo q | "$FORK" open --cli claude'
+wait_args claude >/dev/null
+has_arg claude --resume && fail "--resume present without id"
+has_arg claude --fork-session && fail "--fork-session present without id"
+echo ok

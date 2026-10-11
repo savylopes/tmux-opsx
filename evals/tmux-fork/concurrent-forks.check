@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Concurrent forks
+# level: L2
+# requirement: Fork state and ids
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+for i in 1 2 3; do
+  ( printf '%s\n' "q$i" | "$FORK" open --cli claude --brief-only > "$EVAL_TMP/o$i" 2>&1 ) &
+done
+wait
+ids=$(for i in 1 2 3; do head -1 "$EVAL_TMP/o$i" | awk '{print $2}'; done | sort)
+[ "$(echo "$ids" | sort -u | wc -l)" -eq 3 ] || fail "ids not distinct: $(echo $ids) / $(cat $EVAL_TMP/o1 $EVAL_TMP/o2 $EVAL_TMP/o3)"
+for id in $ids; do [ -f "$(fdir $id)/meta" ] || fail "no state dir for $id"; done
+echo "ok: ids $(echo $ids)"

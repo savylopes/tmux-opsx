@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Close without result
+# level: L2
+# requirement: List and close forks
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+open_fork --cli claude; [ $RC -eq 0 ] || fail "open: $OUT"
+wait_args claude >/dev/null
+child=$(sed -n 's/^child_pane=//p' "$(fdir 1)/meta")
+sleep 0.5
+[ ! -f "$(fdir 1)/result.md" ] || fail "unexpected result.md"
+"$FORK" close 1 >/dev/null 2>&1 || fail "close failed"
+[ -s "$(fdir 1)/capture.txt" ] || fail "capture.txt missing/empty"
+T list-panes -a -F '#{pane_id}' | grep -qx "$child" && fail "child pane $child still alive"
+col=$("$FORK" collect 1 2>&1); grep -q 'fake-claude started' <<<"$col" || fail "collect did not return capture: $col"
+grep -qx 'status=closed' "$(fdir 1)/meta" || fail "status not closed"
+echo ok

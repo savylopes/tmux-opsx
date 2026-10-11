@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Different cwd
+# level: L2
+# requirement: Fallback to brief mode
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=opencode
+open_fork --cli opencode --cwd "$EVAL_TMP/other"; [ $RC -eq 0 ] || fail "open: $OUT"
+a=$(wait_args opencode)
+has_arg opencode --continue && fail "--continue present: $a"
+has_arg opencode --fork && fail "--fork present: $a"
+grep -qx 'context=brief' "$(fdir 1)/meta" || fail "meta: $(cat $(fdir 1)/meta)"
+echo ok

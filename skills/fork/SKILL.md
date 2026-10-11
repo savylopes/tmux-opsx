@@ -1,12 +1,12 @@
 ---
 name: fork
-description: "Fork the current agent conversation into a read-only child agent in a tmux pane (or window), briefed with this session's context, so the user can ask side questions without derailing the main thread; the child returns a short result that the parent collects later. Works from Claude Code, Cursor CLI, Codex CLI, OpenCode and Gemini CLI. Use when the user types /fork, asks to 'fork', 'open a side agent', 'ask a question in parallel', or, inside a fork, says '/fork return'. Also /fork collect, /fork list, /fork close. Trigger: /fork"
+description: "Fork the current agent conversation into a read-only child agent in a tmux pane (or window) that starts with this whole conversation (native fork on Claude Code and OpenCode) or a summary brief of it, so the user can ask side questions without derailing the main thread; the child returns a short result that the parent collects later. Works from Claude Code, Cursor CLI, Codex CLI, OpenCode and Gemini CLI. Use when the user types /fork, asks to 'fork', 'open a side agent', 'ask a question in parallel', or, inside a fork, says '/fork return'. Also /fork collect, /fork list, /fork close. Trigger: /fork"
 trigger: /fork
 ---
 
 # /fork
 
-Open a **read-only child agent** next to this one, already briefed with the current context, so the user can ask it side questions ("why did we pick X?", "where is Y handled?"). The child never edits code. When the user is done, the child **returns** a short result; the parent is **notified** (tmux message + pane badge, never typed into) and **collects** the result when the user asks.
+Open a **read-only child agent** next to this one that already knows the current context (on Claude Code and OpenCode it is a native fork of this very conversation; otherwise it gets a brief you write), so the user can ask it side questions ("why did we pick X?", "where is Y handled?"). The child never edits code. When the user is done, the child **returns** a short result; the parent is **notified** (tmux message + pane badge, never typed into) and **collects** the result when the user asks.
 
 Independent of OpenSpec and `/opsx-run`. Requires tmux (except `/fork return`).
 
@@ -18,10 +18,11 @@ Independent of OpenSpec and `/opsx-run`. Requires tmux (except `/fork return`).
 | parent | `/fork --vertical ["question"]` | same, split top/bottom |
 | parent | `/fork --window ["question"]` | same, in a new window `fork-<id>` |
 | parent | `/fork --cli <claude\|agent\|codex\|opencode\|gemini> …` | use another CLI for the child (default: the same CLI as this session) |
+| parent | `/fork --brief ["question"]` | force a summary-brief child (no native fork): the child sees only the brief, not this conversation |
 | parent | `/fork --model <m> …` | run the child on model `<m>` (default: `$FORK_MODEL`, else this session's model when the child uses the same CLI, else the CLI's default) |
 | child | `/fork return` | write the result and notify the parent |
 | parent | `/fork collect [id]` | read a fork's result into this conversation (default: the most recently returned) |
-| parent | `/fork list` | list this tmux session's forks (id, status, CLI, model, pane, question) |
+| parent | `/fork list` | list this tmux session's forks (id, status, CLI, model, context, pane, question) |
 | parent | `/fork close <id>` / `/fork close --all` | save a capture if needed, kill the child pane/window |
 
 ## The script
@@ -35,7 +36,8 @@ FORK_SH=$(ls ~/.claude/skills/fork/fork.sh ~/.cursor/skills/fork/fork.sh ~/.agen
 
 ```
 fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]
-             [--model <m>] [--parent-model <m>]                     < brief
+             [--model <m>] [--parent-model <m>] [--brief-only]      < brief
+fork.sh native [--cli <name>] [--cwd <dir>] [--brief-only]
 fork.sh return                                                      < result
 fork.sh collect [<id>]
 fork.sh list
@@ -43,7 +45,9 @@ fork.sh close <id> | --all
 fork.sh detect-cli [--cli <name>]
 ```
 
-Environment defaults: `$FORK_CLI` (child CLI), `$FORK_MODEL` (child model), `$FORK_HOST_CLI` (override host CLI detection; `none` = undetected).
+Environment defaults: `$FORK_CLI` (child CLI), `$FORK_MODEL` (child model), `$FORK_HOST_CLI` (override host CLI detection; `none` = undetected), `$FORK_NATIVE=0` (never fork natively, same as `--brief-only`).
+
+Context mode: `fork.sh native` prints `full <cli> <source>` when `open` will start the child as a **native fork** of this session (Claude Code: `--resume <session id> --fork-session`; OpenCode: `--continue --fork`, only in this session's directory), or `brief <reason>` when it will not (cross-CLI fork, Codex / Gemini / Cursor, OpenCode with another `--cwd`, no session id found, `--brief-only`, `FORK_NATIVE=0`). It reads no stdin and writes nothing. `open` makes the same decision itself and records it.
 
 Model precedence: `--model` > `$FORK_MODEL` > `--parent-model` (only when the child CLI is the host CLI; for OpenCode only in `provider/model` form) > the CLI's default (no flag). Values that are empty, contain whitespace or start with `-` are rejected.
 
@@ -53,33 +57,53 @@ Model precedence: `--model` > `$FORK_MODEL` > `--parent-model` (only when the ch
 - **Never send keys to the parent pane**, and never paste a child's result into the parent yourself. Results only reach the parent through `collect`.
 - Keep briefs and results small; they cost context on both sides.
 
-## Parent: `/fork ["question"]`
+## Parent: `/fork ["question"]` and `/fork --brief ["question"]`
 
-1. Write a **brief** with these sections (Markdown), then pipe it to `fork.sh open` on stdin with a quoted heredoc so nothing is expanded:
+1. **Ask `fork.sh` which brief to write.** Run `native` with the same `--cli` / `--cwd` you will pass to `open` (and `--brief-only` when the user typed `/fork --brief`):
 
    ```bash
-   "$FORK_SH" open --parent-model <your own model id> <<'EOF'
-   ## Question
-   <the user's question, or "general exploration" if none>
-
-   ## Context
-   - Goal: <what the parent session is working on>
-   - Relevant files: <paths, with line numbers where useful>
-   - Current state / hypothesis: <what is known, what was tried, open doubts>
-   - <5–15 lines total: only what the child needs to answer well>
-
-   ## Role
-   You are a read-only fork: answer questions, do not modify files.
-   EOF
+   "$FORK_SH" native [--cli <name>] [--cwd <dir>] [--brief-only]
    ```
 
-   **Always** pass `--parent-model <your own model id>` (the exact id you are running as, e.g. `claude-opus-5-5`), so the child inherits your model. `fork.sh` ignores it when the child runs on a different CLI (or `--model` / `$FORK_MODEL` gives a model), so passing it is always safe. If you do not know your model id, omit it; the child then uses its CLI's default.
+   - It prints `full …` → the child will inherit this whole conversation. Write the **short brief** (Question + Role, no Context section):
 
-   Add `--model <m>` only when the user names a model for the fork. Add `--window`, `--vertical` or `--cli <name>` only when the user asked for them. `fork.sh` appends a generated **Fork protocol** section (read-only rule, the exact return command, the marker fallback), stores everything as `brief.md` and uses it as the child's first prompt.
+     ```bash
+     "$FORK_SH" open --parent-model <your own model id> <<'EOF'
+     ## Question
+     <the user's question, or "general exploration" if none>
 
-2. Report the output line (`fork <id> pane <%N> cli <cli> model <m|default>`) to the user in one sentence, e.g. "Opened fork 2 in the pane on the right (Claude, claude-opus-5-5, plan mode). Ask it anything; say `/fork return` there when done." Then continue with your own work. Do not wait for or poll the child.
+     ## Role
+     You are a read-only fork: answer questions, do not modify files.
+     EOF
+     ```
 
-Brief content comes from **this conversation**, not a re-investigation: summarize, don't research. Never include secrets (tokens, keys, passwords) in the brief.
+   - It prints `brief <reason>` → the child will know only what you write. Write the **full brief**:
+
+     ```bash
+     "$FORK_SH" open --parent-model <your own model id> <<'EOF'
+     ## Question
+     <the user's question, or "general exploration" if none>
+
+     ## Context
+     - Goal: <what the parent session is working on>
+     - Relevant files: <paths, with line numbers where useful>
+     - Current state / hypothesis: <what is known, what was tried, open doubts>
+     - <5–15 lines total: only what the child needs to answer well>
+
+     ## Role
+     You are a read-only fork: answer questions, do not modify files.
+     EOF
+     ```
+
+   For `/fork --brief`, pass `--brief-only` to **both** `native` and `open`: the child then gets the full brief and never sees this conversation.
+
+   Pipe the brief to `fork.sh open` on stdin with a quoted heredoc so nothing is expanded. **Always** pass `--parent-model <your own model id>` (the exact id you are running as, e.g. `claude-opus-5-5`), so the child inherits your model. `fork.sh` ignores it when the child runs on a different CLI (or `--model` / `$FORK_MODEL` gives a model), so passing it is always safe. If you do not know your model id, omit it; the child then uses its CLI's default.
+
+   Add `--model <m>` only when the user names a model for the fork. Add `--window`, `--vertical`, `--cli <name>` or `--cwd <dir>` only when the user asked for them, and pass the same `--cli` / `--cwd` / `--brief-only` to `native` and `open`. `fork.sh` appends a generated **Fork protocol** section (read-only rule, the exact return command, the marker fallback), stores everything as `brief.md` and uses it as the child's first prompt.
+
+2. Report the output line (`fork <id> pane <%N> cli <cli> model <m|default>`) and the context mode from its `# context: full …` / `# context: brief …` line to the user in one sentence, e.g. "Opened fork 2 in the pane on the right (Claude, claude-opus-5-5, plan mode, full context). Ask it anything; say `/fork return` there when done." Then continue with your own work. Do not wait for or poll the child.
+
+Brief content comes from **this conversation**, not a re-investigation: summarize, don't research. Never include secrets (tokens, keys, passwords) in the brief. **In full mode the child sees the entire conversation, including anything sensitive that appeared in it** (pasted tokens, file contents, command output), and starts with this session's context-window usage. If that is not wanted, use `/fork --brief`.
 
 ## Child: `/fork return`
 
@@ -121,7 +145,7 @@ Collecting clears that fork's badge on the parent pane. Summarize the result for
 
 ## Parent: `/fork list` and `/fork close`
 
-- `"$FORK_SH" list` — show the table (id, status `open` / `returned` / `closed`, CLI, model (`default` = the CLI's default), pane, first line of the question). `(pane gone)` means the child exited without being closed.
+- `"$FORK_SH" list` — show the table (id, status `open` / `returned` / `closed`, CLI, model (`default` = the CLI's default), context (`full` = native fork, `brief` = summary brief), pane, first line of the question). `(pane gone)` means the child exited without being closed.
 - `"$FORK_SH" close <id>` / `close --all` — if a fork has no result yet, a `capture.txt` is saved first, so a later `collect <id>` still returns something. The pane/window is killed; state is kept.
 
 ## Read-only children per CLI
@@ -134,7 +158,7 @@ Collecting clears that fork's badge on the parent pane. Summarize the result for
 | Cursor CLI | `agent --mode ask` | usually marker fallback |
 | OpenCode | `opencode --agent plan --prompt` | marker fallback (plan agent refuses shell writes) |
 
-No child is ever launched with bypass/force/auto-approve flags. Full-screen TUIs (OpenCode) keep little scrollback, so collect while the marker block is still on screen.
+Native forks add `--resume <id> --fork-session` (Claude Code) or `--continue --fork` (OpenCode) to these lines and keep every read-only flag. No child is ever launched with bypass/force/auto-approve flags. Full-screen TUIs (OpenCode) keep little scrollback, so collect while the marker block is still on screen.
 
 ## Where things live
 

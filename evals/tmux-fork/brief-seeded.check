@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Brief seeded
+# level: L2
+# requirement: Brief content
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+export FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=$SID
+BRIEF=$'Question: what does foo do?\n\n## Context\n- goal: study foo\n- file: foo.c\n- state: unknown\n- hypothesis: pure'
+open_fork --cli claude --brief-only
+[ $RC -eq 0 ] || fail "open exit $RC: $OUT"
+wait_args claude >/dev/null
+b="$(fdir 1)/brief.md"; [ -f "$b" ] || fail "no brief.md"
+grep -q 'what does foo do' "$b" || fail "question missing from brief.md"
+grep -qi 'context' "$b" || fail "context section missing"
+grep -qiE 'read-only|must not modify|do not modify' "$b" || fail "read-only role missing"
+grep -q 'what does foo do' "$FAKE_LOG/claude.args" || fail "child's first prompt does not carry the brief"
+echo "ok: brief.md seeded and used as first prompt"

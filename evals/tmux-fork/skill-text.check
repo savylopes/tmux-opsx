@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Skill text
+# level: L1
+# requirement: Skill chooses the brief form
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+S="$EVAL_ROOT/skills/fork/SKILL.md"; [ -f "$S" ] || fail "no $S"
+for w in 'fork.sh native' '--brief' '--brief-only'; do grep -qF -- "$w" "$S" || fail "SKILL.md lacks $w"; done
+grep -qiE 'short brief|short form|short' "$S" || fail "no short brief form"
+grep -qiE 'sensitive|secret' "$S" || fail "no sensitivity reminder"
+echo ok

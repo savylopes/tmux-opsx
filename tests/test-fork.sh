@@ -11,7 +11,7 @@ command -v tmux >/dev/null 2>&1 || { echo "tmux is required"; exit 1; }
 REPO=$(cd -- "$(dirname -- "$0")/.." && pwd)
 F=$REPO/skills/fork/fork.sh
 SP=$(mktemp -d "${TMPDIR:-/tmp}/fork-test.XXXXXX")
-trap 'tmux -L "fork-test-$$" kill-server 2>/dev/null; rm -rf "$SP"' EXIT
+trap 'tmux -L "fork-test-$$" kill-server 2>/dev/null; tmux -L "fork-test-stale-$$" kill-server 2>/dev/null; rm -rf "$SP"' EXIT
 mkdir -p "$SP/fakebin"
 for c in claude agent codex opencode gemini; do
   cat > "$SP/fakebin/$c" <<'EOF'
@@ -29,10 +29,18 @@ export XDG_STATE_HOME=$SP/state; rm -rf "$XDG_STATE_HOME"
 export PATH=$SP/fakebin:$PATH
 L="tmux -L fork-test-$$"
 $L kill-server 2>/dev/null
-$L -f /dev/null new-session -d -s fs -x 220 -y 60 'exec sleep 3000'
+# The server is started without CLAUDE_CODE_SESSION_ID and is reparented to
+# init, so `run-shell` commands have no ancestor carrying a session id.
+env -u CLAUDE_CODE_SESSION_ID $L -f /dev/null new-session -d -s fs -x 220 -y 60 'exec sleep 3000'
 sock=$($L display -p '#{socket_path}'); pid=$($L display -p '#{pid}')
 P=$($L display -p -t fs '#{pane_id}')
 export TMUX="$sock,$pid,0" TMUX_PANE=$P
+# Never detect the real agent session running these tests: host CLI and
+# parent session id are fixed here and overridden per case.
+export FORK_HOST_CLI=none
+S=11111111-2222-4333-8444-555555555555
+export CLAUDE_CODE_SESSION_ID=$S
+unset FORK_NATIVE
 pass=0; fail=0
 ok(){ if eval "$2"; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 SD=$XDG_STATE_HOME/agent-forks/fs
@@ -105,7 +113,7 @@ ok "collect raw capture labelled" '[[ "$c" == *"RAW CAPTURE"* ]] && [[ "$c" == *
 # list
 l=$($F list); echo "$l"
 ok "list shows 5 forks" '[ "$(echo "$l" | tail -n +2 | wc -l)" -eq 5 ]'
-ok "list columns" 'echo "$l" | grep -Eq "^2 +returned +codex +default +%[0-9]+ +second q"'
+ok "list columns" 'echo "$l" | grep -Eq "^2 +returned +codex +default +brief +%[0-9]+ +second q"'
 
 # close without result -> capture.txt, pane killed, later collect returns capture
 C4=$(awk -F= '/^child_pane=/{print $2}' $SD/4/meta)
@@ -193,9 +201,132 @@ mopen M11 FORK_HOST_CLI=opencode -- --cli opencode --model gpt-5
 ok "model: opencode explicit bare id passed" 'has_flag $M11 -m gpt-5'
 
 l=$($F list)
-ok "list: MODEL header" 'echo "$l" | head -n1 | grep -Eq "^ID +STATUS +CLI +MODEL +PANE +QUESTION"'
-ok "list: model haiku row" 'echo "$l" | grep -Eq "^$M1 +[a-z]+ +claude +haiku +%[0-9]+ "'
-ok "list: model default row" 'echo "$l" | grep -Eq "^$M2 +[a-z]+ +claude +default +%[0-9]+ "'
+ok "list: MODEL header" 'echo "$l" | head -n1 | grep -Eq "^ID +STATUS +CLI +MODEL +CONTEXT +PANE +QUESTION"'
+ok "list: model haiku row" 'echo "$l" | grep -Eq "^$M1 +[a-z]+ +claude +haiku +[a-z]+ +%[0-9]+ "'
+ok "list: model default row" 'echo "$l" | grep -Eq "^$M2 +[a-z]+ +claude +default +[a-z]+ +%[0-9]+ "'
+$F close --all >/dev/null
+
+# ---------------------------------------------------------------------------
+# native (full-context) forks; host CLI and session id set per case
+NF='--resume|--fork-session|--continue|--fork'
+fargs() { grep '^ARG=' "$SD/$1/fake-$2.log" | cut -d= -f2-; }
+no_native_flags() { ! grep -Eqx "ARG=($NF)" "$SD/$1/fake-$2.log" && ! lline "$1" | grep -Eq -- " ($NF)( |$)"; }
+
+n=$(FORK_HOST_CLI=claude $F native); rc=$?
+ok "native: claude host + id -> full" '[ $rc -eq 0 ] && [ "$n" = "full claude session $S" ]'
+n=$(FORK_HOST_CLI=claude $F native --cli codex); rc=$?
+ok "native: cross-CLI -> brief" '[ $rc -eq 0 ] && [[ "$n" == "brief "*"claude -> codex"* ]]'
+n=$(FORK_HOST_CLI=claude $F native --cli gemini); rc=$?
+ok "native: gemini -> brief naming gemini" '[ $rc -eq 0 ] && [[ "$n" == brief* ]] && [[ "$n" == *gemini* ]]'
+n=$(FORK_HOST_CLI=gemini $F native --cli gemini)
+ok "native: gemini host -> no true fork" '[[ "$n" == "brief gemini has no true fork" ]]'
+n=$(FORK_HOST_CLI=agent $F native --cli agent); ok "native: agent -> brief" '[[ "$n" == brief* ]]'
+n=$(FORK_HOST_CLI=codex $F native --cli codex); ok "native: codex -> brief" '[[ "$n" == brief* ]]'
+n=$(FORK_HOST_CLI=claude FORK_NATIVE=0 $F native --cli claude)
+ok "native: FORK_NATIVE=0 -> brief" '[[ "$n" == "brief disabled"* ]]'
+n=$(FORK_HOST_CLI=claude $F native --cli claude --brief-only)
+ok "native: --brief-only -> brief" '[[ "$n" == "brief disabled"* ]]'
+n=$(FORK_HOST_CLI=claude $F native --cli claude --cwd "$SP")
+ok "native: claude --cwd elsewhere -> still full" '[ "$n" = "full claude session $S" ]'
+n=$(FORK_HOST_CLI=opencode $F native --cli opencode)
+ok "native: opencode same cwd -> full" '[ "$n" = "full opencode continue" ]'
+n=$(FORK_HOST_CLI=opencode $F native --cli opencode --cwd "$SP")
+ok "native: opencode --cwd elsewhere -> brief" '[[ "$n" == "brief cwd differs"* ]]'
+n=$(FORK_HOST_CLI=claude CLAUDE_CODE_SESSION_ID=not-a-uuid $F native --cli claude)
+ok "native: malformed id -> brief" '[[ "$n" == "brief "*CLAUDE_CODE_SESSION_ID* ]]'
+R=22222222-3333-4444-8555-666666666666
+# `; :` keeps each bash alive (no exec of the last command), so the nearest
+# ancestor holding the variable is the outer bash with $R.
+n=$(CLAUDE_CODE_SESSION_ID=$R bash -c 'env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude bash -c "\"\$0\" native --cli claude; :" "$0"; :' "$F")
+ok "native: stripped env recovered from ancestor" '[ "$n" = "full claude session $R" ]'
+# Stale ids (F1): the claude process and the tmux server keep the id they were
+# launched with. A bash symlinked as `claude` stands in for the claude process.
+T=33333333-4444-4555-8666-777777777777
+mkdir -p "$SP/pbin" "$SP/oc"; ln -sf "$(command -v bash)" "$SP/pbin/claude"; ln -sf "$(command -v bash)" "$SP/pbin/opencode"
+n=$(CLAUDE_CODE_SESSION_ID=$T "$SP/pbin/claude" -c 'env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude bash -c "\"\$0\" native --cli claude; :" "$0"; :' "$F")
+ok "native: id only on the claude process -> brief, not resumed" '[[ "$n" == "brief "*CLAUDE_CODE_SESSION_ID* ]] && [[ "$n" != *"$T"* ]]'
+n=$(CLAUDE_CODE_SESSION_ID=$T "$SP/pbin/claude" -c 'CLAUDE_CODE_SESSION_ID=$1 bash -c "env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude bash -c \"\\\"\\\$0\\\" native --cli claude; :\" \"\$0\"; :" "$0"; :' "$F" "$R")
+ok "native: live id below the claude process -> full with it" '[ "$n" = "full claude session $R" ]'
+n=$(CLAUDE_CODE_SESSION_ID=$T "$SP/pbin/claude" -c 'CLAUDE_CODE_SESSION_ID=$1 bash -c "env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude bash -c \"\\\"\\\$0\\\" native --cli claude; :\" \"\$0\"; :" "$0"; :' "$F" "$T")
+ok "native: ancestor id equal to the claude process's -> brief stale" '[[ "$n" == "brief stale CLAUDE_CODE_SESSION_ID"* ]]'
+L2="tmux -L fork-test-stale-$$"
+CLAUDE_CODE_SESSION_ID=$T $L2 -f /dev/null new-session -d -s st 'exec sleep 300'
+$L2 run-shell "env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude PATH='$PATH' '$F' native --cli claude > '$SP/stale.native' 2>&1"
+$L2 kill-server 2>/dev/null
+ok "native: id only from a stale tmux server -> brief stale" 'grep -q "^brief stale CLAUDE_CODE_SESSION_ID" $SP/stale.native && ! grep -q "$T" $SP/stale.native'
+# OpenCode session directory (F3): the opencode process's cwd, not the shell's.
+# The `opencode` process stays in $SP/oc; its child shell (the agent's) cd's.
+n=$(cd "$SP/oc" && "$SP/pbin/opencode" -c 'bash -c "cd \"\$1\" && FORK_HOST_CLI=opencode \"\$0\" native --cli opencode; :" "$0" "$1"; :' "$F" "$SP")
+ok "native: opencode shell cd'd away from the session dir -> brief" '[[ "$n" == "brief cwd differs"* ]]'
+n=$(cd "$SP/oc" && "$SP/pbin/opencode" -c 'bash -c "cd \"\$1\" && FORK_HOST_CLI=opencode \"\$0\" native --cli opencode --cwd \"\$2\"; :" "$0" "$1" "$2"; :' "$F" "$SP" "$SP/oc")
+ok "native: opencode --cwd = session dir -> full" '[ "$n" = "full opencode continue" ]'
+# Missing option values (F4): a clear error, no loop.
+for sub in native open detect-cli; do
+  for opt in --cwd --cli; do
+    [ "$sub" = detect-cli ] && [ "$opt" = --cwd ] && continue
+    e=$(timeout 5 "$F" $sub $opt </dev/null 2>&1); rc=$?
+    ok "$sub $opt without value -> error" '[ $rc -eq 1 ] && [[ "$e" == *"$opt needs a value"* ]]'
+  done
+done
+before=$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l)
+ok "native: needs no stdin, writes nothing" 'FORK_HOST_CLI=claude $F native </dev/null >/dev/null && [ "$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l)" -eq "$before" ]'
+# No id: run on the tmux server (child of init, started without the variable)
+$L run-shell "env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude PATH='$PATH' '$F' native --cli claude > '$SP/noid.native' 2>&1"
+ok "native: no id -> brief naming the session id" 'grep -q "^brief .*CLAUDE_CODE_SESSION_ID" $SP/noid.native'
+$L run-shell "printf 'noid q\n' | env -u CLAUDE_CODE_SESSION_ID FORK_HOST_CLI=claude PATH='$PATH' XDG_STATE_HOME='$XDG_STATE_HOME' TMUX='$TMUX' TMUX_PANE='$TMUX_PANE' '$F' open --window --cli claude > '$SP/noid.open' 2>&1"
+NI=$(awk '/^fork /{print $2}' $SP/noid.open)
+ok "native: no id -> open without --resume" '[ -n "$NI" ] && ! lline $NI | grep -q -- --resume && grep -qx context=brief $SD/$NI/meta && grep -q "^# context: brief" $SP/noid.open'
+
+# Claude native launch
+o=$(printf '## Question
+why X?
+
+## Role
+read-only
+' | FORK_HOST_CLI=claude $F open --cli claude); echo "$o"
+NC=${o#fork }; NC=${NC%% *}; sleep 1.2
+ok "native claude: first line unchanged" '[[ "$(echo "$o" | head -n1)" =~ ^fork\ $NC\ pane\ %[0-9]+\ cli\ claude\ model\ [^\ ]+$ ]]'
+ok "native claude: # context: full line" 'echo "$o" | tail -n +2 | grep -q "^# context: full"'
+ok "native claude: --resume S --fork-session" 'fargs $NC claude | grep -A1 -x -- --resume | tail -n1 | grep -qx "$S" && fargs $NC claude | grep -qx -- --fork-session'
+ok "native claude: plan mode kept" 'fargs $NC claude | grep -A1 -x -- --permission-mode | tail -n1 | grep -qx plan && fargs $NC claude | grep -qx -- --allowedTools && fargs $NC claude | grep -qx -- --append-system-prompt'
+ok "native claude: brief is the prompt" 'fargs $NC claude | tail -n1 | grep -q "^## Question"'
+ok "native claude: no bypass flags" '! grep -Eq "bypass|--force|--yolo|--auto|dangerously|--trust|skip-trust" $SD/$NC/fake-claude.log $SD/$NC/launch.sh'
+ok "native claude: meta context=full + S" 'grep -qx context=full $SD/$NC/meta && grep -q "^context_source=.*$S" $SD/$NC/meta'
+
+# OpenCode native launch
+o=$(printf 'oc q
+' | FORK_HOST_CLI=opencode $F open --window --cli opencode); NO=${o#fork }; NO=${NO%% *}; sleep 1.2
+ok "native opencode: --continue --fork --agent plan --prompt" 'a=$(fargs $NO opencode); for f in --continue --fork --agent plan --prompt; do echo "$a" | grep -qx -- "$f" || exit 1; done'
+ok "native opencode: meta context=full" 'grep -qx context=full $SD/$NO/meta && echo "$o" | grep -q "^# context: full (opencode --continue --fork)"'
+
+# Brief-mode fallbacks never add fork flags
+o=$(printf 'bo q
+' | FORK_HOST_CLI=claude $F open --window --cli claude --brief-only); NB=${o#fork }; NB=${NB%% *}
+o2=$(printf 'cx q
+' | FORK_HOST_CLI=claude $F open --window --cli codex); NX=${o2#fork }; NX=${NX%% *}
+o3=$(printf 'gm q
+' | FORK_HOST_CLI=gemini $F open --window --cli gemini); NG=${o3#fork }; NG=${NG%% *}
+o4=$(printf 'ag q
+' | FORK_HOST_CLI=agent $F open --window --cli agent); NA=${o4#fork }; NA=${NA%% *}
+o5=$(printf 'cw q
+' | FORK_HOST_CLI=opencode $F open --window --cli opencode --cwd "$SP"); NW=${o5#fork }; NW=${NW%% *}
+o6=$(printf 'n0 q
+' | FORK_HOST_CLI=claude FORK_NATIVE=0 $F open --window --cli claude); NZ=${o6#fork }; NZ=${NZ%% *}
+o7=$(printf 'cc q\n' | FORK_HOST_CLI=claude $F open --window --cli claude --cwd "$SP"); NK=${o7#fork }; NK=${NK%% *}
+sleep 1.5
+ok "claude other cwd: still native" 'fargs $NK claude | grep -A1 -x -- --resume | tail -n1 | grep -qx "$S" && fargs $NK claude | grep -qx -- --fork-session && grep -qx context=full $SD/$NK/meta'
+ok "brief-only: no fork flags, context=brief" 'no_native_flags $NB claude && grep -qx context=brief $SD/$NB/meta && echo "$o" | grep -q "^# context: brief"'
+ok "cross-CLI codex: today flags only, context=brief" 'no_native_flags $NX codex && grep -qx "ARG=read-only" $SD/$NX/fake-codex.log && grep -qx context=brief $SD/$NX/meta'
+ok "gemini: no fork flags" 'no_native_flags $NG gemini && grep -qx context=brief $SD/$NG/meta'
+ok "agent: no fork flags" 'no_native_flags $NA agent && grep -qx context=brief $SD/$NA/meta'
+ok "opencode other cwd: no fork flags" 'no_native_flags $NW opencode && grep -qx context=brief $SD/$NW/meta'
+ok "FORK_NATIVE=0: no fork flags" 'no_native_flags $NZ claude && grep -qx context=brief $SD/$NZ/meta'
+
+l=$($F list)
+ok "list: CONTEXT header" 'echo "$l" | head -n1 | grep -Eq "^ID +STATUS +CLI +MODEL +CONTEXT +PANE +QUESTION"'
+ok "list: full row" 'echo "$l" | grep -Eq "^$NC +[a-z]+ +claude +[^ ]+ +full +%[0-9]+ "'
+ok "list: brief row" 'echo "$l" | grep -Eq "^$NB +[a-z]+ +claude +[^ ]+ +brief +%[0-9]+ "'
+ok "help lists native and --brief-only" 'h=$($F help); [[ "$h" == *"fork.sh native"* ]] && [[ "$h" == *--brief-only* ]]'
 $F close --all >/dev/null
 
 # unknown cli / empty brief
