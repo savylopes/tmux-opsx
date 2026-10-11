@@ -347,7 +347,9 @@ ok "page: carve-out names both commands" 'c=$(source <(sed -n "s/.*--append-syst
 ok "page: brief has page protocol" 'grep -q "## Page protocol" $SD/$PG/brief.md && grep -q "$F page" $SD/$PG/brief.md && grep -q "manifest.tsv" $SD/$PG/brief.md && grep -q "S P D T C N" $SD/$PG/brief.md && grep -qi mermaid $SD/$PG/brief.md'
 ok "page: protocol is the last section" '[ "$(grep "^## " $SD/$PG/brief.md | tail -n1)" = "## Page protocol (fork $PG)" ]'
 ok "page: protocol says stop, no markers" 'sed -n "/^## Page protocol/,\$p" $SD/$PG/brief.md > $SP/pp; grep -q "stop" $SP/pp && ! grep -q "FORK-RESULT" $SP/pp'
-ok "page: plain brief has no page protocol" '! grep -q "Page protocol" $SD/$NP0/brief.md && ! grep -q "manifest.tsv" $SD/$NP0/brief.md'
+ok "page: protocol asks for English and Portuguese with identical labels" 'sed -n "/^## Page protocol/,\$p" $SD/$PG/brief.md > $SP/pp2; grep -q "Two languages, one write" $SP/pp2 && grep -q "<article lang=\"en\">" $SP/pp2 && grep -q "<article lang=\"pt\">" $SP/pp2 && grep -q "same labelled blocks" $SP/pp2 && grep -q "never write one language alone" $SP/pp2 && grep -q "in both languages" $SP/pp2'
+ok "page: protocol duplicates diagrams per language, one manifest line per label" 'grep -q "Diagrams are duplicated per language" $SP/pp2 && grep -q "shared by both languages" $SP/pp2'
+ok "page: plain brief has no page protocol" '! grep -q "Page protocol" $SD/$NP0/brief.md && ! grep -q "manifest.tsv" $SD/$NP0/brief.md && ! grep -q "Two languages" $SD/$NP0/brief.md'
 ok "page: relative --page-dir rejected" 'e=$(printf q | $F open --cli claude --page-dir rel/3 2>&1); [ $? -ne 0 ] && [[ "$e" == *absolute* ]]'
 
 PR=$XDG_STATE_HOME/agent-forks/explain/proj; PD=$PR/3; mkdir -p $PR

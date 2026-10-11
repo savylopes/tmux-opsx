@@ -634,11 +634,12 @@ page_protocol() {
 
       $script page <<'PAGE_EOF'
       <!doctype html>
-      …the complete page…
+      …the complete page, English and Portuguese…
       PAGE_EOF
 
   and write the label manifest **every time you write the page**, one line per
-  current label, \`<label><TAB><one-line summary>\`:
+  current label (labels are shared by both languages, so one line each),
+  \`<label><TAB><one-line summary>\`:
 
       $script page --manifest <<'PAGE_EOF'
       S1	What the section covers
@@ -649,6 +650,17 @@ page_protocol() {
   \`index.html\` and \`manifest.tsv\` in the fork's page directory
   (\`$page_dir\`), outside the repository. Never edit project files, never
   write the page anywhere else.
+- **Two languages, one write**: every page carries the whole explanation in
+  English and in Portuguese, as two sibling articles \`<article lang="en">\`
+  and \`<article lang="pt">\` (the template from the brief has both and the
+  EN / PT switch; keep them). Both articles hold the **same labelled blocks
+  in the same order** with the same \`data-label\` and \`id\` (the repeat is
+  intended; the page script keeps the ids only on the shown language), each
+  its own \`<h1>\`; \`<title>\` is \`English title · Título em português\`.
+  Diagrams are duplicated per language (translated node text, same
+  structure, same \`D<n>\` in both). Always write both articles in the
+  same \`page\` command; never write one language alone. Every edit the user
+  asks for applies to both articles unless they name one language.
 - Labels: every block carries a visible label and an HTML id equal to it:
   \`S<n>\` sections (nested \`S1.2\`), \`P<n>\` paragraphs, \`D<n>\` diagrams,
   \`T<n>\` tables, \`C<n>\` code blocks, \`N<n>\` callouts (prefixes S P D T C N),
@@ -663,8 +675,9 @@ page_protocol() {
 - First reply: write the page and the manifest, then confirm the page URL
   (from the brief) and list the top-level labels (\`S1 …\`, \`D1 …\`).
 - The user asks for edits by label ("expand P7", "the arrow in D2 is wrong"):
-  change those blocks, keep every other label, rewrite the whole page and the
-  manifest with the commands above, then say which labels changed.
+  change those blocks in both languages, keep every other label, rewrite the
+  whole page and the manifest with the commands above, then say which labels
+  changed.
 - **Never put secrets in the page**: no API keys, tokens, passwords,
   cookies, private keys, connection strings, environment values or other
   credentials you saw in the conversation or in tool output, not even

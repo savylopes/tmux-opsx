@@ -506,7 +506,8 @@ write_placeholder() {
 </head>
 <body>
 <h1>$topic</h1>
-<p>The fork is writing this page. It appears here as soon as it is written.</p>
+<p lang="en">The fork is writing this page. It appears here as soon as it is written.</p>
+<p lang="pt">O fork está escrevendo esta página. Ela aparece aqui assim que for escrita.</p>
 <script>
 (function(){var last=null;function poll(){fetch(location.pathname,{method:'HEAD',cache:'no-store'}).then(function(r){var m=(r.headers.get('Last-Modified')||'')+'|'+(r.headers.get('Content-Length')||'');if(last!==null&&m!==last){location.reload();return}last=m;setTimeout(poll,2000)}).catch(function(){setTimeout(poll,2000)})}poll()})();
 </script>
@@ -661,6 +662,7 @@ build_brief() {
   else
     printf -- '- Served on this machine only (expose is not configured); nothing else is written or published.\n'
   fi
+  printf -- '- Languages: English and Portuguese on the same page (lang="en" and lang="pt", EN / PT switch, identical labels in both), written together in every page write.\n'
   printf -- '- Audience: the user, possibly a client they share the link with (a share link opens the whole page library of this project, not only this page). Write a clean, well-structured explanation with diagrams where they help; no internal chatter, and never secrets (keys, tokens, passwords, credentials, environment values).\n'
   if [ -n "${notes//[[:space:]]/}" ]; then
     printf '\n%s\n' "$notes"
@@ -669,7 +671,7 @@ build_brief() {
     tpl=$(page_template)
     if [ -n "$tpl" ]; then
       # shellcheck disable=SC2016  # literal Markdown backticks
-      printf '\n## HTML template\n\nStart every page from this skeleton. Keep the <style>, every <script> block and the Mermaid script tag (pinned URL, integrity hash) as they are; replace the title and the body content. The server enforces a Content-Security-Policy: no other external scripts, images, fonts, styles, frames, fetches or forms.\n\n```html\n%s\n```\n' "$tpl"
+      printf '\n## HTML template\n\nStart every page from this skeleton. Keep the <style>, the EN / PT switch (<nav class="opsx-lang">), every <script> block and the Mermaid script tag (pinned URL, integrity hash) as they are; replace the titles and the content of both articles. Write the page in English (<article lang="en">) and in Portuguese (<article lang="pt">) in the same write, with identical labels in the same order in both articles; <title> holds both titles (English · Portuguese). The server enforces a Content-Security-Policy: no other external scripts, images, fonts, styles, frames, fetches or forms.\n\n```html\n%s\n```\n' "$tpl"
     fi
   fi
 }
