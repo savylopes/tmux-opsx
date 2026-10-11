@@ -78,6 +78,32 @@ Every block in a page SHALL carry a visible label in the margin and an HTML id e
 - **WHEN** the user tells the fork to expand `P7` and the fork rewrites the page
 - **THEN** `P7` still identifies the same paragraph, every previously existing label is still present or absent (never renumbered), and new blocks use numbers not seen in the previous manifest
 
+### Requirement: Bilingual page
+Every page SHALL carry the whole explanation in English and in Portuguese: one `<article lang="en">` and one `<article lang="pt">`, each with its own heading and the same labelled blocks (same `data-label` and `id`, same order). Diagrams SHALL exist in both articles under the same `D<n>` label. The `<title>` SHALL hold both titles. The page protocol SHALL require both languages in every `fork.sh page` write.
+
+#### Scenario: Both languages in the template
+- **WHEN** the page template in `SKILL.md` is read
+- **THEN** it has an `<article lang="en">` and an `<article lang="pt">` whose `data-label` sets are identical, an EN / PT switch, and a script that reads `?lang=`, `localStorage` and `navigator.language`
+
+#### Scenario: Library shows both titles
+- **WHEN** a page's `<title>` is `Landing explained · Como o landing funciona`
+- **THEN** the library index lists that text for the page
+
+#### Scenario: Protocol asks for both languages
+- **WHEN** an explain fork's `brief.md` is read
+- **THEN** its page protocol tells the child to write the English and the Portuguese article in the same `fork.sh page` write with identical labels, and to keep both in step on every edit
+
+### Requirement: Language switch
+The page SHALL show one language at a time with a visible EN / PT switch near the top that changes the shown language without a reload and remembers the choice in `localStorage`. The initial language SHALL be `?lang=en|pt` when present, else the remembered choice, else Portuguese when the browser language starts with `pt`, else English. A `#<label>` fragment SHALL land on that block in the shown language. The switch SHALL be inline script within the server's Content-Security-Policy.
+
+#### Scenario: Switch without reload
+- **WHEN** the page is open in English and the user clicks PT
+- **THEN** the Portuguese article is shown, the English one is hidden, `localStorage` holds `pt`, and no request for the page is made besides the reload poll
+
+#### Scenario: Deep link in the shown language
+- **WHEN** a page is opened at `?lang=pt#P1`
+- **THEN** the Portuguese article is shown, exactly one element in the live document has `id="P1"`, and it is the Portuguese `P1`
+
 ### Requirement: Diagrams and rendering
 Pages SHALL render diagrams with Mermaid loaded from a CDN as one exact-version file with a Subresource Integrity hash and `referrerpolicy="no-referrer"`, falling back to inline SVG or an ASCII `<pre>` block when Mermaid cannot express the diagram, each still carrying a `D<n>` label. Pages SHALL need no build step and SHALL reload themselves when the served file changes, by polling the file's `Last-Modified` header.
 

@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Brief content
-The parent agent SHALL write a brief containing: the question (or "general exploration" if none), a statement that the child answers questions and must not modify files, and instructions to run `/fork return` when the user asks. In brief mode it SHALL also contain 5–15 lines of context from the current conversation (goal, relevant files, current state or hypothesis); in full-context mode (see "Native fork") the context section SHALL be omitted. When `open` is given `--page-dir`, `fork.sh` SHALL append a page protocol section naming the exact `fork.sh page` command after the fork protocol. The brief SHALL be stored as `brief.md` in the fork's state directory and used as the child's first prompt.
+The parent agent SHALL write a brief containing: the question (or "general exploration" if none), a statement that the child answers questions and must not modify files, and instructions to run `/fork return` when the user asks. In brief mode it SHALL also contain 5–15 lines of context from the current conversation (goal, relevant files, current state or hypothesis); in full-context mode (see "Native fork") the context section SHALL be omitted. When `open` is given `--page-dir`, `fork.sh` SHALL append a page protocol section naming the exact `fork.sh page` command, and requiring an English and a Portuguese version of the page with identical labels in each write, after the fork protocol. The brief SHALL be stored as `brief.md` in the fork's state directory and used as the child's first prompt.
 
 #### Scenario: Brief seeded
 - **WHEN** a fork is opened with a question
@@ -15,7 +15,7 @@ The parent agent SHALL write a brief containing: the question (or "general explo
 
 #### Scenario: Page protocol appended
 - **WHEN** `fork.sh open --page-dir <dir>` runs
-- **THEN** `brief.md` ends with a page protocol section containing the literal `fork.sh page` command, and a fork opened without `--page-dir` has no such section
+- **THEN** `brief.md` ends with a page protocol section containing the literal `fork.sh page` command and the rule that every page is written in English and Portuguese (`lang="en"`, `lang="pt"`) with identical labels, and a fork opened without `--page-dir` has no such section
 
 ### Requirement: Fork state and ids
 Each fork SHALL have a state directory `${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks/<tmux-session>/<id>/` holding `brief.md`, `meta` and, once written, `result.md`. Ids SHALL be small integers, unique within the tmux session and allocated atomically. `meta` SHALL record the parent pane, child pane, CLI, model (empty when the CLI default is used), cwd, creation time, status (`open`, `returned`, `closed`), `context` (`full` or `brief`, with the source session when known) and `page_dir` (empty when the fork writes no page). The child process SHALL receive `FORK_ID`, `FORK_DIR`, `FORK_PARENT` and, for a page fork, `FORK_PAGE_DIR` environment variables.

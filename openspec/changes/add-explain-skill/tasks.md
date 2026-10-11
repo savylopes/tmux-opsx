@@ -41,6 +41,13 @@
 - [x] 6.3 F5: page protocol forbids secrets, tokens and credentials; verify in `tests/test-fork.sh`
 - [x] 6.4 F6: `fork.sh page` runs `.reindex` only under `<state root>/explain/<project>/`, never a symlink; verify in `tests/test-fork.sh`
 
+## 7. Bilingual pages (EN + PT)
+
+- [x] 7.1 Update proposal, design (5a), `specs/explain-page` (requirement "Bilingual page", protocol scenario) and `specs/tmux-fork` ("Brief content"); verify `openspec validate add-explain-skill --strict`
+- [x] 7.2 Template in `skills/explain/SKILL.md`: `<article lang="en">` and `<article lang="pt">` with identical labelled blocks, EN / PT switch, head script choosing `?lang=` → `localStorage` → `navigator.language` → `en`, id hand-over to the shown article, `#<label>` landing, per-article `mermaid.run`, `<title>` with both titles; document the scheme in SKILL.md; verify the switch logic headless with node (jsdom-free DOM stub) and in `tests/test-explain.sh`
+- [x] 7.3 Page protocol in `fork.sh` and the brief text in `explain.sh`: both languages in one write, identical labels, diagrams duplicated per language, both titles in `<title>`; bilingual placeholder page; verify in `tests/test-fork.sh` and `tests/test-explain.sh`
+- [x] 7.4 README "Explain" section: bilingual pages, the switch, `?lang=`; verify the full test suites, shellcheck and the library index with a bilingual title
+
 ## Workflow follow-up
 
 - Archive the change after the project's review requirements are satisfied.

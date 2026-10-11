@@ -79,9 +79,20 @@ Share links still cover the whole explain host: per-page sharing would need per-
 
 Reload polling: every 2 s `fetch(location.pathname, {method:'HEAD', cache:'no-store'})`, compare `Last-Modified`, `location.reload()` on change. Labels: each block is `<section id="S1" data-label="S1">` or `<p id="P7" data-label="P7">`; CSS draws `data-label` in the margin via `::before`; a delegated click handler copies `#<label>` with `navigator.clipboard`.
 
+### 5a. Bilingual pages (EN + PT)
+
+Scheme: two sibling `<article>` elements in the body, `<article lang="en">` and `<article lang="pt">`, each with its own `<h1>` and the **same labelled blocks** (same `data-label`, same `id`) in the same order. A `<nav class="opsx-lang">` with two buttons (`data-set-lang="en"` / `"pt"`) sits at the top of the body.
+
+- Choice: `?lang=en|pt` in the URL, else `localStorage["opsx-explain-lang"]`, else `pt` when `navigator.language` starts with `pt`, else `en`. A click on EN / PT stores the choice (and rewrites `?lang=` only when the URL already has it). A head script sets `<html lang>` and `data-show="<lang>"` before the body is painted; CSS hides the article of the other language (`html[data-show="en"] article[lang]:not([lang="en"]){display:none}`), so there is no flash and no reload. Without JS both articles are shown, one after the other. A page that lacks the chosen language falls back to its first article.
+- Ids: the source repeats each id once per language (deliberate: the fork writes two identical label sets and every check for `id="P7"` keeps holding). At `DOMContentLoaded` and on every switch the script keeps `id` only on the blocks of the shown article and removes it from the hidden one, so the live DOM has unique ids, `getElementById` / fragment navigation resolve to the visible block, and `#P7` lands on P7 in whichever language is shown. Because the browser's own `:target` is computed before the ids move, the script marks the target with a class `opsx-target` and scrolls to it (not on a reload, where the browser restores the scroll position).
+- Mermaid: diagrams are duplicated per language (the node text is translated; the structure is the same; one `D<n>` label in each article). `startOnLoad` is off; the script runs `mermaid.run()` on the unrendered `pre.mermaid` of the shown article only, at load and on first switch, because Mermaid measures text and cannot lay out a diagram inside a hidden element.
+- Title: `<title>` holds `English title · Título em português`; the script sets `document.title` to the shown article's `<h1>`. The library index keeps extracting `<title>`, so it shows both titles with no change to `.reindex`.
+- `manifest.tsv` stays one row per label (the labels are shared); the summary is in English.
+- CSP: the language script is inline (allowed by `script-src 'unsafe-inline'`), uses `localStorage` and no network, so the CSP, Host check and path allowlist are unchanged.
+
 ### 6. Library index
 
-`.reindex` (bash, written by `explain.sh`) scans `<root>/<n>/index.html`, extracts `<title>`, reads `.meta`, and writes `index.html` with a table (id, title, created, fork) linking to `/<n>/`. `explain.sh list` prints the same table plus server state and URL. Regeneration is idempotent and cheap (tens of pages at most).
+`.reindex` (bash, written by `explain.sh`) scans `<root>/<n>/index.html`, extracts `<title>` (both language titles, see 5a), reads `.meta`, and writes `index.html` with a table (id, title, created, fork) linking to `/<n>/`. `explain.sh list` prints the same table plus server state and URL. Regeneration is idempotent and cheap (tens of pages at most).
 
 ### 7. Tests with fakes
 
@@ -93,6 +104,8 @@ Reload polling: every 2 s `fetch(location.pathname, {method:'HEAD', cache:'no-st
 - [Fork-written page runs script on a logged-in origin] → Server-side CSP, Host allowlist and path allowlist (3a). Residual: top-level navigation away from the page is not blockable by CSP.
 - [Share link grants the whole library] → Documented in SKILL.md and the brief; per-page links would need per-path routes in `expose.sh`.
 - [Stale `.server` after a reboot] → Reuse checks window + port, not the file; stale records are overwritten.
+- [The two languages drift apart (a block edited or added in one only)] → The protocol requires every rewrite to change both articles and keep identical label sets; the user can ask the fork to resync by label.
+- [Page size doubles with two languages] → Accepted; pages stay a few hundred lines per language.
 - [Child rewrites a huge page on every edit] → Accepted for v1; pages are a few hundred lines. The manifest keeps label stability cheap.
 - [Mermaid CDN compromise] → Exact version plus SRI; the CSP allows only that file.
 - [Mermaid CDN unreachable on the viewer's device] → Diagram source stays visible as text; ASCII fallback is in the protocol for diagrams that matter.
