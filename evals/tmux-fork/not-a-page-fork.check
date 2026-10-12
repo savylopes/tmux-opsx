@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Not a page fork
+# level: L2
+# requirement: Page write from the child
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+open_fork --cli claude; [ $RC -eq 0 ] || fail "open: $OUT"
+d="$(fdir 1)"
+before=$(find "$EVAL_TMP" -type f -newer "$d/meta" 2>/dev/null | sort | md5sum)
+OUT=$(echo '<html>x</html>' | env -u FORK_PAGE_DIR FORK_DIR="$d" "$FORK" page 2>&1); RC=$?
+[ $RC -eq 4 ] || fail "expected exit 4, got $RC: $OUT"
+grep -q -- '--page-dir' <<<"$OUT" || fail "does not name --page-dir: $OUT"
+[ ! -e "$d/index.html" ] || fail "wrote into fork dir"
+find "$EVAL_TMP" -name index.html | grep -q . && fail "an index.html was written: $(find "$EVAL_TMP" -name index.html)"
+echo ok

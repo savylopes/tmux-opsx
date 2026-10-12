@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Library shows both titles
+# level: L2
+# requirement: Bilingual page
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open "t"; [ $RC -eq 0 ] || fail "$OUT"
+T1='Landing explained · Como o landing funciona'
+printf '<!doctype html><html><head><meta charset="utf-8"><title>%s</title></head><body>x</body></html>\n' "$T1" \
+  | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page >/dev/null || fail "page write"
+grep -qF "$T1" "$ROOT/index.html" || fail "root index.html lacks the full two-language title"
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+curl -s --max-time 3 "http://127.0.0.1:$port/" | grep -qF "$T1" || fail "served library lacks the title"
+run_explain list; grep -qF "$T1" <<<"$OUT" || fail "list lacks the title: $OUT"
+echo ok

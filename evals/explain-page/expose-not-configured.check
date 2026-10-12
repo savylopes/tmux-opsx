@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Expose not configured
+# level: L2
+# requirement: Explain server and exposure per project
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+echo notconfigured > "$EXPOSE_MODE_FILE"
+run_explain open x; [ $RC -eq 0 ] || fail "rc=$RC (fork must still open): $OUT"
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+grep -q "http://127.0.0.1:$port/" <<<"$OUT" || fail "local URL missing: $OUT"
+grep -q -- '--expose-domain' <<<"$OUT" || fail "hint missing: $OUT"
+grep -qE '^fork 1 ' <<<"$OUT" || fail "fork did not open: $OUT"
+echo ok

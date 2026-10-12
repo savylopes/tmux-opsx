@@ -50,6 +50,9 @@
 #                                   -> ~/.config/opencode/skills/fork/
 #                                   -> ~/.gemini/skills/fork/
 #      (fork.sh; fork state lives in ~/.local/state/agent-forks/, never touched here)
+#      the /explain skill          -> ~/.claude/skills/explain/  (and the other five
+#                                      skill dirs, like /fork; explain.sh; pages live in
+#                                      ~/.local/state/agent-forks/explain/, never touched here)
 #   9. the /expose skill + proxy   ONLY with --expose-domain <domain>:
 #                                   -> ~/.claude/skills/expose/  (and the other five
 #                                      skill dirs, like /fork; expose.sh)
@@ -81,6 +84,7 @@
 #   --skip-mcp         Don't install the browser-use MCP server
 #   --skip-memory      Don't install the memory skill, instruction blocks, store, or import
 #   --skip-fork        Don't install the /fork skill
+#   --skip-explain     Don't install the /explain skill
 #   --skip-init        Don't install the opsx command or the /opsx-init skill
 #   --expose-domain <d>  Set up /expose: publish local ports at https://<name>--<project>.<d>
 #                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9).
@@ -105,6 +109,7 @@ SKIP_COMMANDS=0
 SKIP_MCP=0
 SKIP_MEMORY=0
 SKIP_FORK=0
+SKIP_EXPLAIN=0
 SKIP_INIT=0
 EXPOSE_DOMAIN=""
 BACKUP=1
@@ -135,6 +140,7 @@ while [ $# -gt 0 ]; do
     --skip-mcp)      SKIP_MCP=1; shift ;;
     --skip-memory)   SKIP_MEMORY=1; shift ;;
     --skip-fork)     SKIP_FORK=1; shift ;;
+    --skip-explain)  SKIP_EXPLAIN=1; shift ;;
     --skip-init)     SKIP_INIT=1; shift ;;
     --expose-domain) [ $# -ge 2 ] || die "--expose-domain needs a domain"
                      EXPOSE_DOMAIN=$2; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift 2 ;;
@@ -544,6 +550,11 @@ CODEX_FORK_SKILLS_DIR=$CODEX_HOME_DIR/skills/fork
 AGENTS_FORK_SKILLS_DIR=$HOME/.agents/skills/fork
 OPENCODE_FORK_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/fork
 GEMINI_FORK_SKILLS_DIR=$GEMINI_HOME_DIR/skills/fork
+CURSOR_EXPLAIN_SKILLS_DIR=$HOME/.cursor/skills/explain
+CODEX_EXPLAIN_SKILLS_DIR=$CODEX_HOME_DIR/skills/explain
+AGENTS_EXPLAIN_SKILLS_DIR=$HOME/.agents/skills/explain
+OPENCODE_EXPLAIN_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/explain
+GEMINI_EXPLAIN_SKILLS_DIR=$GEMINI_HOME_DIR/skills/explain
 CURSOR_EXPOSE_SKILLS_DIR=$HOME/.cursor/skills/expose
 CODEX_EXPOSE_SKILLS_DIR=$CODEX_HOME_DIR/skills/expose
 AGENTS_EXPOSE_SKILLS_DIR=$HOME/.agents/skills/expose
@@ -691,6 +702,15 @@ install_fork_skill() {
   install_file "$SRC/skills/fork/fork.sh"  "$dest/fork.sh"
   chmod +x "$dest/fork.sh" || die "cannot chmod +x $dest/fork.sh"
   ok "/fork -> $dest ($label)"
+}
+
+# Install the /explain skill (SKILL.md + explain.sh) into one dest dir.
+install_explain_skill() {
+  local dest=$1 label=$2
+  install_file "$SRC/skills/explain/SKILL.md"   "$dest/SKILL.md"
+  install_file "$SRC/skills/explain/explain.sh" "$dest/explain.sh"
+  chmod +x "$dest/explain.sh" || die "cannot chmod +x $dest/explain.sh"
+  ok "/explain -> $dest ($label)"
 }
 
 # Install the /opsx-init skill (SKILL.md + opsx-init.sh) into one dest dir.
@@ -1624,6 +1644,12 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -rf "$CODEX_FORK_SKILLS_DIR" && ok "removed $CODEX_FORK_SKILLS_DIR (Codex)"
   rm -rf "$OPENCODE_FORK_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/fork (OpenCode)"
   rm -rf "$GEMINI_FORK_SKILLS_DIR" && ok "removed ~/.gemini/skills/fork (Gemini CLI)"
+  rm -rf "$PREFIX/skills/explain" && ok "removed skills/explain (Claude Code)"
+  rm -rf "$CURSOR_EXPLAIN_SKILLS_DIR" && ok "removed ~/.cursor/skills/explain (Cursor CLI)"
+  rm -rf "$AGENTS_EXPLAIN_SKILLS_DIR" && ok "removed ~/.agents/skills/explain (Agent Skills)"
+  rm -rf "$CODEX_EXPLAIN_SKILLS_DIR" && ok "removed $CODEX_EXPLAIN_SKILLS_DIR (Codex)"
+  rm -rf "$OPENCODE_EXPLAIN_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/explain (OpenCode)"
+  rm -rf "$GEMINI_EXPLAIN_SKILLS_DIR" && ok "removed ~/.gemini/skills/explain (Gemini CLI)"
   rm -rf "$PREFIX/skills/opsx-init" && ok "removed skills/opsx-init (Claude Code)"
   rm -rf "$CURSOR_INIT_SKILLS_DIR" && ok "removed ~/.cursor/skills/opsx-init (Cursor CLI)"
   rm -rf "$AGENTS_INIT_SKILLS_DIR" && ok "removed ~/.agents/skills/opsx-init (Agent Skills)"
@@ -1648,7 +1674,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   info "  uv tool uninstall graphifyy"
   info "browser-use MCP entries in Gemini / Codex / OpenCode config were left in place."
   info "$MEMORY_STORE_DIR was left in place — your memories are never deleted."
-  info "Fork state in \${XDG_STATE_HOME:-~/.local/state}/agent-forks/ was left in place."
+  info "Fork state and /explain pages in \${XDG_STATE_HOME:-~/.local/state}/agent-forks/ were left in place."
   exit 0
 fi
 
@@ -1965,6 +1991,24 @@ else
 fi
 info ""
 
+# ---------- 8b. /explain skill ----------
+if [ "$SKIP_EXPLAIN" -eq 1 ]; then
+  step "Skipping the /explain skill (--skip-explain)"
+else
+  step "Installing the /explain skill"
+  [ -f "$SRC/skills/explain/SKILL.md" ] || die "missing $SRC/skills/explain/SKILL.md — run this script from the repo checkout"
+  install_explain_skill "$PREFIX/skills/explain" "Claude Code"
+  install_explain_skill "$CURSOR_EXPLAIN_SKILLS_DIR" "Cursor CLI"
+  install_explain_skill "$AGENTS_EXPLAIN_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
+  if [ "$CODEX_EXPLAIN_SKILLS_DIR" != "$AGENTS_EXPLAIN_SKILLS_DIR" ]; then
+    install_explain_skill "$CODEX_EXPLAIN_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
+  fi
+  install_explain_skill "$OPENCODE_EXPLAIN_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
+  install_explain_skill "$GEMINI_EXPLAIN_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
+  [ "$SKIP_FORK" -eq 1 ] && note "/explain needs the /fork skill (installed without --skip-fork)"
+fi
+info ""
+
 # ---------- 9. /expose skill + proxy (only with --expose-domain) ----------
 if [ -n "$EXPOSE_DOMAIN" ]; then
   step "Setting up /expose for *.$EXPOSE_DOMAIN"
@@ -2148,6 +2192,21 @@ if [ "$SKIP_FORK" -eq 0 ]; then
     ok "fork.sh parses"
   else
     warn "fork.sh failed to parse"; FAIL=1
+  fi
+fi
+if [ "$SKIP_EXPLAIN" -eq 0 ]; then
+  for d in "$PREFIX/skills/explain" "$CURSOR_EXPLAIN_SKILLS_DIR" "$AGENTS_EXPLAIN_SKILLS_DIR" \
+           "$CODEX_EXPLAIN_SKILLS_DIR" "$OPENCODE_EXPLAIN_SKILLS_DIR" "$GEMINI_EXPLAIN_SKILLS_DIR"; do
+    if [ -f "$d/SKILL.md" ] && [ -x "$d/explain.sh" ]; then
+      ok "$(printf '%s' "$d" | sed "s|$HOME|~|")/{SKILL.md,explain.sh}"
+    else
+      warn "missing or not executable: $d/{SKILL.md,explain.sh}"; FAIL=1
+    fi
+  done
+  if bash -n "$PREFIX/skills/explain/explain.sh" 2>/dev/null; then
+    ok "explain.sh parses"
+  else
+    warn "explain.sh failed to parse"; FAIL=1
   fi
 fi
 if [ "$SKIP_INIT" -eq 0 ]; then

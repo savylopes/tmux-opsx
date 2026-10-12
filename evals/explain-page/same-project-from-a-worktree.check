@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Same project from a worktree
+# level: L2
+# requirement: Explain server and exposure per project
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+git -c user.email=a@b -c user.name=n commit -q --allow-empty -m i || fail commit
+git worktree add -q "$EVAL_TMP/wt-change" -b change >/dev/null 2>&1 || fail "worktree add"
+cd "$EVAL_TMP/wt-change"
+run_explain open x; [ $RC -eq 0 ] || fail "rc=$RC: $OUT"
+[ -f "$ROOT/.server" ] || fail "pages root of $PROJ not used"
+[ ! -d "$XDG_STATE_HOME/agent-forks/explain/wt-change" ] || fail "root for worktree folder created"
+grep -qx "up $(sed -n 's/^port=//p' "$ROOT/.server") --name explain" "$EXPOSE_LOG" || fail "expose: $(cat "$EXPOSE_LOG")"
+grep -q 'explain--shop' <<<"$OUT" || fail "URL not for shop: $OUT"
+echo ok

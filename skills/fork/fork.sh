@@ -8,9 +8,11 @@
 #
 # Usage:
 #   fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]
-#                [--model <m>] [--parent-model <m>] [--brief-only]  < brief
+#                [--model <m>] [--parent-model <m>] [--brief-only]
+#                [--page-dir <abs dir>]                             < brief
 #   fork.sh native [--cli <name>] [--cwd <dir>] [--brief-only]
 #   fork.sh return                                                     < result
+#   fork.sh page [--manifest]                                          < html|tsv
 #   fork.sh collect [<id>]
 #   fork.sh list
 #   fork.sh close <id> | --all
@@ -20,7 +22,7 @@
 # State: ${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks/<tmux-session>/<id>/
 #   brief.md    brief (parent text + generated fork protocol), first prompt
 #   meta        key=value: parent_pane child_pane window cli model cwd created status
-#               context (full|brief) context_source …
+#               context (full|brief) context_source page_dir (empty = no page) …
 #   result.md   the child's result (written by `return`, or recovered by collect)
 #   capture.txt last pane capture (saved by collect/close when no result)
 #
@@ -36,7 +38,8 @@
 # `-` are rejected. Flag per CLI: claude/agent --model, codex/opencode/gemini -m.
 # Children always launch in the CLI's read-only / plan mode and never with
 # bypass or force flags:
-#   claude    --permission-mode plan (+ narrow allow rule for `fork.sh return`)
+#   claude    --permission-mode plan (+ narrow allow rule for `fork.sh return`,
+#             and one for `fork.sh page` in a page fork)
 #   agent     --mode ask
 #   codex     --sandbox read-only --ask-for-approval on-request
 #   opencode  --agent plan
@@ -59,11 +62,24 @@
 # decision `open` would make (`full <cli> <source>` or `brief <reason>`) without
 # writing anything, so the parent knows which brief to write.
 #
-# Every subcommand except `return` requires tmux. Nothing here ever sends keys
+# Page forks (used by /explain): `open --page-dir <dir>` records page_dir in
+# meta, passes FORK_PAGE_DIR to the child, appends a page protocol section to
+# the brief and (Claude) allows `fork.sh page` beside `fork.sh return`. The
+# child runs `fork.sh page < html` to replace <dir>/index.html atomically, or
+# `fork.sh page --manifest < tsv` for <dir>/manifest.tsv; nothing else is ever
+# written (mode 600). After an index.html write, <dir>/../.reindex is run
+# (its exit status is ignored) only when <dir>/.. sits directly under
+# <state root>/explain/ and the hook is an executable regular file owned by
+# the user: /explain installs it there to regenerate the library index. The page dir comes from $FORK_PAGE_DIR, the
+# process chain, or the fork's meta.
+#
+# Every subcommand except `return` and `page` requires tmux. Nothing here ever sends keys
 # to the parent pane.
 #
-# Exit codes: 0 ok, 1 usage/error, 3 result could not be written (use the
-# <<<FORK-RESULT … FORK-RESULT>>> marker fallback).
+# Exit codes: 0 ok, 1 usage/error (`page`/`return`: not a fork), 2 `page`:
+# empty input, 3 result or page could not be written (`return`: use the
+# <<<FORK-RESULT … FORK-RESULT>>> marker fallback; `page` has no fallback),
+# 4 `page`: the fork has no page directory (not opened with --page-dir).
 
 set -uo pipefail
 
@@ -514,9 +530,11 @@ native_mode() {
 # The "$(cat …)" parts are meant to stay literal: they run in the launcher.
 # shellcheck disable=SC2016
 build_launch_cmd() {
-  local cli=$1 brief=$2 id=$3 dir=$4 parent=$5 model=${6:-} native=${7:-} script envp carve rule mf="" nf=""
+  local cli=$1 brief=$2 id=$3 dir=$4 parent=$5 model=${6:-} native=${7:-} page_dir=${8:-}
+  local script envp carve rule rules mf="" nf=""
   script=$(this_script)
   envp=$(printf 'FORK_ID=%q FORK_DIR=%q FORK_PARENT=%q FORK_SH=%q' "$id" "$dir" "$parent" "$script")
+  [ -n "$page_dir" ] && envp="$envp $(printf 'FORK_PAGE_DIR=%q' "$page_dir")"
   if [ -n "$model" ]; then
     case "$cli" in
       claude|agent) mf=$(printf ' --model %q' "$model") ;;
@@ -534,12 +552,18 @@ build_launch_cmd() {
   case "$cli" in
     claude)
       # Plan mode refuses mutating shell commands; allow exactly `fork.sh
-      # return` (literal path — variables are not matched) and tell the model
-      # that this one command is the sanctioned exception.
+      # return` (and `fork.sh page` in a page fork; literal path — variables
+      # are not matched) and tell the model these are the sanctioned exceptions.
       rule="Bash($script return:*)"
-      carve="You are a read-only fork child (fork $id). The only permitted exception to plan mode is running '$script return' when the user asks you to return; it saves your answer to a state directory outside the repository and is not a code change. Do not exit plan mode and do not modify files."
-      printf 'exec env %s claude%s --permission-mode plan --allowedTools %q --append-system-prompt %q%s "$(cat %q)"' \
-        "$envp" "$nf" "$rule" "$carve" "$mf" "$brief"
+      rules=$(printf '%q' "$rule")
+      if [ -n "$page_dir" ]; then
+        rules="$rules $(printf '%q' "Bash($script page:*)")"
+        carve="You are a read-only fork child (fork $id) that writes one explain page. The only permitted exceptions to plan mode are running '$script page' (and '$script page --manifest') to write your page and its manifest into the fork's page directory, and '$script return' when the user asks you to return; both write only outside the repository and are not code changes. Do not exit plan mode and do not modify any other file."
+      else
+        carve="You are a read-only fork child (fork $id). The only permitted exception to plan mode is running '$script return' when the user asks you to return; it saves your answer to a state directory outside the repository and is not a code change. Do not exit plan mode and do not modify files."
+      fi
+      printf 'exec env %s claude%s --permission-mode plan --allowedTools %s --append-system-prompt %q%s "$(cat %q)"' \
+        "$envp" "$nf" "$rules" "$carve" "$mf" "$brief"
       ;;
     agent)
       printf 'exec env %s agent --mode ask%s "$(cat %q)"' "$envp" "$mf" "$brief"
@@ -589,6 +613,84 @@ protocol_footer() {
   result in your reply instead, wrapped in marker lines: first a line that
   contains only \`$MARK_BEGIN\`, then the result, then a line that contains
   only \`$MARK_END\`. The parent recovers it from this pane.
+EOF
+}
+
+# Page protocol appended after the fork protocol when the fork writes a page
+# (open --page-dir). The HTML skeleton itself comes from the parent's brief
+# (/explain); this section only fixes the commands and the rules.
+page_protocol() {
+  local id=$1 script=$2 page_dir=$3
+  cat <<EOF
+
+---
+## Page protocol (fork $id)
+
+- Your job is to write **one web page** that explains the topic above. It is
+  served from this machine behind the expose login (the page URL is in the
+  brief) and is the only thing you may write besides your return result.
+- Write the **whole page** every time, as one self-contained HTML document,
+  by running exactly:
+
+      $script page <<'PAGE_EOF'
+      <!doctype html>
+      …the complete page, English and Portuguese…
+      PAGE_EOF
+
+  and write the label manifest **every time you write the page**, one line per
+  current label (labels are shared by both languages, so one line each),
+  \`<label><TAB><one-line summary>\`:
+
+      $script page --manifest <<'PAGE_EOF'
+      S1	What the section covers
+      P1	What the paragraph says
+      PAGE_EOF
+
+  Both commands are allowed even in plan / read-only mode: they write only
+  \`index.html\` and \`manifest.tsv\` in the fork's page directory
+  (\`$page_dir\`), outside the repository. Never edit project files, never
+  write the page anywhere else.
+- **Two languages, one write**: every page carries the whole explanation in
+  English and in Portuguese, as two sibling articles \`<article lang="en">\`
+  and \`<article lang="pt">\` (the template from the brief has both and the
+  EN / PT switch; keep them). Both articles hold the **same labelled blocks
+  in the same order** with the same \`data-label\` and \`id\` (the repeat is
+  intended; the page script keeps the ids only on the shown language), each
+  its own \`<h1>\`; \`<title>\` is \`English title · Título em português\`.
+  Diagrams are duplicated per language (translated node text, same
+  structure, same \`D<n>\` in both). Always write both articles in the
+  same \`page\` command; never write one language alone. Every edit the user
+  asks for applies to both articles unless they name one language.
+- Labels: every block carries a visible label and an HTML id equal to it:
+  \`S<n>\` sections (nested \`S1.2\`), \`P<n>\` paragraphs, \`D<n>\` diagrams,
+  \`T<n>\` tables, \`C<n>\` code blocks, \`N<n>\` callouts (prefixes S P D T C N),
+  e.g. \`<p id="P7" data-label="P7">\`. Use the HTML template from the brief
+  for the margin labels, click-to-copy and reload-on-change.
+- Labels are **stable**: before rewriting, read \`$page_dir/manifest.tsv\`.
+  An edited block keeps its label; a new block takes the next number never
+  used in the manifest; a removed label is never reused; never renumber.
+- Diagrams: Mermaid (\`<pre class="mermaid">\` inside the \`D<n>\` element)
+  first; inline SVG when Mermaid cannot express it; an ASCII \`<pre>\` as the
+  last resort. Every diagram still carries its \`D<n>\` label.
+- First reply: write the page and the manifest, then confirm the page URL
+  (from the brief) and list the top-level labels (\`S1 …\`, \`D1 …\`).
+- The user asks for edits by label ("expand P7", "the arrow in D2 is wrong"):
+  change those blocks in both languages, keep every other label, rewrite the
+  whole page and the manifest with the commands above, then say which labels
+  changed.
+- **Never put secrets in the page**: no API keys, tokens, passwords,
+  cookies, private keys, connection strings, environment values or other
+  credentials you saw in the conversation or in tool output, not even
+  partially or "redacted by hand". Name the setting instead (\`\$STRIPE_KEY\`,
+  "the owner key"). The page may be shared beyond the user.
+- The page is served with a strict Content-Security-Policy: no external
+  scripts except the pinned Mermaid tag from the template, no external
+  images, fonts, styles, frames or fetches, no forms. Keep everything inline
+  (\`data:\` URIs for images) and do not add other external resources.
+- If \`$script page\` is refused, blocked by a sandbox, needs an approval
+  the user declines, or exits non-zero, tell the user the page cannot be
+  written from this fork and stop. Do not print the HTML into this pane
+  instead.
 EOF
 }
 
@@ -698,7 +800,7 @@ extract_marker_block() {
 # Subcommands
 
 cmd_open() {
-  local window=0 vertical=0 cli_opt="" cwd=$PWD model_opt="" parent_model="" brief_only=0
+  local window=0 vertical=0 cli_opt="" cwd=$PWD model_opt="" parent_model="" brief_only=0 page_dir=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --window)   window=1; shift ;;
@@ -716,11 +818,23 @@ cmd_open() {
       --cwd)      [ -n "${2:-}" ] || die "--cwd needs a value"
                   cwd=$2; shift 2 ;;
       --brief-only) brief_only=1; shift ;;
+      --page-dir) [ -n "${2:-}" ] || die "--page-dir needs a value"
+                  page_dir=$2; shift 2 ;;
       -h|--help)  usage; return 0 ;;
       *) die "unknown option for open: $1" ;;
     esac
   done
   [ -z "${FORK_MODEL:-}" ] || check_model "\$FORK_MODEL" "$FORK_MODEL"
+  if [ -n "$page_dir" ]; then
+    case "$page_dir" in
+      /*) ;;
+      *) die "--page-dir must be an absolute path: $page_dir" ;;
+    esac
+    case "$page_dir" in
+      *[[:cntrl:]]*) die "--page-dir must not contain control characters" ;;
+    esac
+    page_dir=${page_dir%/}; [ -n "$page_dir" ] || die "--page-dir must not be /"
+  fi
   require_tmux
   [ -n "${TMUX_PANE:-}" ] || die "cannot determine the parent pane (\$TMUX_PANE is unset)."
   pane_alive "$TMUX_PANE" || die "parent pane $TMUX_PANE not found."
@@ -743,6 +857,7 @@ cmd_open() {
   {
     printf '%s\n' "$brief_text"
     protocol_footer "$id" "$script"
+    [ -z "$page_dir" ] || page_protocol "$id" "$script" "$page_dir"
   } > "$dir/brief.md" || die "cannot write $dir/brief.md"
 
   sess=$(current_session)
@@ -757,6 +872,7 @@ cmd_open() {
   meta_set question "$(question_line "$dir/brief.md")" "$dir"
   meta_set context "${native%% *}" "$dir"
   meta_set context_source "${native#* }" "$dir"
+  meta_set page_dir "$page_dir" "$dir"
   meta_set status opening "$dir"
 
   # The launch line lives in a small bash script so it does not depend on the
@@ -765,7 +881,7 @@ cmd_open() {
     printf '#!/usr/bin/env bash\n'
     printf '# fork %s child launcher (generated by fork.sh open)\n' "$id"
     printf 'cd %q || exit 1\n' "$cwd"
-    build_launch_cmd "$cli" "$dir/brief.md" "$id" "$dir" "$parent" "$model" "$native" || exit 1
+    build_launch_cmd "$cli" "$dir/brief.md" "$id" "$dir" "$parent" "$model" "$native" "$page_dir" || exit 1
     printf '\n'
   } > "$dir/launch.sh" || die "cannot write $dir/launch.sh"
   launch=$(printf 'bash %q' "$dir/launch.sh")
@@ -879,6 +995,64 @@ cmd_return() {
     printf 'fork %s: result saved (%s); parent pane not reachable, no notification.\n' \
       "$id" "$dir/result.md"
   fi
+}
+
+# F6: `fork.sh page` is auto-approved in page forks, so the library hook it
+# runs must be the one explain.sh wrote: <pd>/../.reindex only when <pd>'s
+# parent is a project root directly under <state root>/explain, and the hook
+# is a regular file (not a symlink) owned by the current user.
+reindex_allowed() {
+  local pd=$1 parent xroot hook
+  hook=$pd/../.reindex
+  [ -f "$hook" ] && [ ! -L "$hook" ] && [ -x "$hook" ] && [ -O "$hook" ] || return 1
+  parent=$(cd -- "$pd/.." 2>/dev/null && pwd -P) || return 1
+  xroot=$(cd -- "$(state_root)/explain" 2>/dev/null && pwd -P) || return 1
+  [ "$(dirname -- "$parent")" = "$xroot" ]
+}
+
+# Write the calling fork's page (index.html) or, with --manifest, its
+# manifest.tsv. Never writes anywhere but the fork's page directory.
+cmd_page() {
+  local manifest=0 pd dir target content tmp
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --manifest) manifest=1; shift ;;
+      -h|--help)  usage; return 0 ;;
+      *) die "unknown option for page: $1" ;;
+    esac
+  done
+  pd=${FORK_PAGE_DIR:-}
+  [ -n "$pd" ] || pd=$(recover_env_var FORK_PAGE_DIR) || pd=""
+  if [ -z "$pd" ]; then
+    dir=$(resolve_own_fork_dir)
+    [ -n "$dir" ] || die "this session is not a fork (FORK_DIR is unset) — fork.sh page only works inside a fork child." 1
+    [ -d "$dir" ] || die "fork state dir not found: $dir" 1
+    pd=$(meta_get page_dir "$dir")
+    [ -n "$pd" ] || die "this fork has no page directory — it was not opened with --page-dir (use /explain to open a page fork)." 4
+  fi
+  case "$pd" in
+    /*) ;;
+    *) die "the page directory is not an absolute path: $pd" 4 ;;
+  esac
+  pd=${pd%/}
+  [ -t 0 ] && die "pipe the page on stdin, e.g.  fork.sh page <<'PAGE_EOF' … PAGE_EOF" 2
+  content=$(cat)
+  [ -n "${content//[[:space:]]/}" ] || die "the page on stdin is empty; nothing was written." 2
+  if [ "$manifest" -eq 1 ]; then target=$pd/manifest.tsv; else target=$pd/index.html; fi
+
+  tmp=""
+  if ! { mkdir -p -- "$pd" 2>/dev/null \
+         && tmp=$(mktemp "$pd/.page.XXXXXX" 2>/dev/null) \
+         && printf '%s\n' "$content" > "$tmp" 2>/dev/null \
+         && chmod 600 "$tmp" 2>/dev/null \
+         && mv -f -- "$tmp" "$target" 2>/dev/null; }; then
+    [ -n "$tmp" ] && rm -f -- "$tmp" 2>/dev/null
+    die "could not write $target (sandbox or permissions?). The page was not changed — tell the user and stop." 3
+  fi
+  if [ "$manifest" -eq 0 ] && reindex_allowed "$pd"; then
+    "$pd/../.reindex" </dev/null >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$target"
 }
 
 # Id of the most recently returned fork in session dir $1.
@@ -1058,6 +1232,7 @@ usage() {
 case "${1:-}" in
   open)       shift; cmd_open "$@" ;;
   return)     shift; cmd_return "$@" ;;
+  page)       shift; cmd_page "$@" ;;
   collect)    shift; cmd_collect "$@" ;;
   list)       shift; cmd_list "$@" ;;
   close)      shift; cmd_close "$@" ;;
@@ -1065,5 +1240,5 @@ case "${1:-}" in
   native)     shift; cmd_native "$@" ;;
   help|-h|--help) usage ;;
   '') usage >&2; exit 1 ;;
-  *) die "unknown subcommand: $1 (expected open|return|collect|list|close|native|detect-cli|help)" ;;
+  *) die "unknown subcommand: $1 (expected open|return|page|collect|list|close|native|detect-cli|help)" ;;
 esac

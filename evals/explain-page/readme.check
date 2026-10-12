@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# scenario: explain-page / README
+# level: L1
+# requirement: Install and documentation
+fail() { echo "FAIL: $*"; exit 1; }
+R="$EVAL_ROOT/README.md"
+for w in '/explain' 'explain--' 'manifest.tsv' 'fork.sh page'; do grep -qF -- "$w" "$R" || fail "README lacks $w"; done
+echo ok

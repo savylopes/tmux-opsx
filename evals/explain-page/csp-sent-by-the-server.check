@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: explain-page / CSP sent by the server
+# level: L2
+# requirement: Page server sends a Content-Security-Policy
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+printf '<html><head><title>t</title></head><body>hi</body></html>\n' | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page >/dev/null || fail w
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+h=$(curl -si --max-time 3 "http://127.0.0.1:$port/1/") ; echo "$h" | head -20
+csp=$(grep -i '^content-security-policy:' <<<"$h" | tr -d '\r'); [ -n "$csp" ] || fail "no CSP header"
+for d in "default-src 'none'" "connect-src 'self'" "img-src 'self' data:" "form-action 'none'" "frame-ancestors 'none'"; do
+  grep -qF "$d" <<<"$csp" || fail "CSP lacks $d"
+done
+ss=$(grep -oE "script-src[^;]*" <<<"$csp"); [ -n "$ss" ] || fail "no script-src"
+grep -qF "'unsafe-inline'" <<<"$ss" || fail "script-src lacks 'unsafe-inline'"
+tpl_url=$(template | grep -oE 'https://[^"]*mermaid[^"]*\.js' | head -1)
+grep -qF "$tpl_url" <<<"$ss" || fail "script-src does not name the template's Mermaid URL ($tpl_url)"
+extra=$(sed -E "s/script-src//; s/'unsafe-inline'//; s#https://[^ ]*mermaid[^ ]*\.js##" <<<"$ss" | tr -s ' ' | sed 's/^ *//; s/ *$//')
+[ -z "$extra" ] || fail "script-src names other sources: $extra"
+grep -qi '^referrer-policy: *no-referrer' <<<"$h" || fail "no Referrer-Policy: no-referrer"
+grep -qi '^x-content-type-options: *nosniff' <<<"$h" || fail "no nosniff"
+# every response, including the root and a 404
+for p in / /nope; do curl -si --max-time 3 "http://127.0.0.1:$port$p" | grep -qi '^content-security-policy:' || fail "no CSP on $p"; done
+echo ok

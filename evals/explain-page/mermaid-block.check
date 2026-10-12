@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Mermaid block
+# level: L1
+# requirement: Diagrams and rendering
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+tpl=$(template)
+grep -qE 'id="D[0-9]+"[^>]*data-label="D[0-9]+"' <<<"$tpl" || fail "no D-labelled element"
+grep -q 'class="mermaid"' <<<"$tpl" || fail "no class=\"mermaid\" source"
+grep -qE '<script[^>]*>[^<]*mermaid[^<]*https?://|https?://[^ '"'"'"]*mermaid' <<<"$tpl" || fail "no Mermaid CDN script"
+echo ok

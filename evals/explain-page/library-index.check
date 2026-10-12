@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Library index
+# level: L2
+# requirement: Page files and library
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open "first topic"; [ $RC -eq 0 ] || fail "$OUT"
+run_explain open "second topic"; [ $RC -eq 0 ] || fail "$OUT"
+for n in 1 2; do
+  printf '<!doctype html><html><head><title>Title number %s</title></head><body>x</body></html>\n' "$n" \
+    | FORK_PAGE_DIR="$ROOT/$n" FORK_DIR="$(fdir $n)" "$FORK" page >/dev/null || fail "page write $n"
+done
+for n in 1 2; do grep -q "Title number $n" "$ROOT/index.html" || fail "root index lacks title $n"; done
+run_explain list; [ $RC -eq 0 ] || fail "list rc=$RC"
+for n in 1 2; do grep -q "Title number $n" <<<"$OUT" || fail "list lacks title $n: $OUT"; done
+grep -qE '^1 +[^ ]+ +[0-9]+ ' <<<"$OUT" || grep -qE '^1 ' <<<"$OUT" || fail "no ids: $OUT"
+grep -q 'created\|CREATED' <<<"$OUT" || fail "no created column"
+grep -qi 'fork' <<<"$OUT" || fail "no fork column"
+echo ok

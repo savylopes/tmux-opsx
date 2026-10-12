@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Internal files not served
+# level: L2
+# requirement: Page server serves only pages
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+printf '<html><head><title>t</title></head><body>hi</body></html>\n' | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page >/dev/null || fail w
+printf 'P1\tx\n' | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page --manifest >/dev/null || fail m
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+c() { curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$@"; }
+for p in /launch.sh /.server /1/.meta /1/manifest.tsv /.ids/ /.ids; do
+  [ "$(c "http://127.0.0.1:$port$p")" = 404 ] || fail "$p -> $(c "http://127.0.0.1:$port$p"), expected 404"
+done
+[ "$(c "http://127.0.0.1:$port/1/")" = 200 ] || fail "page itself not served"
+[ "$(c "http://127.0.0.1:$port/1/index.html")" = 200 ] || fail "page index.html not served"
+[ "$(c "http://127.0.0.1:$port/")" = 200 ] || fail "root not served"
+[ "$(c -I "http://127.0.0.1:$port/1/")" = 200 ] || fail "HEAD not served"
+[ "$(c -X POST "http://127.0.0.1:$port/1/")" != 200 ] || fail "POST answered 200"
+[ "$(stat -c %a "$ROOT")" = 700 ] || fail "root mode $(stat -c %a "$ROOT"), expected 700"
+[ "$(stat -c %a "$ROOT/1/index.html")" = 600 ] || fail "page mode $(stat -c %a "$ROOT/1/index.html"), expected 600"
+echo ok

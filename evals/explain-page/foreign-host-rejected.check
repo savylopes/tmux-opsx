@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Foreign Host rejected
+# level: L2
+# requirement: Page server checks the Host
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+grep -q '^up ' "$EXPOSE_LOG" || fail "exposure not made: $(cat "$EXPOSE_LOG")"
+printf '<html><head><title>t</title></head><body>hi</body></html>\n' | FORK_PAGE_DIR="$ROOT/1" FORK_DIR="$(fdir 1)" "$FORK" page >/dev/null || fail w
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+c() { curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: $1" "http://127.0.0.1:$port/1/"; }
+[ "$(c evil.example)" = 421 ] || fail "evil.example -> $(c evil.example), expected 421"
+[ "$(c evil.example:80)" = 421 ] || fail "evil.example:80 -> $(c evil.example:80)"
+[ "$(c "explain--$PROJ.example.test")" = 200 ] || fail "expose host -> $(c "explain--$PROJ.example.test"), expected 200"
+[ "$(c "127.0.0.1:$port")" = 200 ] || fail "127.0.0.1 -> $(c "127.0.0.1:$port")"
+[ "$(c "localhost:$port")" = 200 ] || fail "localhost -> $(c "localhost:$port")"
+echo ok

@@ -36,9 +36,11 @@ FORK_SH=$(ls ~/.claude/skills/fork/fork.sh ~/.cursor/skills/fork/fork.sh ~/.agen
 
 ```
 fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]
-             [--model <m>] [--parent-model <m>] [--brief-only]      < brief
+             [--model <m>] [--parent-model <m>] [--brief-only]
+             [--page-dir <abs dir>]                                  < brief
 fork.sh native [--cli <name>] [--cwd <dir>] [--brief-only]
 fork.sh return                                                      < result
+fork.sh page [--manifest]                                           < html|tsv
 fork.sh collect [<id>]
 fork.sh list
 fork.sh close <id> | --all
@@ -131,7 +133,23 @@ You are in a fork when your first prompt contains a "Fork protocol" section (and
 
 Running `/fork return` outside a fork prints "this session is not a fork" — say so and stop.
 
-Stay read-only for the whole session: no edits, no state-changing commands, no git writes. `fork.sh return` is the only exception.
+## Child: `fork.sh page` (page forks)
+
+A fork opened with `--page-dir` (by `/explain`) writes one web page. Its brief ends with a **Page protocol** section and `$FORK_PAGE_DIR` is set. Write the whole page, then its label manifest, with the exact commands from that section:
+
+```bash
+/abs/path/to/fork.sh page <<'PAGE_EOF'
+<!doctype html>
+…the complete page…
+PAGE_EOF
+/abs/path/to/fork.sh page --manifest <<'PAGE_EOF'
+P1	<one-line summary>
+PAGE_EOF
+```
+
+`page` replaces `<page dir>/index.html` atomically (`--manifest`: `manifest.tsv`) and prints the path; it never writes anywhere else. Exit codes: 1 not a fork, 2 empty input, 3 could not write, 4 the fork has no page directory. On Claude Code it is allowed in plan mode by a second narrow rule beside `fork.sh return`. There is **no marker fallback for pages**: if the command is refused, blocked or fails, tell the user the page cannot be written from this fork and stop; never print the HTML into the pane. Stay read-only otherwise.
+
+Stay read-only for the whole session: no edits, no state-changing commands, no git writes. `fork.sh return` (and, in a page fork, `fork.sh page`) are the only exceptions.
 
 ## Parent: `/fork collect [id]`
 
@@ -152,7 +170,7 @@ Collecting clears that fork's badge on the parent pane. Summarize the result for
 
 | CLI | Launched as | `return` |
 |---|---|---|
-| Claude Code | `claude --permission-mode plan` + an allow rule for exactly `fork.sh return` | writes `result.md` directly |
+| Claude Code | `claude --permission-mode plan` + an allow rule for exactly `fork.sh return` (and one for `fork.sh page` in a page fork) | writes `result.md` directly |
 | Codex CLI | `codex --sandbox read-only --ask-for-approval on-request` | sandbox blocks the write; Codex may ask the user to approve that one command, else marker fallback |
 | Gemini CLI | `gemini --approval-mode plan -i` | usually marker fallback |
 | Cursor CLI | `agent --mode ask` | usually marker fallback |
@@ -162,6 +180,6 @@ Native forks add `--resume <id> --fork-session` (Claude Code) or `--continue --f
 
 ## Where things live
 
-`${XDG_STATE_HOME:-~/.local/state}/agent-forks/<tmux-session>/<id>/` — `brief.md`, `meta`, `launch.sh`, `result.md`, `capture.txt`. Outside the repo; nothing to gitignore. Old forks are kept until the user deletes them.
+`${XDG_STATE_HOME:-~/.local/state}/agent-forks/<tmux-session>/<id>/` — `brief.md`, `meta` (incl. `page_dir`, empty for an ordinary fork), `launch.sh`, `result.md`, `capture.txt`. Outside the repo; nothing to gitignore. Old forks are kept until the user deletes them.
 
 The parent badge is the pane title `fork <ids> ✓` (tmux's default status line shows it) and the pane option `@fork_badge` (usable in `pane-border-format`). While a badge is shown, `allow-set-title` is turned off on the parent pane so the agent CLI does not overwrite it; `collect`/`close` restore it.

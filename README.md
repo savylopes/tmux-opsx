@@ -9,6 +9,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  ├── workflow     /opsx-run: change → window → apply → gates → merge/land
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork
+ │                /explain: a topic → a diagrammed web page with labelled blocks, written by a fork, served via /expose
  ├── sharing      /expose: local port → https://<name>--<project>.<domain> behind a login, share links for clients (opt-in)
  │                /opsx-run <change> preview: a change's app → https://<change>--<project>.<domain>
  └── portability  install.sh → Claude Code · Cursor CLI · Codex CLI · OpenCode · Gemini CLI
@@ -67,6 +68,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | Memory instruction block | `CLAUDE.md` (Claude config dir) · `~/.codex/AGENTS.md` · `~/.config/opencode/AGENTS.md` · `~/.gemini/GEMINI.md` | Marked block (`<!-- tmux-opsx:memory:start -->` … `:end -->`) telling each agent to use the shared store |
 | Memory store | `~/.agents/memory/` | Plain folder: `MEMORY.md` index + `user/` `feedback/` `project/` `reference/` — created once, never overwritten |
 | `/fork` skill + `fork.sh` | `~/.claude/skills/fork/` · `~/.cursor/skills/fork/` · `~/.agents/skills/fork/` · `$CODEX_HOME/skills/fork/` · `~/.config/opencode/skills/fork/` · `~/.gemini/skills/fork/` | Read-only side-question agent in a tmux pane, briefed with the current context; notify-then-pull results (see [Fork](#fork)) |
+| `/explain` skill + `explain.sh` | `~/.claude/skills/explain/` · `~/.cursor/skills/explain/` · `~/.agents/skills/explain/` · `$CODEX_HOME/skills/explain/` · `~/.config/opencode/skills/explain/` · `~/.gemini/skills/explain/` | A fork writes a self-contained web page about a topic, with labelled blocks you refine by name; served per project from a loopback server and published through `/expose` (see [Explain](#explain)) |
 | `/expose` skill + `expose.sh` (opt-in, `--expose-domain`) | `~/.claude/skills/expose/` · `~/.cursor/skills/expose/` · `~/.agents/skills/expose/` · `$CODEX_HOME/skills/expose/` · `~/.config/opencode/skills/expose/` · `~/.gemini/skills/expose/` | Publish `127.0.0.1:<port>` at `https://<name>--<project>.<domain>` through Caddy, behind a login; list/down/url, share links, key rotate (see [Expose](#expose)) |
 | Expose proxy (opt-in) | `~/.config/tmux-opsx/{expose.env,caddy.json,tmux-opsx-caddy.service}` · `~/.local/share/tmux-opsx/bin/caddy` | Caddy with `caddy-dns/cloudflare`: one wildcard cert via DNS-01, `:443` only, admin API on a user-only unix socket |
 
@@ -102,6 +104,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --skip-mcp         # don't install the browser-use MCP server
 ./install.sh --skip-memory      # don't install the memory skill, instruction blocks, store, or import
 ./install.sh --skip-fork        # don't install the /fork skill
+./install.sh --skip-explain     # don't install the /explain skill
 ./install.sh --skip-init        # don't install the opsx command or the /opsx-init skill
 ./install.sh --expose-domain dev.example.com  # also set up /expose (opt-in; see Expose)
 ./install.sh --no-backup        # overwrite without keeping .bak copies
@@ -638,7 +641,7 @@ With more than one child beside the parent, the window switches to `main-vertica
 
 | CLI | Launched as | How `return` gets back |
 |---|---|---|
-| Claude Code | `claude --permission-mode plan` + an allow rule for exactly `fork.sh return` | `result.md` written directly |
+| Claude Code | `claude --permission-mode plan` + an allow rule for exactly `fork.sh return` (and one for `fork.sh page` in a page fork) | `result.md` written directly |
 | Codex CLI | `codex --sandbox read-only --ask-for-approval on-request` | sandbox blocks the write; approve that one command, or the marker fallback is used |
 | Gemini CLI | `gemini --approval-mode plan -i` | marker fallback (plan mode applies once the folder is trusted) |
 | Cursor CLI | `agent --mode ask` | marker fallback |
@@ -648,7 +651,39 @@ With more than one child beside the parent, the window switches to `main-vertica
 
 **State** lives outside the repo, in `${XDG_STATE_HOME:-~/.local/state}/agent-forks/<tmux-session>/<id>/` (`brief.md`, `meta`, `launch.sh`, `result.md`, `capture.txt`). It is kept after `close` and on `--uninstall`; delete old forks by hand when you like.
 
-`bash tests/test-fork.sh` exercises `fork.sh` on a private tmux server with fake agent CLIs (open/return/collect/list/close, badges, layout, marker recovery, concurrent ids, model selection and inheritance, native forks and their brief fallbacks).
+**Page forks.** `fork.sh open --page-dir <abs dir>` (used by [`/explain`](#explain)) makes a fork that writes one web page: `meta` records `page_dir`, the child gets `FORK_PAGE_DIR`, the brief ends with a *Page protocol* section, and on Claude Code a second narrow allow rule permits exactly `fork.sh page`. The child writes the whole page with `fork.sh page <<'PAGE_EOF' … PAGE_EOF` (atomic replace of `<dir>/index.html`) and its label list with `fork.sh page --manifest` (`<dir>/manifest.tsv`); nothing else can be written. Exit codes: 1 not a fork, 2 empty input, 3 not writable, 4 no page directory. After a page write, `<dir>/../.reindex` runs when present (the library index), only for page dirs under `${XDG_STATE_HOME:-~/.local/state}/agent-forks/explain/<project>/` and never through a symlink. The page protocol forbids secrets, tokens and credentials in the page. There is no marker fallback for pages: a child that cannot run `fork.sh page` says so and stops.
+
+`bash tests/test-fork.sh` exercises `fork.sh` on a private tmux server with fake agent CLIs (open/return/collect/list/close, badges, layout, marker recovery, concurrent ids, model selection and inheritance, native forks and their brief fallbacks, page forks and `fork.sh page`).
+
+### Explain
+
+`/explain "<topic>"` turns something from the current session into a clean, diagrammed web page, in English and Portuguese, that you can open on any device, hand to a client, and refine by talking to the fork that wrote it. It opens a read-only [fork](#fork) (a native full-context fork when possible) whose only job is that page, starts the project's explain server if it is not running, and prints the page URL:
+
+```
+/explain "how /opsx-run land works"
+  → page 3 https://explain--shop.dev.example.com/3/   (fork 2 in the pane on the right)
+```
+
+| Command | What it does |
+|---|---|
+| `/explain "<topic>"` | open a page fork (`--window`, `--vertical`, `--cli`, `--model` as for `/fork`), print the page URL |
+| `/explain share [--for <r>] [--ttl <d>]` | share link for the project's explain host (`expose.sh share explain …`); `--list`, `--revoke <r\|id\|all>` |
+| `/explain list` | pages (id, created, fork, title), server state and URL |
+| `/explain stop` | remove the exposure and the server window; pages are kept |
+
+**URL shape.** One server and one exposure per project: `https://explain--<project>.<domain>/<id>/` for page `<id>`, and the library index at `https://explain--<project>.<domain>/`. `<project>` is the main checkout's folder name, so every worktree of a repo shares the same pages and host. The server is a small stdlib Python server (`.serve.py`, written by `explain.sh`) bound to `127.0.0.1` in a detached tmux window `ox >explain` tagged `@opsx_explain=<project>` (not a preview: `close-all` leaves it alone). It is reused while that window lives and the port answers, and restarted otherwise.
+
+**Labels.** Every block has a visible label in the left margin and an HTML id equal to it: `S<n>` sections (`S1.2` nested), `P<n>` paragraphs, `D<n>` diagrams, `T<n>` tables, `C<n>` code, `N<n>` callouts. Clicking a label copies `#P7`, and `<url>#P7` deep-links to it. Tell the fork pane what to change by label ("expand P7", "D2: the arrow from cache to db is wrong"). Labels are stable: an edited block keeps its label, new blocks take the next unused number, removed labels are never reused. The fork keeps them in `manifest.tsv` beside the page (`label<TAB>summary`) and reads it before every rewrite. The fork writes the whole page with `fork.sh page` and the open browser reloads by itself within a few seconds (it polls the page's `ETag` and `Last-Modified`, and ignores error answers and redirects, so a page open on another device never reloads into an error). Diagrams use Mermaid from a CDN (one exact version with a Subresource Integrity hash, no referrer), then inline SVG, then ASCII.
+
+**English and Portuguese.** Every page carries the whole explanation in both languages: an `<article lang="en">` and an `<article lang="pt">` with the same labelled blocks in the same order (same labels, same ids), written together in one `fork.sh page` write. An EN / PT switch at the top shows one language without a reload and remembers the choice in the browser (`localStorage`). The first visit picks `?lang=en` or `?lang=pt` from the URL, else the remembered choice, else Portuguese when the browser language starts with `pt`, else English. Labels work the same in both languages, so `<url>?lang=pt#P7` opens the Portuguese P7, and a switch without a `#label` keeps the block you are reading at the top of the screen. Diagrams appear in both articles (translated node text, same `D<n>`). The library index shows both titles (`English title · Título em português`). Ask the fork for changes by label, and they apply to both languages unless you name one.
+
+**Where pages live.** `${XDG_STATE_HOME:-~/.local/state}/agent-forks/explain/<project>/<id>/` (`index.html`, `manifest.tsv`, `.meta`), with the library `index.html`, `.ids/`, `.server` and `.reindex` at the root. Never in the project checkout. Pages survive `fork.sh close`, `/explain stop` and `install.sh --uninstall`; delete them by hand. The root is private (mode 700, files 600).
+
+**Page safety.** The fork writes the whole page and its context may hold untrusted text, so the server, not the page, sets the limits: every response carries a strict `Content-Security-Policy` (scripts only inline and from the pinned Mermaid file; fetches, images, fonts and styles only from the explain host or `data:`; no forms, frames or objects), `Referrer-Policy: no-referrer` and `nosniff`. Page script therefore cannot send requests, with or without the owner cookie, to your other exposed apps or to outside hosts. Only `/`, `/<id>/` and their `index.html` are served (no listings, dotfiles, `.meta`, `manifest.tsv` or `launch.sh`), and any `Host` other than `127.0.0.1`, `localhost` or the expose host gets 421 (DNS rebinding). `/explain share` links open the **whole library** of the project, not one page.
+
+**Needs `/expose` for sharing.** With [`/expose`](#expose) set up (`install.sh --expose-domain <domain>`), pages sit behind the expose login, and nothing leaves the machine unless you create a share link. Without it, `/explain` prints `http://127.0.0.1:<port>/<id>/` with a hint, and the fork still opens. The fork can write its page only where its CLI's read-only mode allows `fork.sh page`. That is Claude Code (allow rule) and Codex (if you approve the command). On Gemini, Cursor and OpenCode it reports that it cannot write the page and stops.
+
+`bash tests/test-explain.sh` exercises `explain.sh` on a private tmux server with fake agent CLIs, a fake `expose.sh` and a scratch state dir: server start/reuse/stale restart, exposure and the not-configured path, page ids and the library index, worktrees, share, list and stop, and the bilingual template (both articles with identical labels, the EN / PT switch, checked under node).
 
 ---
 

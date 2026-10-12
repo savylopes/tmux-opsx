@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Bare page path keeps the query
+# level: L2
+# requirement: Page server serves only pages
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open x; [ $RC -eq 0 ] || fail "$OUT"
+port=$(sed -n 's/^port=//p' "$ROOT/.server")
+h=$(curl -s -D- -o /dev/null --max-time 3 "http://127.0.0.1:$port/1?lang=pt")
+echo "$h"
+code=$(head -1 <<<"$h" | awk '{print $2}')
+case "$code" in 301|302|303|307|308) ;; *) fail "status $code, expected a redirect";; esac
+loc=$(grep -i '^location:' <<<"$h" | tr -d '\r' | sed 's/^[Ll]ocation: *//')
+case "$loc" in /1/\?lang=pt|http://127.0.0.1:$port/1/\?lang=pt|http://127.0.0.1:$port/1/\?lang=pt) echo ok;; *) fail "Location '$loc', expected /1/?lang=pt";; esac

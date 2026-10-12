@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Topic required
+# level: L1
+# requirement: Open an explain fork
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+run_explain open; [ $RC -ne 0 ] || fail "exit 0 without topic"
+grep -qi 'topic' <<<"$OUT" || fail "does not ask for a topic: $OUT"
+[ ! -d "$XDG_STATE_HOME/agent-forks/fk" ] || [ -z "$(ls "$XDG_STATE_HOME/agent-forks/fk" 2>/dev/null)" ] || fail "a fork was opened"
+[ -z "$(find "$ROOT" -maxdepth 1 -name '[0-9]*' 2>/dev/null)" ] || fail "a page was created"
+[ "$(tagged_count)" = 0 ] || fail "server started"
+[ ! -s "$EXPOSE_LOG" ] || fail "expose called"
+echo ok

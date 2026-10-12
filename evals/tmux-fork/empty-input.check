@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: tmux-fork / Empty input
+# level: L2
+# requirement: Page write from the child
+. "$EVAL_ROOT/evals/_lib/fork.sh"
+d="$EVAL_TMP/x/3"; mkdir -p "$d"; echo KEEP > "$d/index.html"
+OUT=$(printf '' | FORK_PAGE_DIR="$d" FORK_DIR="$EVAL_TMP/nofork" "$FORK" page 2>&1); RC=$?
+[ $RC -ne 0 ] || fail "exit 0 on empty input"
+[ "$(cat "$d/index.html")" = KEEP ] || fail "index.html changed"
+echo ok

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: explain-page / Both languages in the template
+# level: L1
+# requirement: Bilingual page
+. "$EVAL_ROOT/evals/_lib/explain.sh"
+tpl=$(template); [ -n "$tpl" ] || fail "no template in SKILL.md"
+[ "$(grep -c '<article lang="en">' <<<"$tpl")" = 1 ] || fail "need exactly one <article lang=\"en\">"
+[ "$(grep -c '<article lang="pt">' <<<"$tpl")" = 1 ] || fail "need exactly one <article lang=\"pt\">"
+labels() { awk -v l="$1" '$0 ~ "<article lang=\""l"\">"{a=1;next} /<\/article>/{a=0} a' <<<"$tpl" | grep -o 'data-label="[^"]*"'; }
+en=$(labels en); pt=$(labels pt)
+[ -n "$en" ] || fail "no labels in en article"
+[ "$en" = "$pt" ] || fail "data-label sequences differ: en=[$(echo $en)] pt=[$(echo $pt)]"
+grep -q 'data-set-lang="en"' <<<"$tpl" && grep -q 'data-set-lang="pt"' <<<"$tpl" || fail "no EN / PT switch"
+grep -q '>EN<' <<<"$tpl" && grep -q '>PT<' <<<"$tpl" || fail "switch not labelled EN / PT"
+grep -q "get('lang')" <<<"$tpl" || grep -q '"lang"' <<<"$tpl" || fail "script does not read ?lang="
+grep -q 'localStorage' <<<"$tpl" || fail "no localStorage"
+grep -q 'navigator.language' <<<"$tpl" || fail "no navigator.language"
+grep -q '<title>[^<]*·[^<]*</title>' <<<"$tpl" || fail "title does not hold both titles"
+echo ok
