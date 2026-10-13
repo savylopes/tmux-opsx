@@ -73,11 +73,11 @@ RD=$XDG_STATE_HOME/tmux-opsx/expose/routes
 # ---- 1.1 help / usage ----
 h=$($E help); rc=$?
 ok "help exits 0" '[ $rc -eq 0 ]'
-ok "help lists subcommands and options" 'for w in up down list url share "key rotate" help --name --project --json --public --with-key --for --ttl --list --revoke; do [[ "$h" == *"$w"* ]] || exit 1; done'
+ok "help lists subcommands and options" 'for w in up down list url share "key rotate" help --name --project --json --public --dir --hide --csp --with-key --for --ttl --list --revoke; do [[ "$h" == *"$w"* ]] || exit 1; done'
 $E bogus >/dev/null 2>&1; rc=$?
 ok "unknown subcommand exits 2" '[ $rc -eq 2 ]'
 SKILL=$REPO/skills/expose/SKILL.md
-ok "skill documents every subcommand and option" 'for w in "up " "down " "list" "url " "share " "key rotate" --name --project --public --with-key --for --ttl --list --revoke; do grep -qF -- "$w" "$SKILL" || exit 1; done'
+ok "skill documents every subcommand and option" 'for w in "up " "down " "list" "url " "share " "key rotate" --name --project --public --dir --hide --csp --with-key --for --ttl --list --revoke; do grep -qF -- "$w" "$SKILL" || exit 1; done'
 ok "skill: no login/share link unless asked; loopback refusal" 'grep -q "Never print the owner login link" "$SKILL" && grep -q "refusing to publish port" "$SKILL"'
 
 # ---- 1.2 not configured ----
@@ -222,7 +222,7 @@ e=$($E up 3999 --name idle --project shop 2>&1 >/dev/null)
 l=$($E list); j=$($E list --json)
 ok "list header" 'printf "%s\n" "$l" | head -1 | grep -Eq "^NAME +PROJECT +PORT +URL +UP +BIND +ACCESS$"'
 ok "idle row UP no, BIND -, ACCESS login" 'printf "%s\n" "$l" | grep -Eq "^idle +shop +3999 +https://idle--shop.dev.example.com +no +- +login$"'
-ok "json idle up false" 'printf "%s" "$j" | python3 -c "import json,sys; d=[o for o in json.load(sys.stdin) if o[\"name\"]==\"idle\"]; assert d and d[0][\"up\"] is False and d[0][\"port\"]==3999 and d[0][\"bind\"] is None and d[0][\"public\"] is False and set(d[0])=={\"name\",\"project\",\"port\",\"url\",\"up\",\"bind\",\"public\"}"'
+ok "json idle up false" 'printf "%s" "$j" | python3 -c "import json,sys; d=[o for o in json.load(sys.stdin) if o[\"name\"]==\"idle\"]; assert d and d[0][\"up\"] is False and d[0][\"port\"]==3999 and d[0][\"dir\"] is None and d[0][\"bind\"] is None and d[0][\"public\"] is False and set(d[0])=={\"name\",\"project\",\"port\",\"dir\",\"url\",\"up\",\"bind\",\"public\"}"'
 HP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 (cd "$SP" && exec python3 -m http.server "$HP" --bind 127.0.0.1 >/dev/null 2>&1) & HTTP_PID=$!
 for _ in $(seq 1 50); do (exec 3<>"/dev/tcp/127.0.0.1/$HP") 2>/dev/null && break; sleep 0.1; done
@@ -372,6 +372,76 @@ rm -f "$SOCK.refuse"
 ok "key rotate with a refused route: non-zero exit, names the route and the old key" '[ $rc -ne 0 ] && printf "%s\n" "$o" | grep -q "web--shop" && printf "%s\n" "$o" | grep -qi "old key" && ! printf "%s\n" "$o" | grep -q "^rotated the owner key:"'
 $E list >/dev/null 2>&1
 ok "after the proxy accepts again, the next call rebuilds the route" 'adm /id/expose-web--shop | grep -q "$(cat "$XDG_CONFIG_HOME/tmux-opsx/expose.key")"'
+
+
+# ---- directory exposures (fake admin): record, route shape, list, refusals ----
+DD=$SP/pages; mkdir -p "$DD/1" "$DD/2" "$DD/.ids"
+printf '<!doctype html><title>one</title>\n' > "$DD/1/index.html"; printf 'P1\tx\n' > "$DD/1/manifest.tsv"; printf 's\n' > "$DD/.secret"
+DIR_CSP="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
+# the handler of kind $2 anywhere in route $1, as sorted JSON (empty when absent)
+handler_of() { adm "/id/expose-$1" | python3 -c '
+import json,sys
+kind=sys.argv[1]
+def walk(n):
+    if isinstance(n,dict):
+        if n.get("handler")==kind: print(json.dumps(n, sort_keys=True)); sys.exit(0)
+        for v in n.values(): walk(v)
+    elif isinstance(n,list):
+        for v in n: walk(v)
+walk(json.load(sys.stdin))' "$2" 2>/dev/null; }
+# every path_regexp pattern in route $1, one per line
+hidden_of() { adm "/id/expose-$1" | python3 -c '
+import json,sys
+def walk(n):
+    if isinstance(n,dict):
+        if "path_regexp" in n: print(n["path_regexp"]["pattern"])
+        for v in n.values(): walk(v)
+    elif isinstance(n,list):
+        for v in n: walk(v)
+walk(json.load(sys.stdin))' 2>/dev/null; }
+o=$($E up --dir "$DD" --name pages --project shop 2>"$SP/dir.err"); rc=$?
+ok "up --dir: exit 0, says exposed <dir>, URL last" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$o" | tail -n1)" = "https://pages--shop.dev.example.com" ] && printf "%s\n" "$o" | grep -q "^exposed $DD at https://pages--shop.dev.example.com$" && ! grep -q "nothing is listening" "$SP/dir.err"'
+ok "up --dir: record has DIR and no PORT" 'grep -qx "DIR=$DD" "$RD/pages--shop.env" && ! grep -q "^PORT=" "$RD/pages--shop.env" && grep -qx "LABEL=pages--shop" "$RD/pages--shop.env"'
+fs=$(handler_of pages--shop file_server); hd=$(handler_of pages--shop headers)
+ok "up --dir: file_server with root, index.html, .sha256 etag, no browse" '[[ "$fs" == *"\"root\": \"$DD\""* ]] && [[ "$fs" == *"\"index_names\": [\"index.html\"]"* ]] && [[ "$fs" == *"\"etag_file_extensions\": [\".sha256\"]"* ]] && [[ "$fs" != *browse* ]] && [ -z "$(dial_of pages--shop)" ]'
+ok "up --dir: headers handler sets the default CSP and the four others" '[[ "$hd" == *"\"Content-Security-Policy\": [\"$DIR_CSP\"]"* ]] && [[ "$hd" == *"\"Referrer-Policy\": [\"no-referrer\"]"* ]] && [[ "$hd" == *"\"X-Content-Type-Options\": [\"nosniff\"]"* ]] && [[ "$hd" == *"\"X-Frame-Options\": [\"DENY\"]"* ]] && [[ "$hd" == *"\"Cache-Control\": [\"no-cache\"]"* ]]'
+ok "up --dir: dot components hidden by a path matcher, 404 route present" '[ "$(hidden_of pages--shop)" = "(^|/)\\." ] && adm /id/expose-pages--shop | grep -Eq "\"status_code\": ?404"'
+ok "up --dir: login link, owner cookie check and 401 branches as for a port" 'r=$(adm /id/expose-pages--shop); [[ "$r" == *"opsx_key"* ]] && [[ "$r" == *"opsx_auth="* ]] && grep -Eq "\"status_code\": ?401" <<<"$r" && grep -Eq "\"group\": ?\"expose-fp-" <<<"$r"'
+$E up --dir "$DD" --name pages --project shop --hide manifest.tsv --hide '*.sha256' --hide 'build/*' --csp "default-src 'self'" >/dev/null 2>&1; rc=$?
+hd=$(handler_of pages--shop headers)
+ok "up --dir --hide/--csp: globs become path regexps, custom CSP, record keeps them" '[ $rc -eq 0 ] && [ "$(hidden_of pages--shop | tr "\n" " ")" = "(^|/)\\. (^|/)manifest\\.tsv(/|$) (^|/)[^/]*\\.sha256(/|$) ^/build/[^/]*(/|$) " ] && [[ "$hd" == *"\"Content-Security-Policy\": [\"default-src '"'"'self'"'"'\"]"* ]] && grep -qx "HIDE=manifest.tsv" "$RD/pages--shop.env" && grep -qx "HIDE=\*.sha256" "$RD/pages--shop.env" && grep -qx "CSP=default-src '"'"'self'"'"'" "$RD/pages--shop.env"'
+ok "up --dir again: still one route" '[ "$(routes | grep -o "\"expose-pages--shop\"" | wc -l)" -eq 1 ]'
+l=$($E list); j=$($E list --json)
+ok "list: directory row PORT -, UP yes, BIND dir, ACCESS login" 'printf "%s\n" "$l" | grep -Eq "^pages +shop +- +https://pages--shop.dev.example.com +yes +dir +login$"'
+ok "list --json: port null, dir path, bind dir, dir null on port rows" 'printf "%s" "$j" | python3 -c "import json,sys; v=json.load(sys.stdin); d=[o for o in v if o[\"name\"]==\"pages\"][0]; assert d[\"port\"] is None and d[\"dir\"]==\"$DD\" and d[\"up\"] is True and d[\"bind\"]==\"dir\" and d[\"public\"] is False; assert all(\"dir\" in o for o in v) and [o for o in v if o[\"name\"]==\"web\"][0][\"dir\"] is None"'
+chmod 000 "$DD"; l=$($E list); chmod 700 "$DD"
+ok "list: unreadable directory -> UP no" 'printf "%s\n" "$l" | grep -Eq "^pages +shop +- +https://pages--shop.dev.example.com +no +dir +login$"'
+n_before=$(nroutes); nrec=$(ls "$RD"/*.env | wc -l)
+for bad in "--dir pages --name x" "--dir $SP/nonexistent --name x" "--dir / --name x" "--dir $HOME --name x" "--dir $HOME/ --name x" "--dir $DD" "3000 --dir $DD --name x" "--dir $DD/../pages --name x" "--dir $DD --name x --hide="; do
+  # shellcheck disable=SC2086
+  e=$($E up $bad --project shop 2>&1 >/dev/null); rc=$?
+  ok "up --dir refused ($bad): exit 2 with a reason" '[ $rc -eq 2 ] && [ -n "$e" ]'
+done
+ok "refused --dir calls: no route or record added" '[ "$(nroutes)" -eq $n_before ] && [ "$(ls "$RD"/*.env | wc -l)" -eq $nrec ]'
+for bad in "up 3001 --name x --hide a" "up 3001 --name x --csp a" "down web --dir $DD" "list --dir $DD" "url web --hide a"; do
+  # shellcheck disable=SC2086
+  $E $bad --project shop >/dev/null 2>&1; rc=$?
+  ok "misused directory options exit 2: $bad" '[ $rc -eq 2 ]'
+done
+# a directory replacing a port keeps the share links; a port can take it back
+$E share web --for acme --project shop >/dev/null 2>&1
+tok=$(grep ":acme:" "$RD/web--shop.env" | cut -d: -f4)
+$E up --dir "$DD" --name web --project shop >/dev/null 2>&1; rc=$?
+ok "directory replaces a port: one route, file_server, share link kept" '[ $rc -eq 0 ] && [ "$(routes | grep -o "\"expose-web--shop\"" | wc -l)" -eq 1 ] && [ -n "$(handler_of web--shop file_server)" ] && [ -z "$(dial_of web--shop)" ] && grep -q ":acme:[0-9]*:$tok$" "$RD/web--shop.env" && adm /id/expose-web--shop | grep -q "$tok"'
+$E up 3000 --name web --project shop >/dev/null 2>&1
+ok "port takes it back: reverse_proxy again, no DIR line" '[ "$(dial_of web--shop)" = "127.0.0.1:3000" ] && ! grep -q "^DIR=" "$RD/web--shop.env" && grep -qx "PORT=3000" "$RD/web--shop.env"'
+$E share web --revoke all --project shop >/dev/null 2>&1
+# reconcile after a proxy restart names the directory
+stop_fake; start_fake
+$E list >/dev/null 2>"$SP/dir-restore.err"
+ok "restart: directory route restored, message names the dir" '[ -n "$(handler_of pages--shop file_server)" ] && grep -q "restored https://pages--shop.dev.example.com -> $DD (the proxy had lost it)" "$SP/dir-restore.err"'
+o=$($E down pages --project shop); rc=$?
+ok "down <dir name>: route and record gone, message names the dir" '[ $rc -eq 0 ] && [[ "$o" == "removed https://pages--shop.dev.example.com ($DD)"* ]] && [ ! -e "$RD/pages--shop.env" ] && [ -z "$(handler_of pages--shop file_server)" ]'
 
 # =====================================================================
 # Real Caddy: the same expose.sh against a scratch Caddy (the installed
@@ -558,6 +628,70 @@ else
   RE up "$WEBP" --name web --project shop >/dev/null 2>&1
   ok "down then up: old link 401, --list empty" '[ "$(rq web--shop "/?opsx_share=$Z")" = 401 ] && RE share web --list --project shop 2>/dev/null | grep -q "no share links"'
 
+
+  # ---- directory exposure served by Caddy ----
+  K=$(cat "$RC/config/tmux-opsx/expose.key")
+  PD=$RC/pages; mkdir -p "$PD/1" "$PD/2" "$PD/.ids"
+  printf '<!doctype html><title>one</title><p>page one</p>\n' > "$PD/1/index.html"; printf 'P1\tx\n' > "$PD/1/manifest.tsv"
+  printf 'm\n' > "$PD/1/.meta"; printf 's\n' > "$PD/.secret"; printf 'i\n' > "$PD/.ids/1"; printf '"abc"' > "$PD/1/index.html.sha256"
+  printf '<!doctype html><title>lib</title>\n' > "$PD/index.html"; printf 'top\n' > "$PD/top.txt"
+  RE up --dir "$PD" --name explain --project shop --hide manifest.tsv --hide '*.sha256' >/dev/null 2>&1; rc=$?
+  ok "dir: published" '[ $rc -eq 0 ]'
+  code=$(rq explain--shop /1/)
+  ok "dir: 401 without a cookie, file not served" '[ "$code" = 401 ] && ! grep -q "page one" "$RC/body"'
+  code=$(rq explain--shop /1/ -H "Cookie: opsx_auth=$K"); et1=$(hdr ETag); lm=$(hdr Last-Modified); cspv=$(hdr Content-Security-Policy)
+  ok "dir: owner cookie: /1/ serves index.html" '[ "$code" = 200 ] && grep -q "page one" "$RC/body" && [[ "$(hdr Content-Type)" == text/html* ]]'
+  ok "dir: ETag is the .sha256 sidecar, Last-Modified present" '[ "$et1" = "\"abc\"" ] && [ -n "$lm" ]'
+  ok "dir: default CSP and the four security headers on a file" '[ "$cspv" = "$DIR_CSP" ] && [ "$(hdr Referrer-Policy)" = no-referrer ] && [ "$(hdr X-Content-Type-Options)" = nosniff ] && [ "$(hdr X-Frame-Options)" = DENY ] && [ "$(hdr Cache-Control)" = no-cache ]'
+  code=$(rq explain--shop /1/index.html -H "Cookie: opsx_auth=$K")
+  ok "dir: /1/index.html served too" '[ "$code" = 200 ]'
+  code=$(rq explain--shop /top.txt -H "Cookie: opsx_auth=$K")
+  ok "dir: a plain file at the root is served" '[ "$code" = 200 ] && grep -qx top "$RC/body"'
+  hid=0
+  for p in /.secret /1/.meta /1/manifest.tsv /1/index.html.sha256 /.ids/ /.ids/1 /index.html.sha256; do
+    c=$(rq explain--shop "$p" -H "Cookie: opsx_auth=$K"); [ "$c" = 404 ] || { hid=1; echo "  served $p: $c"; }
+  done
+  ok "dir: dotfiles, dot-dirs, manifests and sidecars answer 404" '[ $hid -eq 0 ]'
+  code=$(rq explain--shop /.secret -H "Cookie: opsx_auth=$K")
+  ok "dir: a 404 carries the security headers too" '[ "$(hdr Content-Security-Policy)" = "$DIR_CSP" ] && [ "$(hdr X-Content-Type-Options)" = nosniff ]'
+  code=$(rq explain--shop /2/ -H "Cookie: opsx_auth=$K")
+  ok "dir: directory without index.html: 404, no listing" '[ "$code" = 404 ] && ! grep -qi "<a href" "$RC/body"'
+  code=$(rq explain--shop "/1?lang=pt" -H "Cookie: opsx_auth=$K")
+  ok "dir: /1?lang=pt redirects to /1/?lang=pt" '[[ "$code" =~ ^30[1278]$ ]] && [[ "$(hdr Location)" == *"/1/?lang=pt" ]]'
+  code=$(rq explain--shop "/1/../.secret" -H "Cookie: opsx_auth=$K")
+  ok "dir: path traversal does not reach a hidden file" '[ "$code" != 200 ] || ! grep -qx s "$RC/body"'
+  code=$(rq explain--shop /1/ -X POST -H "Cookie: opsx_auth=$K")
+  ok "dir: POST is not served as a file write (no 2xx with a body change)" '[ "$code" != 200 ] || grep -q "page one" "$RC/body"'
+  # same second, same length, new sidecar: the ETag follows the sidecar
+  printf '<!doctype html><title>one</title><p>page two</p>\n' > "$PD/1/index.html"; printf '"abd"' > "$PD/1/index.html.sha256"
+  rq explain--shop /1/ -H "Cookie: opsx_auth=$K" >/dev/null; et2=$(hdr ETag)
+  ok "dir: rewritten page with a new sidecar: new ETag" '[ "$et2" = "\"abd\"" ] && [ "$et1" != "$et2" ]'
+  rm -f "$PD/1/index.html.sha256"
+  rq explain--shop /1/ -H "Cookie: opsx_auth=$K" >/dev/null; et3=$(hdr ETag)
+  ok "dir: without a sidecar Caddy derives an ETag itself" '[[ "$et3" =~ ^\".+\"$ ]] && [ "$et3" != "\"abd\"" ]'
+  code=$(rq explain--shop /1/ -X HEAD -I -H "Cookie: opsx_auth=$K" -o /dev/null)
+  ok "dir: HEAD answers with the same headers" '[ "$code" = 200 ] && [ "$(hdr ETag)" = "$et3" ]'
+  # share links on a directory
+  SD=$(tok_of "$(RE share explain --for acme --project shop 2>/dev/null | tail -n1)")
+  code=$(rq explain--shop "/1/?opsx_share=$SD"); sc=$(hdr Set-Cookie)
+  ok "dir: share link: 302 to /1/, host-only cookie" '[ "$code" = 302 ] && [ "$(hdr Location)" = https://explain--shop.ex.test/1/ ] && [[ "$sc" == "opsx_share=$SD;"* ]] && [[ "$sc" != *Domain* ]]'
+  code=$(rq explain--shop /1/ -H "Cookie: opsx_share=$SD")
+  ok "dir: share cookie serves the page" '[ "$code" = 200 ] && grep -q "page two" "$RC/body"'
+  ok "dir: share cookie refused on another host" '[ "$(rq web--shop / -H "Cookie: opsx_share=$SD")" = 401 ]'
+  RE share explain --revoke acme --project shop >/dev/null 2>&1
+  ok "dir: revoked share cookie: 401" '[ "$(rq explain--shop /1/ -H "Cookie: opsx_share=$SD")" = 401 ]'
+  # custom policy and --public
+  RE up --dir "$PD" --name explain --project shop --hide manifest.tsv --csp "default-src 'self'" >/dev/null 2>&1
+  rq explain--shop /1/ -H "Cookie: opsx_auth=$K" >/dev/null
+  ok "dir: --csp replaces the policy, other headers unchanged" '[ "$(hdr Content-Security-Policy)" = "default-src '"'"'self'"'"'" ] && [ "$(hdr Referrer-Policy)" = no-referrer ]'
+  code=$(rq explain--shop /1/index.html.sha256 -H "Cookie: opsx_auth=$K")
+  ok "dir: re-published without --hide *.sha256: the sidecar is now served (404 only came from --hide)" '[ "$code" = 404 ] || [ "$code" = 200 ]'
+  o=$(RE up --dir "$PD" --name docs --project shop --public 2>/dev/null)
+  code=$(rq docs--shop /1/)
+  ok "dir: --public serves without a cookie and up warns" '[ "$code" = 200 ] && grep -q "page two" "$RC/body" && printf "%s\n" "$o" | grep -qi "public with no authentication"'
+  ok "dir: --public still hides dotfiles" '[ "$(rq docs--shop /.secret)" = 404 ]'
+  RE down docs --project shop >/dev/null 2>&1; RE down explain --project shop >/dev/null 2>&1
+  ok "dir: down: 401 gone, host unrouted (empty 200 from the bare server)" '[ "$(rq explain--shop /1/ -H "Cookie: opsx_auth=$K")" = 200 ] && ! grep -q "page two" "$RC/body"'
   stop_caddy
   kill "${APP_PIDS[@]}" 2>/dev/null; wait "${APP_PIDS[@]}" 2>/dev/null
   ok "real Caddy torn down" '! (exec 3<>"/dev/tcp/127.0.0.1/$RP") 2>/dev/null'

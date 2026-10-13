@@ -3,6 +3,8 @@
 #
 # Usage:
 #   expose.sh up <port> [--name <n>] [--project <p>] [--public]
+#   expose.sh up --dir <abs dir> --name <n> [--project <p>] [--public]
+#                [--hide <glob>]... [--csp <policy>]
 #   expose.sh down <name|port> [--project <p>]
 #   expose.sh list [--json]
 #   expose.sh url <name> [--project <p>] [--with-key]
@@ -44,6 +46,22 @@
 # The owner key lives in ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/expose.key
 # (mode 600, created on first use) and is printed only by `url --with-key`.
 #
+# Directories: `up --dir <dir> --name <n>` serves the files under <dir> (an
+# absolute, existing directory other than / or $HOME) with Caddy's file
+# server at the same kind of URL, behind the same login and share links.
+# Only regular files are served: no directory listing (a directory without
+# index.html answers 404), never a path component starting with ".", never
+# a name matching a --hide <glob> (a glob without / matches a name at any
+# depth; with / it is anchored at the root). /dir is redirected to /dir/
+# with its query. Every response carries Referrer-Policy: no-referrer,
+# X-Content-Type-Options: nosniff, X-Frame-Options: DENY, Cache-Control:
+# no-cache and a Content-Security-Policy (--csp, else a strict default:
+# inline scripts and styles, images and fonts from the page itself, no
+# forms, frames or fetches elsewhere). A regular file <f>.sha256 beside <f>
+# is served as its ETag (and never served itself when hidden with
+# --hide '*.sha256'). `list` shows a directory row with PORT -, BIND dir
+# and UP yes when the directory is readable.
+#
 # Loopback only: `up` refuses (exit 2) a port with a listener on any address
 # other than 127.0.0.0/8 or ::1 — bind the app to 127.0.0.1 — and also when the
 # listeners cannot be inspected (needs ss on Linux, lsof elsewhere). `list`
@@ -62,7 +80,8 @@
 #          (written by `install.sh --expose-domain <domain>`)
 # Key:     ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/expose.key
 # State:   ${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/expose/routes/<label>.env
-#          (mode 600 in a mode-700 dir; holds the share tokens)
+#          (mode 600 in a mode-700 dir; holds the share tokens; a directory
+#          exposure has DIR=, HIDE= lines and CSP= instead of PORT=)
 # Proxy:   Caddy, driven through its admin API on a unix socket
 #          ($OPSX_EXPOSE_ADMIN overrides the socket path)
 #
@@ -77,8 +96,10 @@ CONFIG_FILE=$CONFIG_DIR/expose.env
 KEY_FILE=$CONFIG_DIR/expose.key
 STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-opsx/expose
 ROUTES_DIR=$STATE_DIR/routes
-SERVER=expose
+SERVER=${OPSX_EXPOSE_SERVER:-expose}   # the Caddy server name (tests only)
 ROUTES_PATH=/config/apps/http/servers/$SERVER/routes
+# Default Content-Security-Policy of a directory exposure (--csp replaces it).
+DIR_CSP_DEFAULT="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
 
 DOMAIN=""
 ADMIN_SOCK=""
@@ -164,6 +185,20 @@ make_label() {
   fi
   room=$((63 - 2 - ${#project}))
   printf '%s--%s' "$(cut_with_hash "$name" "$room" "$full")" "$project"
+}
+
+# clean_dir <path> — the path without trailing slashes or repeated slashes;
+# fails unless it is absolute and free of . and .. components.
+clean_dir() {
+  local p=$1 part
+  [[ "$p" == /* ]] || return 1
+  p=$(printf '%s' "$p" | tr -s '/')
+  p=${p%/}; [ -n "$p" ] || p=/
+  IFS=/ read -r -a _parts <<<"$p"
+  for part in "${_parts[@]+"${_parts[@]}"}"; do
+    case "$part" in .|..) return 1 ;; esac
+  done
+  printf '%s' "$p"
 }
 
 valid_port() {
@@ -281,29 +316,73 @@ json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')";
 
 LOGIN_PAGE='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Login required</title></head><body style="font-family: system-ui, sans-serif; max-width: 28rem; margin: 4rem auto; padding: 0 1rem; color: #222; line-height: 1.5"><h1 style="font-size: 1.4rem">Login required</h1><form method="get" action=""><label for="opsx_key">Owner key</label><br><input id="opsx_key" name="opsx_key" type="password" autocomplete="current-password" required style="width: 100%; padding: .5rem; margin: .5rem 0; box-sizing: border-box"><button type="submit" style="padding: .5rem 1rem">Log in</button></form><p>Got this link from someone? It may have expired or been revoked — ask them for a new one.</p></body></html>'
 
-# route_json <label> <port> <public 0|1> [<id>:<recipient>:<expires|never>:<token> ...]
-# Prints the full route for one exposure. Every route holds a subroute. A
+# glob_re <glob> — a regexp for a --hide glob against the request path: a
+# glob without / matches one path component at any depth, one with / is
+# anchored at the root (both as a whole component or prefix).
+glob_re() {
+  local g=$1 re="" c i
+  for ((i = 0; i < ${#g}; i++)); do
+    c=${g:i:1}
+    case "$c" in
+      '*') re="${re}[^/]*" ;;
+      '?') re="${re}[^/]" ;;
+      [a-zA-Z0-9_/-]) re="$re$c" ;;
+      *) re="$re\\$c" ;;
+    esac
+  done
+  case "$g" in
+    /*) printf '^%s(/|$)' "$re" ;;
+    */*) printf '^/%s(/|$)' "$re" ;;
+    *) printf '(^|/)%s(/|$)' "$re" ;;
+  esac
+}
+
+# final_handlers — the handler chain after the login check, for the record
+# last read by read_record. A port: strip both opsx cookies, then
+# reverse_proxy. A directory: set the security headers, answer 404 to any
+# hidden path (a component starting with ".", or a --hide glob), then
+# file_server (index.html, no browse, .sha256 sidecar as the ETag).
+final_handlers() {
+  local strip proxy hdrs hidden fs csp h
+  if [ -n "$R_DIR" ]; then
+    csp=${R_CSP:-$DIR_CSP_DEFAULT}
+    hdrs='{"handler":"headers","response":{"set":{"Content-Security-Policy":['"$(json_str "$csp")"'],"Referrer-Policy":["no-referrer"],"X-Content-Type-Options":["nosniff"],"X-Frame-Options":["DENY"],"Cache-Control":["no-cache"]}}}'
+    hidden='{"path_regexp":{"pattern":"(^|/)\\."}}'
+    for h in "${R_HIDES[@]+"${R_HIDES[@]}"}"; do
+      hidden="$hidden"',{"path_regexp":{"pattern":'"$(json_str "$(glob_re "$h")")"'}}'
+    done
+    fs='{"handler":"file_server","root":'"$(json_str "$R_DIR")"',"index_names":["index.html"],"etag_file_extensions":[".sha256"]}'
+    printf '%s,{"handler":"subroute","routes":[{"match":[%s],"handle":[{"handler":"static_response","status_code":404,"headers":{"Content-Type":["text/plain; charset=utf-8"]},"body":"not found\\n"}],"terminal":true},{"handle":[%s]}]}' "$hdrs" "$hidden" "$fs"
+  else
+    proxy='{"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:'"$R_PORT"'"}]}'
+    # Removes opsx_auth and opsx_share from the Cookie header. Every route, the
+    # public ones included, applies it: the owner cookie is sent to every host
+    # under the domain and must never reach an app.
+    strip='{"handler":"headers","request":{"replace":{"Cookie":[{"search_regexp":"(^|;) *opsx_(auth|share)=[^;]*","replace":""},{"search_regexp":"^[; ]+","replace":""}]}}}'
+    printf '%s,%s' "$strip" "$proxy"
+  fi
+}
+
+# route_json <label> <public 0|1> [<id>:<recipient>:<expires|never>:<token> ...]
+# Prints the full route for the record last read by read_record (its port or
+# directory, see final_handlers). Every route holds a subroute. A
 # public one: owner login link -> 302 with the owner cookie; any other
 # opsx_key or opsx_share query -> 302 to the path without the query (a key or
 # token never reaches a public app, whose request log may be read by others);
-# anything else -> strip both cookies, proxy. A private one: owner
+# anything else -> the final handlers. A private one: owner
 # login link -> 302 with the owner cookie; each share link -> 302 with its
-# host-only cookie; a valid owner or share cookie -> strip both cookies,
-# proxy; anything else -> 401 login page. Its "group" is the full sha256 of
+# host-only cookie; a valid owner or share cookie -> the final handlers;
+# anything else -> 401 login page. Its "group" is the full sha256 of
 # the rest, so reconcile can tell an outdated route (pre-auth, rotated key,
-# revoked or pruned token).
+# revoked or pruned token, changed directory options).
 route_json() {
-  local label=$1 port=$2 public=$3; shift 3
-  local host="$label.$DOMAIN" proxy strip body sub="" auth sh id rec exp tok expr cookie
-  proxy='{"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:'"$port"'"}]}'
-  # Removes opsx_auth and opsx_share from the Cookie header. Every route, the
-  # public ones included, applies it: the owner cookie is sent to every host
-  # under the domain and must never reach an app.
-  strip='{"handler":"headers","request":{"replace":{"Cookie":[{"search_regexp":"(^|;) *opsx_(auth|share)=[^;]*","replace":""},{"search_regexp":"^[; ]+","replace":""}]}}}'
+  local label=$1 public=$2; shift 2
+  local host="$label.$DOMAIN" final body sub="" auth sh id rec exp tok expr cookie
+  final=$(final_handlers)
   sub='{"match":[{"query":{"opsx_key":["'"$OWNER_KEY"'"]}}],"handle":[{"handler":"static_response","status_code":302,"headers":{"Location":["https://'"$host"'{http.request.uri.path}"],"Cache-Control":["no-store"],"Set-Cookie":["opsx_auth='"$OWNER_KEY"'; Domain='"$DOMAIN"'; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=Lax"]}}],"terminal":true}'
   if [ "$public" = 1 ]; then
     sub="$sub"',{"match":[{"query":{"opsx_key":["*"]}},{"query":{"opsx_share":["*"]}}],"handle":[{"handler":"static_response","status_code":302,"headers":{"Location":["https://'"$host"'{http.request.uri.path}"],"Cache-Control":["no-store"]}}],"terminal":true}'
-    sub="$sub"',{"handle":['"$strip"','"$proxy"']}'
+    sub="$sub"',{"handle":['"$final"']}'
     body='"match":[{"host":["'"$host"'"]}],"handle":[{"handler":"subroute","routes":['"$sub"']}],"terminal":true}'
   else
     auth='{"header_regexp":{"Cookie":{"pattern":"(^|;) *opsx_auth='"$OWNER_KEY"' *(;|$)"}}}'
@@ -319,7 +398,7 @@ route_json() {
       sub="$sub"',{"match":[{"query":{"opsx_share":["'"$tok"'"]}'"$expr"'}],"handle":[{"handler":"static_response","status_code":302,"headers":{"Location":["https://'"$host"'{http.request.uri.path}"],"Cache-Control":["no-store"],"Set-Cookie":["'"$cookie"'"]}}],"terminal":true}'
       auth="$auth"',{"header_regexp":{"Cookie":{"pattern":"(^|;) *opsx_share='"$tok"' *(;|$)"}}'"$expr"'}'
     done
-    sub="$sub"',{"match":['"$auth"'],"handle":['"$strip"','"$proxy"'],"terminal":true}'
+    sub="$sub"',{"match":['"$auth"'],"handle":['"$final"'],"terminal":true}'
     sub="$sub"',{"handle":[{"handler":"static_response","status_code":401,"headers":{"Content-Type":["text/html; charset=utf-8"],"Cache-Control":["no-store"]},"body":'"$(json_str "$LOGIN_PAGE")"'}]}'
     body='"match":[{"host":["'"$host"'"]}],"handle":[{"handler":"subroute","routes":['"$sub"']}],"terminal":true}'
   fi
@@ -328,8 +407,11 @@ route_json() {
 
 # route_for_record — route_json for the record last read by read_record.
 route_for_record() {
-  route_json "$R_LABEL" "$R_PORT" "$R_PUBLIC" "${R_SHARES[@]+"${R_SHARES[@]}"}"
+  route_json "$R_LABEL" "$R_PUBLIC" "${R_SHARES[@]+"${R_SHARES[@]}"}"
 }
+
+# target_text — "127.0.0.1:<port>" or the directory, for messages.
+target_text() { if [ -n "$R_DIR" ]; then printf '%s' "$R_DIR"; else printf '127.0.0.1:%s' "$R_PORT"; fi; }
 
 # add_route <label> <route json> — remove any route with this label's id, then
 # append the new one.
@@ -385,33 +467,47 @@ delete_route() {
 
 # ---------- state ----------
 
-# read_record FILE — sets R_NAME R_PROJECT R_PORT R_LABEL R_URL R_PUBLIC and
+# read_record FILE — sets R_NAME R_PROJECT R_PORT R_LABEL R_URL R_PUBLIC,
+# R_DIR R_HIDES R_CSP (directory exposures; R_PORT is then empty) and
 # the array R_SHARES (<id>:<recipient>:<expires|never>:<token> per entry).
 read_record() {
   local k v
   R_NAME=""; R_PROJECT=""; R_PORT=""; R_LABEL=""; R_URL=""; R_PUBLIC=0; R_SHARES=()
+  R_DIR=""; R_HIDES=(); R_CSP=""
   while IFS='=' read -r k v || [ -n "$k" ]; do
     case "$k" in
       NAME) R_NAME=$v ;; PROJECT) R_PROJECT=$v ;; PORT) R_PORT=$v ;;
       LABEL) R_LABEL=$v ;; URL) R_URL=$v ;;
       PUBLIC) [ "$v" = 1 ] && R_PUBLIC=1 ;;
       SHARE) valid_share "$v" && R_SHARES+=("$v") ;;
+      DIR) R_DIR=$v ;; HIDE) [ -n "$v" ] && R_HIDES+=("$v") ;; CSP) R_CSP=$v ;;
     esac
   done < "$1"
-  [[ "$R_LABEL" =~ ^[a-z0-9-]+$ ]] && valid_port "$R_PORT"
+  [[ "$R_LABEL" =~ ^[a-z0-9-]+$ ]] || return 1
+  if [ -n "$R_DIR" ]; then [ -z "$R_PORT" ] && [[ "$R_DIR" == /* ]]; else valid_port "$R_PORT"; fi
 }
 
 valid_share() { [[ "$1" =~ ^[0-9a-f]{6}:[a-z0-9-]+:([0-9]+|never):[A-Za-z0-9_-]{22,}$ ]]; }
 
 # write_record_tmp <name> <project> <port> <label> <url> <public> [shares...]
 # Writes a record to a new temp file in ROUTES_DIR and prints its path; the
-# caller moves it into place with commit_record (or removes it).
+# caller moves it into place with commit_record (or removes it). A directory
+# exposure passes an empty port and sets R_DIR, R_HIDES and R_CSP first
+# (cmd_up does; every other caller writes back what read_record read).
 write_record_tmp() {
-  local name=$1 project=$2 port=$3 label=$4 url=$5 public=$6 tmp sh; shift 6
+  local name=$1 project=$2 port=$3 label=$4 url=$5 public=$6 tmp sh h; shift 6
   mkdir -p "$ROUTES_DIR" && chmod 700 "$STATE_DIR" 2>/dev/null
   tmp=$(mktemp "$ROUTES_DIR/.$label.XXXXXX") || die "cannot write state in $ROUTES_DIR"
   {
-    printf 'NAME=%s\nPROJECT=%s\nPORT=%s\nLABEL=%s\nURL=%s\n' "$name" "$project" "$port" "$label" "$url"
+    printf 'NAME=%s\nPROJECT=%s\n' "$name" "$project"
+    if [ -n "$R_DIR" ]; then
+      printf 'DIR=%s\n' "$R_DIR"
+      for h in "${R_HIDES[@]+"${R_HIDES[@]}"}"; do printf 'HIDE=%s\n' "$h"; done
+      [ -n "$R_CSP" ] && printf 'CSP=%s\n' "$R_CSP"
+    else
+      printf 'PORT=%s\n' "$port"
+    fi
+    printf 'LABEL=%s\nURL=%s\n' "$label" "$url"
     [ "$public" = 1 ] && printf 'PUBLIC=1\n'
     for sh in "$@"; do printf 'SHARE=%s\n' "$sh"; done
     true
@@ -477,7 +573,7 @@ reconcile() {
     fp=$(fp_of "$route")
     if ! printf '%s\n' "$ids" | grep -qx "expose-$R_LABEL"; then
       if add_route "$R_LABEL" "$route"; then
-        err "restored $R_URL -> 127.0.0.1:$R_PORT (the proxy had lost it)"
+        err "restored $R_URL -> $(target_text) (the proxy had lost it)"
       else
         RECONCILE_FAILED+=("$R_LABEL")
       fi
@@ -617,8 +713,10 @@ find_record() {
   die "no exposure named '$arg' in project $PROJECT_N (see: expose.sh list)" 1
 }
 
+# cmd_up <port> <name> <public> | cmd_up "" <name> <public> <dir> <csp> [hides...]
 cmd_up() {
-  local port=$1 name_raw=$2 public=$3 name label url tmp shares=()
+  local port=$1 name_raw=$2 public=$3 dir=${4:-} csp=${5:-} name label url tmp shares=() hides=()
+  [ $# -gt 5 ] && { shift 5; hides=("$@"); }
   name_raw=${name_raw:-$port}
   name=$(normalise "$name_raw")
   [ -n "$name" ] || die "name '$name_raw' has no usable characters ([a-z0-9])" 2
@@ -628,6 +726,7 @@ cmd_up() {
   if [ -f "$ROUTES_DIR/$label.env" ] && read_record "$ROUTES_DIR/$label.env"; then
     shares=("${R_SHARES[@]+"${R_SHARES[@]}"}")
   fi
+  R_DIR=$dir; R_CSP=$csp; R_HIDES=("${hides[@]+"${hides[@]}"}")
   tmp=$(write_record_tmp "$name" "$PROJECT_N" "$port" "$label" "$url" "$public" "${shares[@]+"${shares[@]}"}") || exit 1
   read_record "$tmp"
   if ! add_route "$label" "$(route_for_record)"; then
@@ -635,13 +734,13 @@ cmd_up() {
     exit 1
   fi
   commit_record "$tmp" "$label"
-  printf 'exposed 127.0.0.1:%s at %s\n' "$port" "$url"
+  printf 'exposed %s at %s\n' "$(target_text)" "$url"
   if [ "$public" = 1 ]; then
-    printf 'warning: %s is PUBLIC with no authentication — anyone with the link can reach 127.0.0.1:%s.\n' "$url" "$port"
+    printf 'warning: %s is PUBLIC with no authentication — anyone with the link can reach %s.\n' "$url" "$(target_text)"
   else
     printf 'login required: log in once per device with: expose.sh url %s --with-key (or give someone a link: expose.sh share %s)\n' "$name" "$name"
   fi
-  [ "$BIND_STATE" = none ] \
+  [ -z "$dir" ] && [ "$BIND_STATE" = none ] \
     && err "note: nothing is listening on 127.0.0.1:$port yet — start the app there, bound to 127.0.0.1 (expose.sh list shows its bind)"
   print_url "$url"
 }
@@ -654,10 +753,10 @@ cmd_down() {
     [ -n "$f" ] || continue
     read_record "$f" || continue
     if [ "$R_LABEL" = "$target_label" ] \
-       || { [[ "$arg" =~ ^[0-9]+$ ]] && [ "$R_PORT" = "$arg" ] && [ "$R_PROJECT" = "$PROJECT_N" ]; }; then
+       || { [[ "$arg" =~ ^[0-9]+$ ]] && [ -n "$R_PORT" ] && [ "$R_PORT" = "$arg" ] && [ "$R_PROJECT" = "$PROJECT_N" ]; }; then
       delete_route "$R_LABEL" || exit 1
       rm -f "$f"
-      printf 'removed %s (127.0.0.1:%s)' "$R_URL" "$R_PORT"
+      printf 'removed %s (%s)' "$R_URL" "$(target_text)"
       [ "${#R_SHARES[@]}" -eq 0 ] || printf ' and its %s share link(s)' "${#R_SHARES[@]}"
       printf '\n'
       n=$((n + 1))
@@ -671,7 +770,7 @@ cmd_down() {
     read_record "$f" || continue
     [ "$R_PROJECT" != "$PROJECT_N" ] || continue
     if { [ -n "$name" ] && [ "$R_NAME" = "$name" ]; } \
-       || { [[ "$arg" =~ ^[0-9]+$ ]] && [ "$R_PORT" = "$arg" ]; }; then
+       || { [[ "$arg" =~ ^[0-9]+$ ]] && [ -n "$R_PORT" ] && [ "$R_PORT" = "$arg" ]; }; then
       case " $others " in *" $R_PROJECT "*) ;; *) others="${others:+$others }$R_PROJECT" ;; esac
     fi
   done < <(records)
@@ -682,37 +781,49 @@ cmd_down() {
   printf '\n'
 }
 
+# row_state — sets UP (yes|no) and BIND (loopback|PUBLIC|-|dir) for the
+# record last read: a port's listener, or whether the directory is readable.
+row_state() {
+  if [ -n "$R_DIR" ]; then
+    if [ -d "$R_DIR" ] && [ -r "$R_DIR" ] && [ -x "$R_DIR" ]; then UP=yes; else UP=no; fi
+    BIND=dir
+    return 0
+  fi
+  if port_up "$R_PORT"; then UP=yes; else UP=no; fi
+  bind_state "$R_PORT"
+  case "$BIND_STATE" in loopback) BIND=loopback ;; public) BIND=PUBLIC ;; *) BIND=- ;; esac
+}
+
 cmd_list() {
-  local json=$1 f up first=1 bind access
+  local json=$1 f first=1 access bindj portj dirj UP BIND
   if [ "$json" -eq 1 ]; then
     printf '['
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       read_record "$f" || continue
-      if port_up "$R_PORT"; then up=true; else up=false; fi
-      bind_state "$R_PORT"
-      case "$BIND_STATE" in loopback) bind='"loopback"' ;; public) bind='"public"' ;; *) bind=null ;; esac
+      row_state
+      case "$BIND" in loopback) bindj='"loopback"' ;; PUBLIC) bindj='"public"' ;; dir) bindj='"dir"' ;; *) bindj=null ;; esac
+      if [ -n "$R_DIR" ]; then portj=null; dirj=$(json_str "$R_DIR"); else portj=$R_PORT; dirj=null; fi
       if [ "$R_PUBLIC" = 1 ]; then access=true; else access=false; fi
       [ "$first" -eq 1 ] || printf ','
       first=0
-      printf '{"name":%s,"project":%s,"port":%s,"url":%s,"up":%s,"bind":%s,"public":%s}' \
-        "$(json_str "$R_NAME")" "$(json_str "$R_PROJECT")" "$R_PORT" "$(json_str "$R_URL")" "$up" "$bind" "$access"
+      printf '{"name":%s,"project":%s,"port":%s,"dir":%s,"url":%s,"up":%s,"bind":%s,"public":%s}' \
+        "$(json_str "$R_NAME")" "$(json_str "$R_PROJECT")" "$portj" "$dirj" "$(json_str "$R_URL")" "$([ "$UP" = yes ] && echo true || echo false)" "$bindj" "$access"
     done < <(records)
     printf ']\n'
     return 0
   fi
-  local rows=() w1=4 w2=7 w3=4 w4=3 row a b c d e g h
+  local rows=() w1=4 w2=7 w3=4 w4=3 row a b c d e g h portc
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     read_record "$f" || continue
-    if port_up "$R_PORT"; then up=yes; else up=no; fi
-    bind_state "$R_PORT"
-    case "$BIND_STATE" in loopback) bind=loopback ;; public) bind=PUBLIC ;; *) bind=- ;; esac
+    row_state
+    if [ -n "$R_DIR" ]; then portc=-; else portc=$R_PORT; fi
     if [ "$R_PUBLIC" = 1 ]; then access=public; else access=login; fi
-    rows+=("$R_NAME"$'\x1f'"$R_PROJECT"$'\x1f'"$R_PORT"$'\x1f'"$R_URL"$'\x1f'"$up"$'\x1f'"$bind"$'\x1f'"$access")
+    rows+=("$R_NAME"$'\x1f'"$R_PROJECT"$'\x1f'"$portc"$'\x1f'"$R_URL"$'\x1f'"$UP"$'\x1f'"$BIND"$'\x1f'"$access")
     [ "${#R_NAME}" -le "$w1" ] || w1=${#R_NAME}
     [ "${#R_PROJECT}" -le "$w2" ] || w2=${#R_PROJECT}
-    [ "${#R_PORT}" -le "$w3" ] || w3=${#R_PORT}
+    [ "${#portc}" -le "$w3" ] || w3=${#portc}
     [ "${#R_URL}" -le "$w4" ] || w4=${#R_URL}
   done < <(records)
   if [ "${#rows[@]}" -eq 0 ]; then
@@ -808,6 +919,9 @@ cmd_share_revoke() {
 cmd_share_new() {
   local for_raw=$1 ttl_s=$2 rec tok id exp sh keep=() tmp
   if [ "$R_PUBLIC" = 1 ]; then
+    if [ -n "$R_DIR" ]; then
+      die "$R_URL is public (--public) and needs no share link; publish it without --public first: expose.sh up --dir $R_DIR --name $R_NAME" 1
+    fi
     die "$R_URL is public (--public) and needs no share link; publish it without --public first: expose.sh up $R_PORT --name $R_NAME" 1
   fi
   tok=$(new_secret)
@@ -858,6 +972,7 @@ cmd_key_rotate() {
 main() {
   local cmd=${1:-help} pos=() name="" project="" json=0 public=0 with_key=0
   local for_raw="" ttl="" have_for=0 have_ttl=0 list=0 revoke="" have_revoke=0 ttl_s=""
+  local dir="" have_dir=0 csp="" have_csp=0 hides=() h
   [ $# -gt 0 ] && shift
   case "$cmd" in
     help|-h|--help) usage; exit 0 ;;
@@ -872,6 +987,12 @@ main() {
       --project=*) project=${1#--project=}; shift ;;
       --json)    json=1; shift ;;
       --public)  public=1; shift ;;
+      --dir)     [ $# -ge 2 ] || die "--dir needs a value" 2; dir=$2; have_dir=1; shift 2 ;;
+      --dir=*)   dir=${1#--dir=}; have_dir=1; shift ;;
+      --hide)    [ $# -ge 2 ] || die "--hide needs a value" 2; hides+=("$2"); shift 2 ;;
+      --hide=*)  hides+=("${1#--hide=}"); shift ;;
+      --csp)     [ $# -ge 2 ] || die "--csp needs a value" 2; csp=$2; have_csp=1; shift 2 ;;
+      --csp=*)   csp=${1#--csp=}; have_csp=1; shift ;;
       --with-key) with_key=1; shift ;;
       --for)     [ $# -ge 2 ] || die "--for needs a value" 2; for_raw=$2; have_for=1; shift 2 ;;
       --for=*)   for_raw=${1#--for=}; have_for=1; shift ;;
@@ -890,14 +1011,31 @@ main() {
   # Options that belong to one subcommand only.
   [ "$json" -eq 0 ] || [ "$cmd" = list ] || die "--json only applies to list" 2
   [ "$public" -eq 0 ] || [ "$cmd" = up ] || die "--public only applies to up" 2
+  [ "$have_dir" -eq 0 ] || [ "$cmd" = up ] || die "--dir only applies to up" 2
+  [ "$have_dir" -eq 1 ] || [ "${#hides[@]}$have_csp" = 00 ] || die "--hide and --csp only apply to up --dir" 2
   [ "$with_key" -eq 0 ] || [ "$cmd" = url ] || die "--with-key only applies to url" 2
   if [ "$cmd" != share ]; then
     [ "$have_for$have_ttl$list$have_revoke" = 0000 ] || die "--for, --ttl, --list and --revoke only apply to share" 2
   fi
   case "$cmd" in
     up)
-      [ "${#pos[@]}" -eq 1 ] || die "usage: expose.sh up <port> [--name <n>] [--project <p>] [--public]" 2
-      valid_port "${pos[0]}" || die "invalid port '${pos[0]}': use an integer from 1 to 65535, other than 443" 2 ;;
+      if [ "$have_dir" -eq 1 ]; then
+        [ "${#pos[@]}" -eq 0 ] || die "usage: expose.sh up --dir <abs dir> --name <n> [--project <p>] [--public] [--hide <glob>]... [--csp <policy>] (no port with --dir)" 2
+        [ -n "$name" ] || die "--dir needs --name <n>: a directory has no default name" 2
+        dir=$(clean_dir "$dir") || die "invalid --dir '$dir': use an absolute path without . or .. components" 2
+        [ -d "$dir" ] || die "invalid --dir '$dir': not an existing directory" 2
+        if ! [ -r "$dir" ] || ! [ -x "$dir" ]; then die "invalid --dir '$dir': not readable" 2; fi
+        case "$dir" in
+          /) die "refusing to publish /" 2 ;;
+        esac
+        [ "$dir" != "$(clean_dir "$HOME")" ] || die "refusing to publish your home directory ($dir); publish a folder inside it" 2
+        for h in "${hides[@]+"${hides[@]}"}"; do
+          [ -n "$h" ] || die "--hide needs a non-empty glob" 2
+        done
+      else
+        [ "${#pos[@]}" -eq 1 ] || die "usage: expose.sh up <port> [--name <n>] [--project <p>] [--public]  |  up --dir <abs dir> --name <n>" 2
+        valid_port "${pos[0]}" || die "invalid port '${pos[0]}': use an integer from 1 to 65535, other than 443" 2
+      fi ;;
     down)
       [ "${#pos[@]}" -eq 1 ] || die "usage: expose.sh down <name|port> [--project <p>]" 2
       [ -z "$name" ] || die "--name does not apply to down" 2 ;;
@@ -931,7 +1069,7 @@ main() {
 
   # Loopback only: refuse before touching the proxy or the state.
   BIND_STATE=none
-  if [ "$cmd" = up ]; then
+  if [ "$cmd" = up ] && [ "$have_dir" -eq 0 ]; then
     bind_state "${pos[0]}"
     case "$BIND_STATE" in
       public)
@@ -953,7 +1091,8 @@ main() {
   reconcile
 
   case "$cmd" in
-    up)   cmd_up "${pos[0]}" "$name" "$public" ;;
+    up)   if [ "$have_dir" -eq 1 ]; then cmd_up "" "$name" "$public" "$dir" "$csp" "${hides[@]+"${hides[@]}"}"
+          else cmd_up "${pos[0]}" "$name" "$public"; fi ;;
     down) cmd_down "${pos[0]}" ;;
     list) cmd_list "$json" ;;
     url)  cmd_url "${pos[0]}" "$with_key" ;;

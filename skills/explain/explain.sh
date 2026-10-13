@@ -1,28 +1,32 @@
 #!/usr/bin/env bash
-# explain.sh — server, exposure and page library for the /explain skill.
+# explain.sh — exposure and page library for the /explain skill.
 #
-# /explain turns a topic from the current agent session into a clean,
+# /explain turns a topic from the current agent session into a designed,
 # diagrammed, addressable web page. A read-only fork (fork.sh open
-# --page-dir) writes the page; this script serves the project's pages from a
-# loopback static server and publishes it once through /expose.
+# --page-dir) writes the page; this script keeps the project's pages in one
+# directory and publishes that directory through /expose, which serves it
+# with Caddy's file server behind the expose login.
 #
 # Usage:
-#   explain.sh open "<topic>" [--window] [--vertical] [--cli <c>] [--model <m>]
-#                   [--parent-model <m>] [--brief-only] [-- "<topic>"]  [< brief]
+#   explain.sh open "<topic>" [--lang en|pt|en,pt] [--window] [--vertical]
+#                   [--cli <c>] [--model <m>] [--parent-model <m>] [--brief-only]
+#                   [-- "<topic>"]  [< brief]
 #   explain.sh native [--cli <c>] [--brief-only]    (= fork.sh native)
-#   explain.sh serve                    start / reuse the server, print its URL
+#   explain.sh serve                    publish the pages root, print its URL
 #   explain.sh share [--for <r>] [--ttl <d>] [--list] [--revoke <r|id|all>]
-#   explain.sh list                     pages, server state and URL
-#   explain.sh stop                     remove exposure + server, keep pages
+#   explain.sh list                     pages, exposure state and URL
+#   explain.sh stop                     remove the exposure, keep pages
 #   explain.sh root                     print the pages root
 #   explain.sh help
 #
 # `open` reads the parent's brief notes on stdin (optional; when stdin is not a
 # TTY it waits up to $EXPLAIN_STDIN_WAIT s, default 3, for the first byte, so an
-# idle inherited stdin does not hang it), adds the topic,
-# the page URL and the HTML template from SKILL.md (unless the notes already
-# carry one), and opens the fork with `fork.sh open --page-dir <root>/<id>`.
-# The page URL is the last line of its output.
+# idle inherited stdin does not hang it), adds the topic, the page URL, the
+# languages (--lang, default en: one article and no switch; en,pt: both
+# articles and the EN / PT switch) and the HTML template from SKILL.md cut
+# down to those languages (unless the notes already carry a template), and
+# opens the fork with `fork.sh open --page-dir <root>/<id>`. The page URL is
+# the last line of its output.
 #
 # Project: the folder name of the main checkout of the current git
 # repository (the same for every worktree), else the current directory's name
@@ -30,36 +34,32 @@
 #
 # Pages root: ${XDG_STATE_HOME:-~/.local/state}/agent-forks/explain/<project>/
 #   .ids/<n>          page id allocation (noclobber; ids are never reused)
-#   .server           record of the running server (port= window= pid= …)
-#   .reindex          regenerates index.html; run by `fork.sh page`
-#   .serve.py         the page server (written by this script)
-#   .hosts            extra Host names the server accepts (the expose host)
-#   .lock             serialises server start and id allocation
-#   launch.sh         the server's launcher
+#   .reindex          regenerates index.html and the .sha256 sidecars; run by
+#                     `fork.sh page` after every page write
+#   .lock             serialises id allocation
 #   index.html        library index (id, title, created, fork)
-#   <n>/index.html    page <n>; <n>/manifest.tsv its labels; <n>/.meta
+#   index.html.sha256 the index's content hash, served as its ETag
+#   <n>/index.html    page <n>; <n>/index.html.sha256 its ETag;
+#                     <n>/manifest.tsv its labels; <n>/.meta (topic, created,
+#                     fork, session, langs, url)
 # The root is mode 700 and every file this skill writes is private (umask 077).
 #
-# Server: `python3 -I .serve.py --bind 127.0.0.1 --port <port>`, in a
-# detached tmux window named "ox >explain" tagged @opsx_explain=<project>
-# (not @opsx_preview: `close-all` must leave it alone). Reused while the
-# recorded window still carries the tag and the port answers, else restarted.
-# The record keeps the tmux socket: from a second tmux server the running
-# server is reused and reported (and `stop` reaches it), never orphaned.
-# It serves only `/`, `/index.html`, `/<n>/` and `/<n>/index.html` (no
-# directory listings, dotfiles, launch.sh, manifests or .meta), GET/HEAD
-# only, and answers 421 to any Host other than 127.0.0.1 / localhost / the
-# names in .hosts (DNS rebinding). Pages carry an ETag (content hash) and
-# Last-Modified for the reload poll; /<n> redirects to /<n>/ with its query.
-# Every response carries a strict
-# Content-Security-Policy (inline scripts and the pinned Mermaid file only;
-# connect/img/font/style 'self' or data:; no forms, frames or objects),
-# Referrer-Policy: no-referrer, nosniff and frame-ancestors 'none': the page
-# is fork-written, so these controls live in the server, not in the page.
-# Exposure: `expose.sh up <port> --name explain` → explain--<project>.<domain>
-# ($OPSX_EXPOSE_SH, else ../expose/expose.sh next to this skill, else
-# expose.sh on PATH). Without a configured /expose the local URL is printed
-# with the `install.sh --expose-domain` hint and the fork still opens.
+# Serving: `expose.sh up --dir <root> --name explain --hide manifest.tsv
+# --hide '*.sha256' --csp <policy>` on every `open` and `serve` (idempotent;
+# it also restores a route the proxy lost). Caddy then serves the root at
+# https://explain--<project>.<domain>/ behind the expose login: only regular
+# files, never dotfiles (.ids, .lock, .reindex, .meta), manifests or
+# sidecars, no directory listing, /<n> redirected to /<n>/ with its query,
+# ETag from the .sha256 sidecar (so the reload poll sees a same-second
+# rewrite), Last-Modified, and on every response the strict
+# Content-Security-Policy below (inline scripts and the pinned Mermaid file
+# only; styles and fonts from the page and Google Fonts; connect/img 'self'
+# or data:; no forms, frames or objects), Referrer-Policy: no-referrer and
+# nosniff: the page is fork-written, so these controls live in the proxy,
+# not in the page. expose.sh is $OPSX_EXPOSE_SH, else ../expose/expose.sh
+# next to this skill, else expose.sh on PATH. Without a configured /expose
+# nothing is served: `open` prints the page's file path with the
+# `install.sh --expose-domain` hint and the fork still opens.
 #
 # Exit codes: 0 ok, 1 error, 2 usage (e.g. no topic), 3 expose not configured
 # (share only).
@@ -67,22 +67,23 @@
 set -uo pipefail
 
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-PORT_MIN=${EXPLAIN_PORT_MIN:-4100}
-PORT_MAX=${EXPLAIN_PORT_MAX:-4199}
-WINDOW_NAME='ox >explain'
 EXPOSE_NAME=explain
-READY_WAIT=${EXPLAIN_READY_WAIT:-10}
 STDIN_WAIT=${EXPLAIN_STDIN_WAIT:-3}
 # Mermaid, pinned to one file with its SRI hash (npm mermaid@11.17.2,
-# dist/mermaid.min.js). The CSP allows exactly this URL; SKILL.md's template
-# carries the same URL and hash — change all three together.
+# dist/mermaid.min.js). The CSP allows exactly this URL; the brief tells the
+# fork to add this tag only to a page that uses Mermaid — change both
+# together. Fonts come from Google Fonts (the template's <link>); the CSP
+# allows exactly these two hosts for styles and fonts.
 MERMAID_URL=https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js
+MERMAID_SRI=sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2
+FONT_CSS_HOST=https://fonts.googleapis.com
+FONT_HOST=https://fonts.gstatic.com
+EXPLAIN_CSP="default-src 'none'; script-src 'unsafe-inline' $MERMAID_URL; style-src 'self' 'unsafe-inline' $FONT_CSS_HOST; img-src 'self' data:; font-src 'self' data: $FONT_HOST; connect-src 'self'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 umask 077
 
 die() { printf 'explain: %s\n' "$1" >&2; exit "${2:-1}"; }
 note() { printf 'explain: %s\n' "$1" >&2; }
-say() { printf '%s\n' "$1"; }
 
 now() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 
@@ -106,7 +107,6 @@ default_project() {
 PROJECT=$(default_project)
 case "$PROJECT" in ''|.|..|*[[:cntrl:]]*) PROJECT=_$(printf '%s' "$PROJECT" | tr -d '[:cntrl:]') ;; esac
 ROOT=${XDG_STATE_HOME:-$HOME/.local/state}/agent-forks/explain/$PROJECT
-SERVER_REC=$ROOT/.server
 
 # ---------------------------------------------------------------------------
 # tmux (pattern from fork.sh: some CLIs strip $TMUX / $TMUX_PANE)
@@ -155,19 +155,6 @@ current_session() {
   printf '%s' "$s"
 }
 
-# True when window $1 exists and is tagged @opsx_explain=<project>.
-window_is_ours() {
-  [ -n "${1:-}" ] || return 1
-  [ "$(tmux display-message -p -t "$1" '#{window_id}' 2>/dev/null)" = "$1" ] || return 1
-  [ "$(tmux show-options -w -v -t "$1" @opsx_explain 2>/dev/null)" = "$PROJECT" ]
-}
-
-# Window ids tagged for this project, on this tmux server.
-tagged_windows() {
-  tmux list-windows -a -F '#{window_id}	#{@opsx_explain}' 2>/dev/null \
-    | awk -F '\t' -v p="$PROJECT" '$2 == p { print $1 }'
-}
-
 # ---------------------------------------------------------------------------
 # helper scripts
 
@@ -198,17 +185,12 @@ find_expose() {
   fi
 }
 
-HINT='expose is not configured — the page is served on this machine only; run install.sh --expose-domain <domain> to get a login-protected URL you can open on any device and share.'
+HINT='expose is not configured — nothing serves the pages; run install.sh --expose-domain <domain> to get a login-protected URL you can open on any device and share.'
 
 strip_osc8() { sed -e 's/\x1b]8;;[^\x07\x1b]*\(\x07\|\x1b\\\)//g'; }
 
 # ---------------------------------------------------------------------------
-# record file (.server): key=value lines
-
-rec_get() {
-  [ -f "$SERVER_REC" ] || return 0
-  awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { printf "%s", v }' "$SERVER_REC"
-}
+# meta files: key=value lines
 
 meta_get() {
   [ -f "$2" ] || return 0
@@ -225,55 +207,31 @@ meta_set() {
 }
 
 # ---------------------------------------------------------------------------
-# ports and HTTP
-
-port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
-
-valid_port() { [[ "${1:-}" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
-
-# Free loopback port, preferring $1 (the last one used).
-pick_port() {
-  local last=${1:-} p
-  if valid_port "$last" && ! port_in_use "$last"; then printf '%s' "$last"; return 0; fi
-  for ((p = PORT_MIN; p <= PORT_MAX; p++)); do
-    port_in_use "$p" && continue
-    printf '%s' "$p"; return 0
-  done
-  return 1
-}
-
-# Does HEAD http://127.0.0.1:$1/ answer with 2xx/3xx?
-head_ok() {
-  local code line
-  if command -v curl >/dev/null 2>&1; then
-    code=$(curl -s -o /dev/null -I -w '%{http_code}' --max-time 2 "http://127.0.0.1:$1/" 2>/dev/null) || true
-  else
-    line=$( { exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1
-              printf 'HEAD / HTTP/1.0\r\nHost: 127.0.0.1:%s\r\nConnection: close\r\n\r\n' "$1" >&3
-              timeout 2 head -n1 <&3; } 2>/dev/null) || line=""
-    code=$(printf '%s' "$line" | awk '{print $2}')
-  fi
-  [[ "${code:-000}" =~ ^[23][0-9][0-9]$ ]]
-}
-
-# ---------------------------------------------------------------------------
 # pages root, library index
 
 # The library index generator. Kept self-contained: fork.sh runs it after
-# every page write, from the fork child's sandbox.
+# every page write, from the fork child's sandbox. It also writes the
+# .sha256 sidecar of the index and of every page (the ETag the proxy serves).
 write_reindex() {
   local tmp
   tmp=$(mktemp "$ROOT/.reindex.XXXXXX") || die "cannot write $ROOT/.reindex"
   cat > "$tmp" <<'REINDEX'
 #!/usr/bin/env bash
 # .reindex — regenerates the /explain library index (index.html) of this
-# directory. Written by explain.sh; run by `fork.sh page` after a page write.
+# directory and the <file>.sha256 sidecars (quoted sha256 of index.html, the
+# ETag Caddy serves for it). Written by explain.sh; run by `fork.sh page`
+# after a page write.
 set -u
+umask 077
 root=$(cd -- "$(dirname -- "$0")" && pwd) || exit 1
 esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
 meta() { [ -f "$2" ] || return 0; awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { printf "%s", v }' "$2"; }
 title_of() { [ -f "$1" ] || return 0; tr '\n\r' '  ' < "$1" | sed -n 's/.*<[Tt][Ii][Tt][Ll][Ee][^>]*>\([^<]*\)<\/[Tt][Ii][Tt][Ll][Ee]>.*/\1/p' | cut -c1-200; }
 ids() { local d; for d in "$root"/*/; do d=${d%/}; d=${d##*/}; case "$d" in ''|*[!0-9]*) ;; *) printf '%s\n' "$d" ;; esac; done | sort -rn; }
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" | cut -c1-64; else shasum -a 256 < "$1" | cut -c1-64; fi; }
+# sidecar <file>: <file>.sha256 holds "<sha256>" (a strong ETag), replaced atomically.
+sidecar() { local f=$1 h t; [ -f "$f" ] || return 0; h=$(sha "$f") || return 0; [ -n "$h" ] || return 0
+  t=$(mktemp "$f.sha256.XXXXXX") || return 0; printf '"%s"' "$h" > "$t" && chmod 600 "$t" && mv -f "$t" "$f.sha256"; }
 rows=""
 for n in $(ids); do
   t=$(title_of "$root/$n/index.html")          # text between <title> tags: no '<'
@@ -282,6 +240,7 @@ for n in $(ids); do
   f=$(meta fork "$root/$n/.meta" | esc)
   rows="$rows<tr id=\"page-$n\"><td><a href=\"/$n/\">$n</a></td><td><a href=\"/$n/\">${t:-page $n}</a></td><td>${c:--}</td><td>${f:--}</td></tr>
 "
+  sidecar "$root/$n/index.html"
 done
 [ -n "$rows" ] || rows='<tr><td colspan="4">No pages yet.</td></tr>
 '
@@ -294,21 +253,34 @@ cat > "$tmp" <<EOF
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Explain — $proj</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@600;700&family=Red+Hat+Text:wght@400;500&family=Red+Hat+Mono:wght@400;500&display=swap">
 <style>
-body{font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:52rem;margin:2rem auto;padding:0 1rem;color:#1d1d1f;background:#fff}
-h1{font-size:1.5rem}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #e5e5e5}
-th{font-size:.8rem;text-transform:uppercase;color:#666}a{color:#0b57d0;text-decoration:none}a:hover{text-decoration:underline}
-td:first-child,td:nth-child(3),td:nth-child(4){white-space:nowrap;color:#555;font-size:.9rem}
-@media (prefers-color-scheme:dark){body{background:#111;color:#eee}th,td{border-color:#333}a{color:#8ab4f8}}
+:root{color-scheme:light;--bg:#f5f7fa;--surface:#fff;--fg:#1a2230;--muted:#5a6577;--line:#d5dbe4;--accent:#0e7a89;--accent-soft:#e2f2f4;
+--display:"Red Hat Display","Segoe UI",system-ui,sans-serif;--body:"Red Hat Text","Segoe UI",system-ui,sans-serif;--mono:"Red Hat Mono",ui-monospace,"SF Mono",Menlo,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#10151c;--surface:#171e27;--fg:#e5e9f0;--muted:#98a3b4;--line:#2a3441;--accent:#3fb8c8;--accent-soft:#10303a;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.6}
+.wrap{max-width:880px;margin:0 auto;padding:40px 20px 72px}
+header{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:28px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(28px,5vw,40px);line-height:1.1;margin:0;letter-spacing:-.01em}
+.tscroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:15px}th,td{text-align:left;vertical-align:top;padding:10px 14px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:500}
+td:first-child,td:nth-child(3),td:nth-child(4){font-family:var(--mono);font-size:13px;color:var(--muted);white-space:nowrap}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}td:nth-child(2) a{font-family:var(--display);font-weight:600;color:var(--fg)}
 </style>
 </head>
 <body>
-<h1>Explain — $proj</h1>
+<div class="wrap">
+<header><p class="eyebrow">explain · $proj</p><h1>Pages</h1></header>
+<div class="tscroll">
 <table>
 <thead><tr><th>ID</th><th>Title</th><th>Created</th><th>Fork</th></tr></thead>
 <tbody>
 $rows</tbody>
 </table>
+</div>
+</div>
 <script>
 (function(){var last=null;function poll(){fetch(location.pathname,{method:'HEAD',cache:'no-store'}).then(function(r){if(r.ok&&!r.redirected){var m=[r.headers.get('ETag'),r.headers.get('Last-Modified'),r.headers.get('Content-Length')].join('|');if(last!==null&&m!==last){location.reload();return}last=m}setTimeout(poll,2000)}).catch(function(){setTimeout(poll,2000)})}poll()})();
 </script>
@@ -316,162 +288,15 @@ $rows</tbody>
 </html>
 EOF
 chmod 600 "$tmp" && mv -f "$tmp" "$root/index.html"
+sidecar "$root/index.html"
 REINDEX
   { chmod 755 "$tmp" && mv -f "$tmp" "$ROOT/.reindex"; } || die "cannot write $ROOT/.reindex"
-}
-
-# The page server. Self-contained Python (stdlib only), run with -I.
-write_server() {
-  local tmp
-  tmp=$(mktemp "$ROOT/.serve.XXXXXX") || die "cannot write $ROOT/.serve.py"
-  {
-    printf '# .serve.py — /explain page server (generated by explain.sh; do not edit)\n'
-    printf 'MERMAID_URL = %s\n' "'$MERMAID_URL'"
-    cat <<'SERVE'
-import argparse, hashlib, os, re, stat, sys
-from email.utils import formatdate
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
-
-CSP = ("default-src 'none'; "
-       "script-src 'unsafe-inline' " + MERMAID_URL + "; "
-       "style-src 'self' 'unsafe-inline'; "
-       "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
-       "media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; "
-       "manifest-src 'none'; base-uri 'none'; form-action 'none'; "
-       "frame-ancestors 'none'")
-SECURITY = [
-    ("Content-Security-Policy", CSP),
-    ("Referrer-Policy", "no-referrer"),
-    ("X-Content-Type-Options", "nosniff"),
-    ("X-Frame-Options", "DENY"),
-    ("Cross-Origin-Opener-Policy", "same-origin"),
-    ("Cross-Origin-Resource-Policy", "same-origin"),
-]
-PAGE = re.compile(r"/(?:([0-9]{1,9})/)?(?:index\.html)?")
-BARE = re.compile(r"/([0-9]{1,9})")
-ROOT = "."
-
-
-def host_name(value):
-    h = (value or "").strip().lower()
-    if h.startswith("["):
-        return h.split("]", 1)[0] + "]"
-    return h.rsplit(":", 1)[0] if ":" in h else h
-
-
-def allowed_hosts():
-    names = {"127.0.0.1", "localhost"}
-    try:
-        with open(os.path.join(ROOT, ".hosts"), encoding="utf-8") as f:
-            names.update(l.strip().lower() for l in f if l.strip())
-    except OSError:
-        pass
-    return names
-
-
-class Handler(BaseHTTPRequestHandler):
-    server_version = "explain"
-    sys_version = ""
-    protocol_version = "HTTP/1.0"
-
-    def end_headers(self):
-        for k, v in SECURITY:
-            self.send_header(k, v)
-        BaseHTTPRequestHandler.end_headers(self)
-
-    def plain(self, code, text, body, extra=()):
-        data = (text + "\n").encode()
-        self.send_response(code)
-        for k, v in extra:
-            self.send_header(k, v)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        if body:
-            self.wfile.write(data)
-
-    def serve(self, body):
-        if host_name(self.headers.get("Host")) not in allowed_hosts():
-            return self.plain(421, "misdirected request", body)
-        parts = urlsplit(self.path)
-        path = parts.path
-        m = BARE.fullmatch(path)
-        if m:
-            # /<n> -> /<n>/, keeping the query (?lang=pt); the target is
-            # always a local /<digits>/ path, never another host.
-            loc = "/" + m.group(1) + "/" + ("?" + parts.query if parts.query else "")
-            return self.plain(301, "moved", body, [("Location", loc)])
-        m = PAGE.fullmatch(path)
-        if not m:
-            return self.plain(404, "not found", body)
-        fn = os.path.join(ROOT, m.group(1) or "", "index.html")
-        try:
-            fd = os.open(fn, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        except OSError:
-            return self.plain(404, "not found", body)
-        with os.fdopen(fd, "rb") as f:
-            st = os.fstat(f.fileno())
-            if not stat.S_ISREG(st.st_mode):
-                return self.plain(404, "not found", body)
-            data = f.read()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Last-Modified", formatdate(st.st_mtime, usegmt=True))
-        # Content hash: the reload poll sees a rewrite even within the same
-        # second and with the same length (Last-Modified has 1 s resolution).
-        self.send_header("ETag", '"%s"' % hashlib.sha256(data).hexdigest()[:32])
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        if body:
-            self.wfile.write(data)
-
-    def do_GET(self):
-        self.serve(True)
-
-    def do_HEAD(self):
-        self.serve(False)
-
-    def send_error(self, code, message=None, explain=None):
-        try:
-            self.plain(code, message or "error", self.command != "HEAD")
-        except Exception:
-            pass
-
-
-def main():
-    global ROOT
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--bind", default="127.0.0.1")
-    ap.add_argument("--port", type=int, required=True)
-    ap.add_argument("--root", required=True)
-    a = ap.parse_args()
-    ROOT = os.path.abspath(a.root)
-    ThreadingHTTPServer.daemon_threads = True
-    httpd = ThreadingHTTPServer((a.bind, a.port), Handler)
-    sys.stderr.write("explain: serving %s on http://%s:%d/\n" % (ROOT, a.bind, a.port))
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
-
-
-if __name__ == "__main__":
-    main()
-SERVE
-  } > "$tmp" || die "cannot write $ROOT/.serve.py"
-  mv -f "$tmp" "$ROOT/.serve.py" || die "cannot write $ROOT/.serve.py"
 }
 
 ensure_root() {
   mkdir -p "$ROOT/.ids" || die "cannot create $ROOT"
   chmod 700 "$ROOT" 2>/dev/null
   write_reindex
-  write_server
-  # The server serves no directory listings: the library index must exist
-  # before it starts (its readiness probe is HEAD /).
   [ -f "$ROOT/index.html" ] || "$ROOT/.reindex" >/dev/null 2>&1
 }
 
@@ -506,22 +331,41 @@ alloc_id() {
 
 html_esc() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
 
-# Placeholder shown until the fork writes the page; it reloads itself.
+# Placeholder shown until the fork writes the page; it reloads itself. $3 is
+# the page's language set (en | pt | en,pt): the waiting line follows it.
 write_placeholder() {
-  local n=$1 topic tmp
+  local n=$1 topic tmp langs=${3:-en} html_lang=en lines=""
   topic=$(html_esc "$2")
+  case "$langs" in
+    pt) html_lang=pt ;;
+  esac
+  case "$langs" in
+    *en*) lines='<p lang="en">The fork is writing this page. It appears here as soon as it is written.</p>' ;;
+  esac
+  case "$langs" in
+    *pt*) lines="$lines${lines:+
+}"'<p lang="pt">O fork está escrevendo esta página. Ela aparece aqui assim que for escrita.</p>' ;;
+  esac
   tmp=$(mktemp "$ROOT/$n/.page.XXXXXX") || return 0
   cat > "$tmp" <<EOF
 <!doctype html>
-<html lang="en">
+<html lang="$html_lang">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>$topic</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#555}</style>
+<style>
+:root{color-scheme:light;--bg:#f5f7fa;--fg:#1a2230;--muted:#5a6577;--line:#d5dbe4;--display:"Red Hat Display","Segoe UI",system-ui,sans-serif;--body:"Red Hat Text","Segoe UI",system-ui,sans-serif;--mono:"Red Hat Mono",ui-monospace,"SF Mono",Menlo,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#10151c;--fg:#e5e9f0;--muted:#98a3b4;--line:#2a3441;color-scheme:dark}}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.6}
+.wrap{max-width:680px;margin:0 auto;padding:64px 20px}.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(28px,5vw,40px);line-height:1.1;margin:0 0 20px;padding-bottom:20px;border-bottom:1px solid var(--line)}p{color:var(--muted);margin:0 0 8px}
+</style>
 </head>
 <body>
+<div class="wrap">
+<p class="eyebrow">explain · page $n</p>
 <h1>$topic</h1>
-<p lang="en">The fork is writing this page. It appears here as soon as it is written.</p>
-<p lang="pt">O fork está escrevendo esta página. Ela aparece aqui assim que for escrita.</p>
+$lines
+</div>
 <script>
 (function(){var last=null;function poll(){fetch(location.pathname,{method:'HEAD',cache:'no-store'}).then(function(r){if(r.ok&&!r.redirected){var m=[r.headers.get('ETag'),r.headers.get('Last-Modified'),r.headers.get('Content-Length')].join('|');if(last!==null&&m!==last){location.reload();return}last=m}setTimeout(poll,2000)}).catch(function(){setTimeout(poll,2000)})}poll()})();
 </script>
@@ -532,195 +376,72 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# lock (serialises server start and id allocation)
+# lock (serialises id allocation)
 
 lock_root() {
   exec 9>"$ROOT/.lock" || die "cannot open $ROOT/.lock"
   if command -v flock >/dev/null 2>&1; then
-    flock -w 60 9 || die "another /explain is still starting the server (lock $ROOT/.lock)"
+    flock -w 60 9 || die "another /explain is still allocating a page (lock $ROOT/.lock)"
   fi
 }
 unlock_root() { exec 9>&-; }
 
 # ---------------------------------------------------------------------------
-# server
+# exposure
 
-# The tmux server the caller runs in (socket path), and the one recorded in
-# .server. They differ when /explain is used from a second tmux server
-# (tmux -L other): the server window then lives on the recorded one.
-cur_socket() {
-  local s=${TMUX:-}
-  s=${s%%,*}
-  [ -n "$s" ] || s=$(tmux display-message -p '#{socket_path}' 2>/dev/null)
-  printf '%s' "$s"
-}
-
-# 0 when the record names a tmux server other than the caller's.
-rec_elsewhere() {
-  local s
-  s=$(rec_get socket)
-  [ -n "$s" ] && [ "$s" != "$(cur_socket)" ]
-}
-
-# tmux against the recorded server (only a socket we own), else the caller's.
-rec_tmux() {
-  local s
-  if rec_elsewhere; then
-    s=$(rec_get socket)
-    [ -S "$s" ] && [ -O "$s" ] || return 1
-    tmux -S "$s" "$@"
-  else
-    tmux "$@"
-  fi
-}
-
-# True when window $1 exists on the recorded tmux server and is ours.
-rec_window_is_ours() {
-  [ -n "${1:-}" ] || return 1
-  command -v tmux >/dev/null 2>&1 || return 1
-  [ "$(rec_tmux display-message -p -t "$1" '#{window_id}' 2>/dev/null)" = "$1" ] || return 1
-  [ "$(rec_tmux show-options -w -v -t "$1" @opsx_explain 2>/dev/null)" = "$PROJECT" ]
-}
-
-# Stop the recorded server process if it is still running and is ours
-# (.serve.py for this root): its window is gone or on an unreachable tmux.
-kill_rec_pid() {
-  local pid
-  pid=$(rec_get pid)
-  [[ "${pid:-}" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || return 1
-  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- ".serve.py" || return 1
-  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$ROOT" || return 1
-  kill "$pid" 2>/dev/null
-}
-
-# 0 when the recorded server is up: window still ours and the port answers.
-# A server started from another tmux server is reused (and reported), not
-# replaced: replacing it would orphan it there, holding its port.
-server_alive() {
-  local port win
-  [ -f "$SERVER_REC" ] || return 1
-  port=$(rec_get port); win=$(rec_get window)
-  valid_port "$port" || return 1
-  rec_window_is_ours "$win" || return 1
-  head_ok "$port" || return 1
-  if rec_elsewhere; then
-    note "reusing the explain server in window $win of another tmux server ($(rec_get socket)); \`explain.sh stop\` stops it from here."
-  fi
-  return 0
-}
-
-kill_tagged() {
-  local w
-  for w in $(tagged_windows); do
-    tmux kill-window -t "$w" >/dev/null 2>&1
-  done
-}
-
-start_server() {
-  local sess last port out win pid i _try
-  command -v python3 >/dev/null 2>&1 || die "python3 is required for the explain server."
-  sess=$(current_session)
-  [ -n "$sess" ] || die "could not determine the current tmux session."
-  last=$(rec_get port)
-  # Leave nothing of the old server running, wherever it was started.
-  if rec_elsewhere && rec_window_is_ours "$(rec_get window)"; then
-    rec_tmux kill-window -t "$(rec_get window)" >/dev/null 2>&1
-  fi
-  kill_tagged
-  kill_rec_pid
-  rm -f "$SERVER_REC"
-  for _try in 1 2 3; do
-    port=$(pick_port "$last") || die "no free loopback port in $PORT_MIN-$PORT_MAX"
-    last=""
-    {
-      printf '#!/usr/bin/env bash\n'
-      printf '# /explain server for project %s (generated by explain.sh)\n' "$PROJECT"
-      printf 'exec python3 -I %q --bind 127.0.0.1 --port %q --root %q\n' "$ROOT/.serve.py" "$port" "$ROOT"
-    } > "$ROOT/launch.sh" || die "cannot write $ROOT/launch.sh"
-    out=$(tmux new-window -d -t "$sess:" -n "$WINDOW_NAME" -c "$ROOT" -P \
-          -F '#{window_id} #{pane_pid}' "$(printf 'bash %q' "$ROOT/launch.sh")" 2>&1) \
-      || die "failed to open the server window: $out"
-    win=${out%% *}; pid=${out#* }
-    tmux set-option -w -t "$win" @opsx_explain "$PROJECT" >/dev/null 2>&1
-    tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1
-    tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1
-    for ((i = 0; i < READY_WAIT * 10; i++)); do
-      head_ok "$port" && break
-      [ "$(tmux display-message -p -t "$win" '#{window_id}' 2>/dev/null)" = "$win" ] || break
-      sleep 0.1
-    done
-    if head_ok "$port"; then
-      {
-        printf 'port=%s\n' "$port"
-        printf 'window=%s\n' "$win"
-        printf 'pid=%s\n' "$pid"
-        printf 'session=%s\n' "$sess"
-        printf 'socket=%s\n' "$(cur_socket)"
-        printf 'started=%s\n' "$(now)"
-      } > "$SERVER_REC"
-      return 0
-    fi
-    tmux kill-window -t "$win" >/dev/null 2>&1
-  done
-  die "the explain server did not answer on 127.0.0.1:$port within ${READY_WAIT}s (see $ROOT/launch.sh)."
-}
-
-# Host name of URL $1 (lower case, no port, no userinfo).
-url_host() {
-  local h=${1#*://}
-  h=${h%%/*}; h=${h##*@}
-  case "$h" in \[*) h=${h%%]*}] ;; *) h=${h%%:*} ;; esac
-  printf '%s\n' "$h" | tr '[:upper:]' '[:lower:]'
-}
-
-# Replace .hosts atomically with $1 (one name, or empty). The running server
-# reads it on every request, so it is never truncated in place.
-set_hosts() {
-  local tmp
-  tmp=$(mktemp "$ROOT/.hosts.XXXXXX") || return 1
-  [ -n "${1:-}" ] && printf '%s\n' "$1" > "$tmp"
-  mv -f "$tmp" "$ROOT/.hosts"
-}
-
-# Publish the server; sets BASE_URL (no trailing slash) and EXPOSED (1|0).
-# .hosts changes only on an outcome: the new host after a successful `up`,
-# empty when expose is not configured (no expose.sh, or exit 3). While `up`
-# runs, and after any other failure (the route may still be live), the
-# previous host keeps working, so pages open on other devices are unaffected.
+# Publish the pages root; sets BASE_URL (no trailing slash) and EXPOSED (1|0).
+# `up` is idempotent for the same name and directory (no second exposure)
+# and restores a route the proxy lost, so it runs on every open and serve.
 BASE_URL=""; EXPOSED=0
-expose_server() {
-  local port=$1 out rc url
-  EXPOSED=0; BASE_URL="http://127.0.0.1:$port"
+ensure_exposure() {
+  local out rc url
+  EXPOSED=0; BASE_URL="file://$ROOT"
   find_expose
   if [ -z "$EXPOSE" ]; then
-    set_hosts ""
     note "$HINT"
     return 0
   fi
-  # Also on reuse: `up` is idempotent for the same name and port (no second
-  # exposure), and it restores a route the proxy lost.
-  out=$(OPSX_EXPOSE_NO_COPY=1 "$EXPOSE" up "$port" --name "$EXPOSE_NAME" 2>&1 </dev/null); rc=$?
+  out=$(OPSX_EXPOSE_NO_COPY=1 "$EXPOSE" up --dir "$ROOT" --name "$EXPOSE_NAME" \
+        --hide manifest.tsv --hide '*.sha256' --csp "$EXPLAIN_CSP" 2>&1 </dev/null); rc=$?
   url=$(printf '%s\n' "$out" | strip_osc8 | awk 'NF { l = $0 } END { print l }')
   if [ "$rc" -eq 0 ] && [[ "$url" == http*://* ]]; then
     BASE_URL=${url%/}; EXPOSED=1
-    # The expose proxy forwards the public Host unchanged; allow exactly it.
-    set_hosts "$(url_host "$BASE_URL")"
     return 0
   fi
   if [ "$rc" -eq 3 ]; then
-    set_hosts ""
     note "$HINT"
   else
-    note "could not expose the explain server (expose.sh up exit $rc)${url:+: $url} — serving on this machine only."
+    note "could not expose the pages (expose.sh up exit $rc)${url:+: $url} — the page is a file on this machine only."
   fi
   return 0
 }
 
-# Start or reuse the server and publish it. Caller holds the lock.
-ensure_server() {
-  server_alive || start_server
-  expose_server "$(rec_get port)"
-  meta_set url "$BASE_URL" "$SERVER_REC"
+# URL of page $1 (the file path when nothing serves it).
+page_url() {
+  if [ "$EXPOSED" -eq 1 ]; then printf '%s/%s/' "$BASE_URL" "$1"; else printf '%s/%s/index.html' "$ROOT" "$1"; fi
+}
+library_url() {
+  if [ "$EXPOSED" -eq 1 ]; then printf '%s/' "$BASE_URL"; else printf '%s/index.html' "$ROOT"; fi
+}
+
+# Leftovers of the previous explain version (its own loopback server in a
+# tmux window): stop the recorded server if it is still ours, remove the
+# window when it carries the old tag, and delete its files.
+stop_legacy_server() {
+  local rec=$ROOT/.server pid win
+  if [ -f "$rec" ]; then
+    pid=$(awk -F= '$1 == "pid" { print $2 }' "$rec")
+    win=$(awk -F= '$1 == "window" { print $2 }' "$rec")
+    if [[ "${pid:-}" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null \
+       && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$ROOT/.serve.py"; then
+      kill "$pid" 2>/dev/null
+    fi
+    if [ -n "${win:-}" ] && tmux_ok \
+       && [ "$(tmux show-options -w -v -t "$win" @opsx_explain 2>/dev/null)" = "$PROJECT" ]; then
+      tmux kill-window -t "$win" >/dev/null 2>&1
+    fi
+  fi
+  rm -f "$ROOT/.server" "$ROOT/.hosts" "$ROOT/launch.sh" "$ROOT/.serve.py"
 }
 
 # ---------------------------------------------------------------------------
@@ -737,29 +458,62 @@ page_template() {
   ' "$SELF_DIR/SKILL.md"
 }
 
+# The template cut down to the page's languages ($1 = en | pt | en,pt): one
+# language keeps only its <!-- article:xx --> block, drops the switch and the
+# other title; both keep the skeleton as it is.
+template_for() {
+  local langs=$1
+  page_template | awk -v langs="$langs" '
+    BEGIN { both = (langs == "en,pt"); drop = "" }
+    both { print; next }
+    /^<!-- lang-switch -->$/ { skip = 1; next }
+    /^<!-- \/lang-switch -->$/ { skip = 0; next }
+    /^<!-- article:(en|pt) -->$/ { l = $0; sub(/^<!-- article:/, "", l); sub(/ -->$/, "", l); if (l != langs) drop = l; next }
+    /^<!-- \/article:(en|pt) -->$/ { l = $0; sub(/^<!-- \/article:/, "", l); sub(/ -->$/, "", l); if (l == drop) drop = ""; next }
+    skip || drop != "" { next }
+    /^<html lang="en">$/ && langs == "pt" { print "<html lang=\"pt\">"; next }
+    /^<title>TITLE_EN · TITLE_PT<\/title>$/ { print (langs == "pt" ? "<title>TITLE_PT</title>" : "<title>TITLE_EN</title>"); next }
+    { print }
+  '
+}
+
 build_brief() {
-  local topic=$1 n=$2 url=$3 notes=$4 tpl
+  local topic=$1 n=$2 url=$3 notes=$4 langs=${5:-en} tpl
   printf '## Question\nExplain: %s\n\n' "$topic"
   printf '## Page\n'
   printf -- '- Topic: %s\n' "$topic"
   printf -- '- Page %s of project %s\n' "$n" "$PROJECT"
   printf -- '- Page URL: %s\n' "$url"
-  printf -- '- Library: %s\n' "${url%/"$n"/}/"
+  printf -- '- Library: %s\n' "$(library_url)"
   if [ "$EXPOSED" -eq 1 ]; then
     printf -- '- Served from this machine behind the expose login; nothing else is written or published.\n'
   else
-    printf -- '- Served on this machine only (expose is not configured); nothing else is written or published.\n'
+    printf -- '- A file on this machine only (expose is not configured, nothing serves it); nothing else is written or published.\n'
   fi
-  printf -- '- Languages: English and Portuguese on the same page (lang="en" and lang="pt", EN / PT switch, identical labels in both), written together in every page write.\n'
+  case "$langs" in
+    en,pt) printf -- '- Languages: English and Portuguese on the same page (lang="en" and lang="pt", EN / PT switch, identical labels in both), written together in every page write.\n' ;;
+    pt)    printf -- '- Languages: Portuguese only (português) — one <article lang="pt">, no language switch. Write everything, diagrams included, in Portuguese.\n' ;;
+    *)     printf -- '- Languages: English only — one <article lang="en">, no language switch.\n' ;;
+  esac
   printf -- '- Audience: the user, possibly a client they share the link with (a share link opens the whole page library of this project, not only this page). Write a clean, well-structured explanation with diagrams where they help; no internal chatter, and never secrets (keys, tokens, passwords, credentials, environment values).\n'
   if [ -n "${notes//[[:space:]]/}" ]; then
     printf '\n%s\n' "$notes"
   fi
   if ! printf '%s' "$notes" | grep -q 'data-label'; then
-    tpl=$(page_template)
+    tpl=$(template_for "$langs")
     if [ -n "$tpl" ]; then
+      printf '\n## HTML template\n\n'
+      printf 'Start every page from this skeleton. Keep the fonts <link>, the <style> and every <script> block as they are; replace the eyebrow, the titles and the content of the article(s).\n\n'
+      printf -- '- Design: build the page from the template'"'"'s elements, each labelled. Open with the hero (header.hero: a mono .eyebrow with the provenance, the h1, a .lede that gives the whole answer in two sentences with the one thing to remember in bold). Then key cards (.key: three or four facts, .k key and .v value coloured accent / warn / bad / ok), framed figures (figure > .frame > svg, or two side by side in a .pair, each with a figcaption), tables (.tscroll > table, .pill states ok / bad / warn / no), callouts (.callout, .warn, .bad, .ok, with a bold lead-in), a terms list (dl.terms) near the end and a footer naming the sources. Prose lives in .prose (68 ch); figures and tables may use the whole rail.\n'
+      printf -- '- Diagrams: inline SVG first (viewBox, role="img", aria-label, boxes as rect with rx, text as text, colours only from the tokens: var(--accent), var(--accent-soft), var(--warn), var(--bad), var(--ok), var(--surface), currentColor; arrows as line with marker-end; every marker id unique across the page, suffixed with the language). Mermaid (<pre class="mermaid"> inside the .frame) only when a diagram has too many nodes to draw by hand, and then add exactly this tag before the first <script> in <head> (the server allows only this file):\n\n      <script src="%s" integrity="%s" crossorigin="anonymous" referrerpolicy="no-referrer"></script>\n\n  A page without Mermaid must not carry that tag. An ASCII <pre> is the last resort.\n' "$MERMAID_URL" "$MERMAID_SRI"
+      case "$langs" in
+        en,pt) printf -- '- Languages: write the page in English (<article lang="en">) and in Portuguese (<article lang="pt">) in the same write, with identical labels in the same order in both articles; <title> holds both titles (English · Portuguese); keep the EN / PT switch.\n' ;;
+        pt)    printf -- '- Languages: one <article lang="pt">, Portuguese only; <title> is the Portuguese title; there is no switch.\n' ;;
+        *)     printf -- '- Languages: one <article lang="en">, English only; <title> is the English title; there is no switch.\n' ;;
+      esac
+      printf -- '- The server enforces a Content-Security-Policy: no external resource besides the fonts <link> and, when used, the Mermaid tag above; no other scripts, images, styles, frames, fetches or forms.\n'
       # shellcheck disable=SC2016  # literal Markdown backticks
-      printf '\n## HTML template\n\nStart every page from this skeleton. Keep the <style>, the EN / PT switch (<nav class="opsx-lang">), every <script> block and the Mermaid script tag (pinned URL, integrity hash) as they are; replace the titles and the content of both articles. Write the page in English (<article lang="en">) and in Portuguese (<article lang="pt">) in the same write, with identical labels in the same order in both articles; <title> holds both titles (English · Portuguese). The server enforces a Content-Security-Policy: no other external scripts, images, fonts, styles, frames, fetches or forms.\n\n```html\n%s\n```\n' "$tpl"
+      printf '\n```html\n%s\n```\n' "$tpl"
     fi
   fi
 }
@@ -782,11 +536,29 @@ read_notes() {
   cat
 }
 
+# en | pt | en,pt (pt,en is accepted and normalised); anything else is a
+# usage error naming the accepted values.
+norm_langs() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' ')" in
+    en) printf 'en' ;;
+    pt) printf 'pt' ;;
+    en,pt|pt,en|both) printf 'en,pt' ;;
+    *) return 1 ;;
+  esac
+}
+
 cmd_open() {
-  local topic="" have_topic=0 fargs=() notes="" fork n url out rc fid sess
+  local topic="" have_topic=0 fargs=() notes="" fork n url out rc fid sess langs=en
   while [ $# -gt 0 ]; do
     case "$1" in
       --window|--vertical|--brief-only) fargs+=("$1"); shift ;;
+      --lang)
+        [ -n "${2:-}" ] || die "--lang needs a value: en, pt or en,pt" 2
+        langs=$(norm_langs "$2") || die "unknown language set '$2' for --lang — accepted values: en, pt, en,pt (nothing was opened)." 2
+        shift 2 ;;
+      --lang=*)
+        langs=$(norm_langs "${1#--lang=}") || die "unknown language set '${1#--lang=}' for --lang — accepted values: en, pt, en,pt (nothing was opened)." 2
+        shift ;;
       --cli|--model|--parent-model)
         [ -n "${2:-}" ] || die "$1 needs a value" 2
         fargs+=("$1" "$2"); shift 2 ;;
@@ -814,9 +586,9 @@ cmd_open() {
   mkdir -p "$ROOT" || die "cannot create $ROOT"
   lock_root
   ensure_root
-  ensure_server
   n=$(alloc_id) || exit 1
   unlock_root
+  ensure_exposure
 
   sess=$(current_session)
   : > "$ROOT/$n/.meta"
@@ -824,12 +596,13 @@ cmd_open() {
   meta_set created "$(now)" "$ROOT/$n/.meta"
   meta_set fork "" "$ROOT/$n/.meta"
   meta_set session "$sess" "$ROOT/$n/.meta"
-  write_placeholder "$n" "$topic"
+  meta_set langs "$langs" "$ROOT/$n/.meta"
+  write_placeholder "$n" "$topic" "$langs"
   reindex
-  url="$BASE_URL/$n/"
+  url=$(page_url "$n")
   meta_set url "$url" "$ROOT/$n/.meta"
 
-  out=$(build_brief "$topic" "$n" "$url" "$notes" | "$fork" open --page-dir "$ROOT/$n" "${fargs[@]}" 2>&1); rc=$?
+  out=$(build_brief "$topic" "$n" "$url" "$notes" "$langs" | "$fork" open --page-dir "$ROOT/$n" "${fargs[@]}" 2>&1); rc=$?
   if [ "$rc" -ne 0 ]; then
     rm -rf -- "${ROOT:?}/$n"
     reindex
@@ -841,22 +614,25 @@ cmd_open() {
   reindex
   printf '%s\n' "$out"
   if [ "$EXPOSED" -eq 0 ]; then
-    printf '# local only: run install.sh --expose-domain <domain> to open it on other devices and share it\n'
+    printf '# local only: nothing serves this file; run install.sh --expose-domain <domain> to open it on other devices and share it\n'
   fi
-  printf '# library: %s/\n' "$BASE_URL"
+  printf '# library: %s\n' "$(library_url)"
   printf 'page %s %s\n' "$n" "$url"
 }
 
 cmd_serve() {
-  require_tmux
   mkdir -p "$ROOT" || die "cannot create $ROOT"
   lock_root
   ensure_root
-  ensure_server
   unlock_root
   reindex
-  printf 'explain server for %s on 127.0.0.1:%s (window %s)\n' "$PROJECT" "$(rec_get port)" "$(rec_get window)"
-  printf '%s/\n' "$BASE_URL"
+  ensure_exposure
+  if [ "$EXPOSED" -eq 1 ]; then
+    printf 'explain pages for %s (%s) published at %s/\n' "$PROJECT" "$ROOT" "$BASE_URL"
+  else
+    printf 'explain pages for %s in %s (not served)\n' "$PROJECT" "$ROOT"
+  fi
+  printf '%s\n' "$(library_url)"
 }
 
 cmd_share() {
@@ -874,8 +650,24 @@ page_title() {
   printf '%s' "$t"
 }
 
+# exposure_state — "exposed: <url>/" when expose.sh knows the explain
+# exposure of this project, else "exposed: no" (with the reason).
+exposure_state() {
+  local out rc url
+  find_expose
+  if [ -z "$EXPOSE" ]; then printf 'exposed: no (expose.sh not found)\n'; return 0; fi
+  out=$(OPSX_EXPOSE_NO_COPY=1 "$EXPOSE" url "$EXPOSE_NAME" 2>/dev/null </dev/null); rc=$?
+  url=$(printf '%s\n' "$out" | strip_osc8 | awk 'NF { l = $0 } END { print l }')
+  case "$rc" in
+    0) if [[ "$url" == http*://* ]]; then printf 'exposed: %s/\n' "${url%/}"; else printf 'exposed: no\n'; fi ;;
+    3) printf 'exposed: no (expose is not configured)\n' ;;
+    4) printf 'exposed: unknown (the expose proxy is not running)\n' ;;
+    *) printf 'exposed: no\n' ;;
+  esac
+}
+
 cmd_list() {
-  local n any=0 port win url state
+  local n any=0
   for n in $(page_ids); do
     if [ "$any" -eq 0 ]; then
       printf '%-4s %-24s %-5s %s\n' ID CREATED FORK TITLE
@@ -885,38 +677,22 @@ cmd_list() {
       "$(meta_get fork "$ROOT/$n/.meta" | sed 's/^$/-/')" "$(page_title "$n")"
   done
   [ "$any" -eq 1 ] || printf 'no explain pages for project %s\n' "$PROJECT"
-  port=$(rec_get port); win=$(rec_get window); url=$(rec_get url)
-  state=stopped
-  if [ -f "$SERVER_REC" ] && valid_port "$port" && head_ok "$port"; then
-    if command -v tmux >/dev/null 2>&1 && ! rec_window_is_ours "$win"; then state="stale (port answers, window $win gone)"
-    elif rec_elsewhere; then state="running on 127.0.0.1:$port (window $win, tmux server $(rec_get socket))"
-    else state="running on 127.0.0.1:$port (window $win)"; fi
-  fi
-  printf 'server: %s\n' "$state"
-  printf 'pages:  %s\n' "$ROOT"
-  if [ "$state" != stopped ] && [ -n "$url" ]; then printf 'url:    %s/\n' "$url"; fi
+  printf 'pages:   %s\n' "$ROOT"
+  exposure_state
 }
 
 cmd_stop() {
-  local win any=0 w
-  win=$(rec_get window)
-  [ -f "$SERVER_REC" ] && any=1
+  local out rc removed=0
   find_expose
   if [ -n "$EXPOSE" ]; then
-    OPSX_EXPOSE_NO_COPY=1 "$EXPOSE" down "$EXPOSE_NAME" </dev/null >/dev/null 2>&1 || true
+    out=$(OPSX_EXPOSE_NO_COPY=1 "$EXPOSE" down "$EXPOSE_NAME" </dev/null 2>&1); rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q '^removed '; then removed=1; fi
   fi
-  # The recorded window, on whichever tmux server started it.
-  if rec_window_is_ours "$win"; then rec_tmux kill-window -t "$win" >/dev/null 2>&1; any=1; fi
-  if tmux_ok; then
-    for w in $(tagged_windows); do tmux kill-window -t "$w" >/dev/null 2>&1; any=1; done
-  fi
-  # The server outlived its window (tmux gone): stop it only if it is ours.
-  kill_rec_pid && any=1
-  rm -f "$SERVER_REC"
-  if [ "$any" -eq 1 ]; then
-    printf 'explain server for %s stopped; pages kept in %s\n' "$PROJECT" "$ROOT"
+  stop_legacy_server
+  if [ "$removed" -eq 1 ]; then
+    printf 'explain exposure for %s removed; pages kept in %s\n' "$PROJECT" "$ROOT"
   else
-    printf 'explain server for %s is not running; pages in %s\n' "$PROJECT" "$ROOT"
+    printf 'explain pages for %s are not exposed; pages kept in %s\n' "$PROJECT" "$ROOT"
   fi
   return 0
 }

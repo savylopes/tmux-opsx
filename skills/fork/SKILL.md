@@ -135,7 +135,7 @@ Running `/fork return` outside a fork prints "this session is not a fork" — sa
 
 ## Child: `fork.sh page` (page forks)
 
-A fork opened with `--page-dir` (by `/explain`) writes one web page. Its brief ends with a **Page protocol** section and `$FORK_PAGE_DIR` is set. Write the whole page, then its label manifest, with the exact commands from that section:
+A fork opened with `--page-dir` (by `/explain`) writes one web page. Its brief ends with a **Page protocol** section and `$FORK_PAGE_DIR` is set; the brief's `Languages:` line says which language(s) the page carries (one article, or English and Portuguese with identical labels). Write the whole page, then its label manifest, with the exact commands from that section:
 
 ```bash
 /abs/path/to/fork.sh page <<'PAGE_EOF'

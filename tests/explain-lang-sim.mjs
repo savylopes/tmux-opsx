@@ -1,6 +1,7 @@
 // Node-only behavioural check of the /explain page scripts (no browser needed).
 // Usage:
-//   node tests/explain-lang-sim.mjs lang <page.html>   language switch, deep links, hand-over
+//   node tests/explain-lang-sim.mjs lang <page.html>   language switch, deep links, hand-over (bilingual page)
+//   node tests/explain-lang-sim.mjs single <page.html> one-language page: shown whatever is remembered, no switch
 //   node tests/explain-lang-sim.mjs poll <page.html>   reload poll (template, index, placeholder)
 // Runs the page's own inline <script> blocks in a small DOM stand-in with a
 // laid-out geometry (the two articles have different block heights, like a
@@ -11,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const [mode, file] = process.argv.slice(2);
-if (!mode || !file) { console.error('usage: explain-lang-sim.mjs lang|poll <page.html>'); process.exit(2); }
+if (!mode || !file) { console.error('usage: explain-lang-sim.mjs lang|single|poll <page.html>'); process.exit(2); }
 const html = readFileSync(file, 'utf8');
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((x) => x[1]);
 let failed = 0;
@@ -174,6 +175,19 @@ if (mode === 'lang') {
   p = langPage({ navlang: 'en-US' });
   p.click('pt');
   ok('at the top of the page a switch stays at the top', p.state.scrollY === 0);
+} else if (mode === 'single') {
+  // A page with one <article lang>: shown regardless of ?lang=, the remembered choice or the
+  // browser language; every label keeps its id; there are no switch buttons to press.
+  const only = parseArticles();
+  ok('exactly one article', only.length === 1, `${only.length} articles`);
+  const lang = only[0] && only[0].lang;
+  let p = langPage({ navlang: 'en-US' });
+  ok(`shown as ${lang}, every label keeps its id, title from its h1`, p.root.getAttribute('data-show') === lang && p.owners('P1').join() === lang && p.doc.title === p.arts[0].h1 && p.btns.length === 0, `${p.root.getAttribute('data-show')} ${p.owners('P1')} '${p.doc.title}'`);
+  p = langPage({ navlang: 'pt-BR', stored: lang === 'en' ? 'pt' : 'en', search: lang === 'en' ? '?lang=pt' : '?lang=en', hash: '#P2' });
+  ok('the other language remembered and requested: still shown, #P2 lands', p.root.getAttribute('data-show') === lang && p.target() === `${lang}:P2` && p.state.scrollY === p.el(lang, 'P2').absTop, `${p.root.getAttribute('data-show')} ${p.target()}`);
+  p.loc.hash = '#D1';
+  ok('hashchange lands on D1', p.target() === `${lang}:D1`);
+  ok('no language switch in the page', !/data-set-lang="/.test(html));
 } else if (mode === 'poll') {
   const pollSrc = scripts.find((s) => s.includes("method:") && s.includes('HEAD'));
   ok('page has a HEAD poll script', !!pollSrc);

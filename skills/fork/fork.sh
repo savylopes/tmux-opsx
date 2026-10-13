@@ -64,7 +64,9 @@
 #
 # Page forks (used by /explain): `open --page-dir <dir>` records page_dir in
 # meta, passes FORK_PAGE_DIR to the child, appends a page protocol section to
-# the brief and (Claude) allows `fork.sh page` beside `fork.sh return`. The
+# the brief (labels, stable ids, SVG-first diagrams; the page's languages
+# come from the brief's `Languages:` line, written by /explain) and (Claude)
+# allows `fork.sh page` beside `fork.sh return`. The
 # child runs `fork.sh page < html` to replace <dir>/index.html atomically, or
 # `fork.sh page --manifest < tsv` for <dir>/manifest.tsv; nothing else is ever
 # written (mode 600). After an index.html write, <dir>/../.reindex is run
@@ -634,11 +636,11 @@ page_protocol() {
 
       $script page <<'PAGE_EOF'
       <!doctype html>
-      …the complete page, English and Portuguese…
+      …the complete page, every language it carries…
       PAGE_EOF
 
   and write the label manifest **every time you write the page**, one line per
-  current label (labels are shared by both languages, so one line each),
+  current label (labels are shared by all languages, so one line each),
   \`<label><TAB><one-line summary>\`:
 
       $script page --manifest <<'PAGE_EOF'
@@ -650,28 +652,37 @@ page_protocol() {
   \`index.html\` and \`manifest.tsv\` in the fork's page directory
   (\`$page_dir\`), outside the repository. Never edit project files, never
   write the page anywhere else.
-- **Two languages, one write**: every page carries the whole explanation in
-  English and in Portuguese, as two sibling articles \`<article lang="en">\`
-  and \`<article lang="pt">\` (the template from the brief has both and the
-  EN / PT switch; keep them). Both articles hold the **same labelled blocks
-  in the same order** with the same \`data-label\` and \`id\` (the repeat is
-  intended; the page script keeps the ids only on the shown language), each
-  its own \`<h1>\`; \`<title>\` is \`English title · Título em português\`.
-  Diagrams are duplicated per language (translated node text, same
-  structure, same \`D<n>\` in both). Always write both articles in the
-  same \`page\` command; never write one language alone. Every edit the user
-  asks for applies to both articles unless they name one language.
+- **Languages, one write**: the brief's \`Languages:\` line (in the Page
+  section) is authoritative. With one language the page has one
+  \`<article lang="xx">\` and no language switch. With two, the page carries
+  the whole explanation in English and in Portuguese as two sibling
+  articles \`<article lang="en">\` and \`<article lang="pt">\` (the template
+  from the brief then has both and the EN / PT switch; keep them), holding
+  the **same labelled blocks in the same order** with the same
+  \`data-label\` and \`id\` (the repeat is intended; the page script keeps the
+  ids only on the shown language), each its own \`<h1>\`; \`<title>\` is
+  \`English title · Título em português\`. Diagrams are duplicated per
+  language (translated text, same structure, same \`D<n>\` in both). Always
+  write every article in the same \`page\` command; never write one language
+  alone. Every edit the user asks for applies to every language the page
+  carries unless they name one. If the user asks to add a language, add the
+  second article and the switch from the template and keep both from then on.
 - Labels: every block carries a visible label and an HTML id equal to it:
   \`S<n>\` sections (nested \`S1.2\`), \`P<n>\` paragraphs, \`D<n>\` diagrams,
-  \`T<n>\` tables, \`C<n>\` code blocks, \`N<n>\` callouts (prefixes S P D T C N),
-  e.g. \`<p id="P7" data-label="P7">\`. Use the HTML template from the brief
-  for the margin labels, click-to-copy and reload-on-change.
+  \`T<n>\` tabular blocks (tables, key cards, terms lists), \`C<n>\` code
+  blocks, \`N<n>\` callouts (prefixes S P D T C N), e.g.
+  \`<p id="P7" data-label="P7">\`. Use the HTML template from the brief for
+  the design, the margin labels, click-to-copy and reload-on-change.
 - Labels are **stable**: before rewriting, read \`$page_dir/manifest.tsv\`.
   An edited block keeps its label; a new block takes the next number never
   used in the manifest; a removed label is never reused; never renumber.
-- Diagrams: Mermaid (\`<pre class="mermaid">\` inside the \`D<n>\` element)
-  first; inline SVG when Mermaid cannot express it; an ASCII \`<pre>\` as the
-  last resort. Every diagram still carries its \`D<n>\` label.
+- Diagrams: **inline SVG first** (a framed \`<figure>\` from the template:
+  \`viewBox\`, \`role="img"\`, \`aria-label\`, token colours), drawn by hand for
+  the one or two pictures that carry the explanation; Mermaid
+  (\`<pre class="mermaid">\` inside the frame) only when a diagram has too
+  many nodes to draw, adding the pinned Mermaid tag exactly as the brief
+  gives it; an ASCII \`<pre>\` as the last resort. Every diagram still
+  carries its \`D<n>\` label.
 - First reply: write the page and the manifest, then confirm the page URL
   (from the brief) and list the top-level labels (\`S1 …\`, \`D1 …\`).
 - The user asks for edits by label ("expand P7", "the arrow in D2 is wrong"):
