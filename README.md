@@ -7,6 +7,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  ├── setup        opsx init · /opsx-init: OpenSpec, config context, graphify ignore, .opsx/dev.yaml per repo
  │                opsx dev: the repo's toolchain in a per-checkout Docker container, nothing installed on the host
  ├── workflow     /opsx-run: change → window → apply → gates → merge/land
+ │                /opsx-review: PR ↔ ticket → review change (ticket ACs + project spec) → /opsx-run --validate
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork
  │                /explain: a topic → a designed, diagrammed web page with labelled blocks, written by a fork, served by /expose (directory)
@@ -69,6 +70,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | Memory store | `~/.agents/memory/` | Plain folder: `MEMORY.md` index + `user/` `feedback/` `project/` `reference/` — created once, never overwritten |
 | `/fork` skill + `fork.sh` | `~/.claude/skills/fork/` · `~/.cursor/skills/fork/` · `~/.agents/skills/fork/` · `$CODEX_HOME/skills/fork/` · `~/.config/opencode/skills/fork/` · `~/.gemini/skills/fork/` | Read-only side-question agent in a tmux pane, briefed with the current context; notify-then-pull results (see [Fork](#fork)) |
 | `/explain` skill + `explain.sh` | `~/.claude/skills/explain/` · `~/.cursor/skills/explain/` · `~/.agents/skills/explain/` · `$CODEX_HOME/skills/explain/` · `~/.config/opencode/skills/explain/` · `~/.gemini/skills/explain/` | A fork writes a self-contained web page about a topic, with labelled blocks you refine by name; the project's pages directory is published through `/expose` and served by Caddy (see [Explain](#explain)) |
+| `/opsx-review` skill + `opsx-review.sh` | `~/.claude/skills/opsx-review/` · `~/.cursor/skills/opsx-review/` · `~/.agents/skills/opsx-review/` · `$CODEX_HOME/skills/opsx-review/` · `~/.config/opencode/skills/opsx-review/` · `~/.gemini/skills/opsx-review/` | Review a PR against its ticket and the project's requirements as an OpenSpec change run by `/opsx-run --validate`; names the session `<TICKET>-review` (see [Reviewing a pull request](#reviewing-a-pull-request-opsx-review)) |
 | `/expose` skill + `expose.sh` (opt-in, `--expose-domain`) | `~/.claude/skills/expose/` · `~/.cursor/skills/expose/` · `~/.agents/skills/expose/` · `$CODEX_HOME/skills/expose/` · `~/.config/opencode/skills/expose/` · `~/.gemini/skills/expose/` | Publish `127.0.0.1:<port>` at `https://<name>--<project>.<domain>` through Caddy, behind a login; list/down/url, share links, key rotate (see [Expose](#expose)) |
 | Expose proxy (opt-in) | `~/.config/tmux-opsx/{expose.env,caddy.json,tmux-opsx-caddy.service}` · `~/.local/share/tmux-opsx/bin/caddy` | Caddy with `caddy-dns/cloudflare`: one wildcard cert via DNS-01, `:443` only, admin API on a user-only unix socket |
 
@@ -105,6 +107,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --skip-memory      # don't install the memory skill, instruction blocks, store, or import
 ./install.sh --skip-fork        # don't install the /fork skill
 ./install.sh --skip-explain     # don't install the /explain skill
+./install.sh --skip-review      # don't install the /opsx-review skill
 ./install.sh --skip-init        # don't install the opsx command or the /opsx-init skill
 ./install.sh --expose-domain dev.example.com  # also set up /expose (opt-in; see Expose)
 ./install.sh --no-backup        # overwrite without keeping .bak copies
@@ -558,6 +561,27 @@ Security review: auth, injection, secrets, unsafe defaults and trust boundaries.
 UI/UX check: visual regressions, broken flows, console errors and accessibility, driven through the browser-use MCP. Run it with `/opsx-run <change> qa ["notes"]` or `/opsx-run qa "notes"`. Returns SKIP when the change has no user-facing UI.
 
 Before ops-qa runs (in `qa` and in the `apply --validate` QA step), the window runs `opsx-preview.sh up <change>` and then `opsx-preview.sh share <change> --for ops-qa --ttl 1d`, and passes that share link to ops-qa as `PREVIEW_URL`, so the gate tests exactly what you would share. ops-qa opens the link first and keeps the same browser context, so its login cookie applies; the link opens only that preview's host, expires after a day, and the next QA run replaces it. The owner key never reaches an agent transcript. The preview is left running afterwards. When expose is not configured (or the preview fails), ops-qa gets the reason and starts the app itself as before.
+
+### Reviewing a pull request (`/opsx-review`)
+
+`/opsx-review <PR number | PR URL | TICKET-KEY> ["extra focus"]` reviews someone else's pull request against its ticket and the project's requirements. The review runs as an OpenSpec change, so it is planned, executed with evidence and gated like any other change.
+
+1. `opsx-review.sh resolve` finds the PR and its ticket. The ticket key comes from the branch, then the title, then the body. Given a key, it searches open PRs first, then closed ones, and asks you to pick when several match. It also derives the change name, for example `review-med-35-db-foundation`.
+2. The tmux session is renamed `<TICKET>-review`. Under Claude Code it tells you to type `/rename <TICKET>-review` too.
+3. It does a first read-only pass:
+   - the PR diff, commits and checks;
+   - the ticket's scope and acceptance criteria, through the project's tracker MCP if it has one;
+   - the spec sections, ADRs and CONTRIBUTING rules the ticket touches.
+4. It writes the change:
+   - a proposal;
+   - a baseline spec built from the ticket's ACs and the spec;
+   - a design with a detached worktree at the head SHA, executed evidence, a severity scale, and a rule that ticket–spec–ADR conflicts become questions;
+   - review tasks.
+
+   It then validates the change with `--strict`.
+5. It launches `/opsx-run <change> --validate` with review constraints added to the prompt: no product edits, no commits, no posting, and the gates judge the review deliverables. ops-qa returns SKIP.
+
+The window writes `openspec/changes/<change>/review/report.md` (verdict, findings, conformance matrix), `evidence/`, `pr-comment.md` (paste-ready) and `questions.md`. Nothing is posted to the PR or the ticket unless you ask. Use `--no-run` to stop after the change is written, and `--no-session` to keep the session name.
 
 ---
 
