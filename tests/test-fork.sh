@@ -17,6 +17,7 @@ for c in claude agent codex opencode gemini; do
   cat > "$SP/fakebin/$c" <<'EOF'
 #!/usr/bin/env bash
 name=$(basename "$0")
+if [ "${1:-}" = --help ]; then cat "${FAKE_HELP_DIR:-/nonexistent}/$name" 2>/dev/null; exit 0; fi
 { printf 'CLI=%s
 ' "$name"; for a in "$@"; do printf 'ARG=%s
 ' "${a:0:60}"; case $a in Bash\(*) printf 'RULE=%s
@@ -27,6 +28,10 @@ EOF
   chmod +x "$SP/fakebin/$c"
 done
 export XDG_STATE_HOME=$SP/state; rm -rf "$XDG_STATE_HOME"
+# --help text of the fake CLIs (claude: a version whose modes include "manual")
+export FAKE_HELP_DIR=$SP/fakehelp; mkdir -p "$FAKE_HELP_DIR"
+printf '  --permission-mode <mode>  (choices: "acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan")\n' > "$FAKE_HELP_DIR/claude"
+unset FORK_CLAUDE_WRITE_MODE
 export PATH=$SP/fakebin:$PATH
 L="tmux -L fork-test-$$"
 $L kill-server 2>/dev/null
@@ -133,7 +138,9 @@ ok "close --all with parent gone" '$F close --all >/dev/null && ! grep -L status
 ok "state kept" '[ -f $SD/1/brief.md ] && [ -f $SD/5/result.md ]'
 
 # concurrent opens -> distinct ids
-for i in $(seq 1 12); do (printf 'c%s\n' $i | $F open --window --cli gemini > $SP/conc.$i 2>&1 &) ; done; sleep 3
+for i in $(seq 1 12); do (printf 'c%s\n' $i | $F open --window --cli gemini > $SP/conc.$i 2>&1 &) ; done
+# wait for all 12 to report (they take ~2-3 s under load), at most 15 s
+for _ in $(seq 1 150); do ids=$(cat $SP/conc.* 2>/dev/null | awk '/^fork/{print $2}' | sort -n | uniq | wc -l); [ "$ids" -eq 12 ] && break; sleep 0.1; done
 ids=$(cat $SP/conc.* | awk '/^fork/{print $2}' | sort -n | uniq | wc -l)
 ok "concurrent distinct ids" '[ "$ids" -eq 12 ]'
 $F close --all >/dev/null
@@ -340,8 +347,8 @@ ok "page: meta page_dir=/x/3" 'grep -qx "page_dir=/x/3" $SD/$PG/meta'
 ok "page: child env FORK_PAGE_DIR" 'grep -qx "FORK_PAGE_DIR=/x/3" $SD/$PG/fake-claude.log'
 ok "page: no flag -> page_dir= and no env" 'grep -qx "page_dir=" $SD/$NP0/meta && ! grep -q "^FORK_PAGE_DIR=" $SD/$NP0/fake-claude.log'
 ok "page: claude allows return and page" 'grep -Fqx "RULE=Bash($F return:*)" $SD/$PG/fake-claude.log && grep -Fqx "RULE=Bash($F page:*)" $SD/$PG/fake-claude.log && [ "$(grep -c "^RULE=" $SD/$PG/fake-claude.log)" -eq 2 ]'
-ok "page: plain fork allows only return" 'grep -Fqx "RULE=Bash($F return:*)" $SD/$NP0/fake-claude.log && [ "$(grep -c "^RULE=" $SD/$NP0/fake-claude.log)" -eq 1 ]'
-ok "page: launch.sh has both rules / only return" '[ "$(grep -o "Bash" $SD/$PG/launch.sh | wc -l)" -eq 2 ] && grep -q "page:" $SD/$PG/launch.sh && [ "$(grep -o "Bash" $SD/$NP0/launch.sh | wc -l)" -eq 1 ] && ! grep -q "page:" $SD/$NP0/launch.sh'
+ok "page: plain fork allows return and write only" 'grep -Fqx "RULE=Bash($F return:*)" $SD/$NP0/fake-claude.log && grep -Fqx "RULE=Bash($F write:*)" $SD/$NP0/fake-claude.log && [ "$(grep -c "^RULE=" $SD/$NP0/fake-claude.log)" -eq 2 ]'
+ok "page: launch.sh has return+page / return+write" '[ "$(grep -o "Bash" $SD/$PG/launch.sh | wc -l)" -eq 2 ] && grep -q "page:" $SD/$PG/launch.sh && ! grep -q "write:" $SD/$PG/launch.sh && [ "$(grep -o "Bash" $SD/$NP0/launch.sh | wc -l)" -eq 2 ] && grep -q "write:" $SD/$NP0/launch.sh && ! grep -q "page:" $SD/$NP0/launch.sh'
 ok "page: plan mode, no bypass" 'grep -qx "ARG=--permission-mode" $SD/$PG/fake-claude.log && grep -qx "ARG=plan" $SD/$PG/fake-claude.log && ! grep -Eq "bypass|--force|--yolo|--auto|dangerously|--trust|skip-trust" $SD/$PG/fake-claude.log $SD/$PG/launch.sh'
 ok "page: carve-out names both commands" 'c=$(source <(sed -n "s/.*--append-system-prompt \(.*\) \"\$(cat .*/printf \"%s\" \1/p" $SD/$PG/launch.sh)); [[ "$c" == *"$F page"* ]] && [[ "$c" == *"$F return"* ]]'
 ok "page: brief has page protocol" 'grep -q "## Page protocol" $SD/$PG/brief.md && grep -q "$F page" $SD/$PG/brief.md && grep -q "manifest.tsv" $SD/$PG/brief.md && grep -q "S P D T C N" $SD/$PG/brief.md && grep -qi mermaid $SD/$PG/brief.md'
@@ -405,6 +412,51 @@ ok "help lists page and --page-dir" 'h=$($F help); [[ "$h" == *"fork.sh page"* ]
 $F close --all >/dev/null
 
 # unknown cli / empty brief
+
+# ---------------------------------------------------------------- writable forks (--write, fork.sh write)
+openw() { printf '## Question\nwrite q %s\n' "$1" | $F open --window --write --cli "$1" | awk '/^fork /{print $2; exit}'; }
+WC=$(openw claude); WX=$(openw codex); WO=$(openw opencode); WG=$(openw gemini); WA=$(openw agent); sleep 1.5
+nobypass() { ! grep -Eq "bypass|--force|--yolo|--auto|dangerously|--trust|skip-trust|danger-full-access" "$@"; }
+ok "write: claude --permission-mode manual, no plan, return rule only" 'grep -A1 -x "ARG=--permission-mode" $SD/$WC/fake-claude.log | tail -n1 | grep -qx "ARG=manual" && ! grep -qx "ARG=plan" $SD/$WC/fake-claude.log && grep -Fqx "RULE=Bash($F return:*)" $SD/$WC/fake-claude.log && [ "$(grep -c "^RULE=" $SD/$WC/fake-claude.log)" -eq 1 ] && nobypass $SD/$WC/fake-claude.log $SD/$WC/launch.sh'
+ok "write: codex workspace-write + on-request" 'grep -qx "ARG=workspace-write" $SD/$WX/fake-codex.log && ! grep -qx "ARG=read-only" $SD/$WX/fake-codex.log && grep -qx "ARG=on-request" $SD/$WX/fake-codex.log && nobypass $SD/$WX/fake-codex.log'
+ok "write: opencode --agent build" 'grep -A1 -x "ARG=--agent" $SD/$WO/fake-opencode.log | tail -n1 | grep -qx "ARG=build" && nobypass $SD/$WO/fake-opencode.log'
+ok "write: gemini --approval-mode default" 'grep -A1 -x "ARG=--approval-mode" $SD/$WG/fake-gemini.log | tail -n1 | grep -qx "ARG=default" && nobypass $SD/$WG/fake-gemini.log'
+ok "write: agent without --mode ask" '! grep -qx "ARG=--mode" $SD/$WA/fake-agent.log && ! grep -qx "ARG=ask" $SD/$WA/fake-agent.log && nobypass $SD/$WA/fake-agent.log'
+ok "write: meta write=1, read-only forks write=0" 'for i in $WC $WX $WO $WG $WA; do grep -qx write=1 $SD/$i/meta || exit 1; done && grep -qx write=0 $SD/$NP0/meta'
+ok "write: writable protocol (may edit, same checkout, files changed, no read-only rule)" 'p=$(sed -n "/^## Fork protocol/,\$p" $SD/$WC/brief.md); [[ "$p" == *"writable fork"* ]] && [[ "$p" == *"same checkout"* ]] && [[ "$p" == *"Files changed"* ]] && [[ "$p" != *"read-only fork"* ]] && [[ "$p" != *"Unlocking writes"* ]]'
+ok "write: read-only protocol names /fork write and the exact command" 'p=$(sed -n "/^## Fork protocol/,\$p" $SD/$NP0/brief.md); [[ "$p" == *"/fork write"* ]] && [[ "$p" == *"$F write"* ]] && [[ "$p" == *"Never unlock on"* ]]'
+ok "write: page fork protocol has no unlock rule" '! grep -q "Unlocking writes" $SD/$PG/brief.md'
+ok "write: claude carve-out of a read-only fork names fork.sh write" 'c=$(source <(sed -n "s/.*--append-system-prompt \(.*\) \"\$(cat .*/printf \"%s\" \1/p" $SD/$NP0/launch.sh)); [[ "$c" == *"/fork write"* ]] && [[ "$c" == *"$F write"* ]]'
+before=$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l)
+e=$(printf q | $F open --write --page-dir /x/9 --cli claude 2>&1); rc=$?
+ok "write: --write with --page-dir refused, nothing created" '[ $rc -ne 0 ] && [[ "$e" == *"--write"* ]] && [[ "$e" == *"--page-dir"* ]] && [ "$(find "$SD" -mindepth 1 -maxdepth 1 | wc -l)" -eq "$before" ]'
+# unlock from inside a read-only fork
+RO=$(printf '## Question\nro q\n' | $F open --window --cli claude | awk '/^fork /{print $2; exit}'); sleep 1
+RP=$(awk -F= '/^child_pane=/{print $2}' $SD/$RO/meta)
+o=$(FORK_DIR=$SD/$RO TMUX_PANE=$RP $F write 2>&1); rc=$?
+ok "write: fork.sh write unlocks (meta, time, title, hint)" '[ $rc -eq 0 ] && grep -qx write=1 $SD/$RO/meta && grep -q "^write_since=." $SD/$RO/meta && [ "$($L display -p -t "$RP" "#{pane_title}")" = "fork $RO (write)" ] && [[ "$o" == *"writing unlocked"* ]] && [[ "$o" == *"shift+tab"* ]]'
+o=$(FORK_DIR=$SD/$RO TMUX_PANE=$RP $F write 2>&1); rc=$?
+ok "write: second call says already writable, exit 0" '[ $rc -eq 0 ] && [[ "$o" == *"already writable"* ]]'
+e=$(cd / && env -u FORK_DIR -u TMUX -u TMUX_PANE $F write 2>&1); rc=$?
+ok "write: outside a fork exits 1" '[ $rc -eq 1 ] && [[ "$e" == *"only works inside a fork"* ]]'
+PGW=$(mktemp -d); mkdir -p "$SD/pgw"; printf 'id=pgw\npage_dir=/x/3\nwrite=0\n' > "$SD/pgw/meta"
+e=$(FORK_DIR=$SD/pgw $F write 2>&1); rc=$?
+ok "write: page fork cannot be unlocked (exit 4, write stays 0)" '[ $rc -eq 4 ] && grep -qx write=0 $SD/pgw/meta'
+rm -rf "$SD/pgw" "$PGW"
+l=$($F list)
+R2=$(printf '## Question\nro2 q\n' | $F open --window --cli claude | awk '/^fork /{print $2; exit}'); sleep 0.5
+l=$($F list)
+ok "write: list shows open,write for unlocked and writable forks, open for a read-only one" 'echo "$l" | grep -Eq "^$RO +open,write +claude " && echo "$l" | grep -Eq "^$WC +open,write +claude " && echo "$l" | grep -Eq "^$R2 +open +claude "'
+printf '  --permission-mode <mode>  (choices: "acceptEdits", "bypassPermissions", "default", "plan")\n' > "$FAKE_HELP_DIR/claude"
+WD=$(openw claude); sleep 1
+ok "write: older claude without manual gets --permission-mode default" 'grep -A1 -x "ARG=--permission-mode" $SD/$WD/fake-claude.log | tail -n1 | grep -qx "ARG=default"'
+WE=$(printf '## Question\nae\n' | FORK_CLAUDE_WRITE_MODE=acceptEdits $F open --window --write --cli claude | awk '/^fork /{print $2; exit}'); sleep 1
+ok "write: FORK_CLAUDE_WRITE_MODE=acceptEdits overrides the detection" 'grep -A1 -x "ARG=--permission-mode" $SD/$WE/fake-claude.log | tail -n1 | grep -qx "ARG=acceptEdits"'
+e=$(printf q | FORK_CLAUDE_WRITE_MODE=bypassPermissions $F open --window --write --cli claude 2>&1); rc=$?
+ok "write: FORK_CLAUDE_WRITE_MODE=bypassPermissions refused" '[ $rc -ne 0 ] && [[ "$e" == *"must be manual, default or acceptEdits"* ]] && ! ls $SD/*/fake-claude.log | xargs grep -lx "ARG=bypassPermissions" | grep -q .'
+o=$(printf '## Question\nhdr\n' | $F open --window --write --cli claude)
+ok "write: open prints the access line" '[[ "$o" == *"# access: write"* ]]'
+
 ok "unknown cli rejected" '! printf q | $F open --cli foo 2>/dev/null'
 ok "empty brief rejected" '! printf "  \n" | $F open --cli claude 2>/dev/null'
 

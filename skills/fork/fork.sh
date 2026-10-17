@@ -9,9 +9,10 @@
 # Usage:
 #   fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]
 #                [--model <m>] [--parent-model <m>] [--brief-only]
-#                [--page-dir <abs dir>]                             < brief
+#                [--write | --page-dir <abs dir>]                   < brief
 #   fork.sh native [--cli <name>] [--cwd <dir>] [--brief-only]
 #   fork.sh return                                                     < result
+#   fork.sh write          (child side: unlock writing in this fork)
 #   fork.sh page [--manifest]                                          < html|tsv
 #   fork.sh collect [<id>]
 #   fork.sh list
@@ -36,14 +37,24 @@
 # (no model flag, the CLI's default). The parent agent passes its own model id
 # as --parent-model. Values that are empty, contain whitespace or start with
 # `-` are rejected. Flag per CLI: claude/agent --model, codex/opencode/gemini -m.
-# Children always launch in the CLI's read-only / plan mode and never with
-# bypass or force flags:
+# Children launch in the CLI's read-only / plan mode (unless --write) and
+# never with bypass or force flags:
 #   claude    --permission-mode plan (+ narrow allow rule for `fork.sh return`,
 #             and one for `fork.sh page` in a page fork)
 #   agent     --mode ask
 #   codex     --sandbox read-only --ask-for-approval on-request
 #   opencode  --agent plan
 #   gemini    --approval-mode plan
+# With `open --write` the child gets the CLI's normal mode with normal
+# approvals instead (claude --permission-mode manual, or default on older
+# versions, $FORK_CLAUDE_WRITE_MODE to override; agent without --mode,
+# codex --sandbox workspace-write --ask-for-approval on-request, opencode
+# --agent build, gemini --approval-mode default) and a writable fork
+# protocol; meta records write=1. Inside a read-only fork the user unlocks
+# writing with `/fork write` (`fork.sh write`, allowed by a narrow rule on
+# Claude Code) plus the CLI's own mode switch (shift+tab, Tab, /approvals):
+# the child is told it may edit only after that. --write and --page-dir are
+# exclusive.
 #
 # Context mode: a fork is "full" (native) when the child CLI is the host CLI,
 # that CLI can fork a session natively, and native mode is not disabled; the
@@ -530,9 +541,28 @@ native_mode() {
 # Launch command (read-only; never bypass/force flags)
 
 # The "$(cat …)" parts are meant to stay literal: they run in the launcher.
+# The Claude Code permission mode that prompts for every edit: `manual` on
+# versions whose --help lists it, else the older name `default`.
+# $FORK_CLAUDE_WRITE_MODE overrides the detection.
+check_claude_write_mode() {
+  case "${FORK_CLAUDE_WRITE_MODE:-}" in
+    ''|manual|default|acceptEdits) ;;
+    *) die "FORK_CLAUDE_WRITE_MODE must be manual, default or acceptEdits (got '$FORK_CLAUDE_WRITE_MODE')" ;;
+  esac
+}
+
+claude_write_mode() {
+  local h
+  if [ -n "${FORK_CLAUDE_WRITE_MODE:-}" ]; then
+    printf '%s' "$FORK_CLAUDE_WRITE_MODE"; return 0
+  fi
+  h=$(timeout 10 claude --help 2>/dev/null </dev/null) || h=""
+  if printf '%s' "$h" | grep -q '"manual"'; then printf manual; else printf default; fi
+}
+
 # shellcheck disable=SC2016
 build_launch_cmd() {
-  local cli=$1 brief=$2 id=$3 dir=$4 parent=$5 model=${6:-} native=${7:-} page_dir=${8:-}
+  local cli=$1 brief=$2 id=$3 dir=$4 parent=$5 model=${6:-} native=${7:-} page_dir=${8:-} write=${9:-0}
   local script envp carve rule rules mf="" nf=""
   script=$(this_script)
   envp=$(printf 'FORK_ID=%q FORK_DIR=%q FORK_PARENT=%q FORK_SH=%q' "$id" "$dir" "$parent" "$script")
@@ -558,27 +588,40 @@ build_launch_cmd() {
       # are not matched) and tell the model these are the sanctioned exceptions.
       rule="Bash($script return:*)"
       rules=$(printf '%q' "$rule")
+      if [ "$write" -eq 1 ]; then
+        carve="You are a writable fork child (fork $id) of the agent session in the tmux pane next to you. You may edit files in your working directory, with the user's normal approvals; the parent session may be editing the same checkout, so change only what the user asks. Run '$script return' when the user asks you to return."
+        printf 'exec env %s claude%s --permission-mode %s --allowedTools %s --append-system-prompt %q%s "$(cat %q)"' \
+          "$envp" "$nf" "$(claude_write_mode)" "$rules" "$carve" "$mf" "$brief"
+        return 0
+      fi
       if [ -n "$page_dir" ]; then
         rules="$rules $(printf '%q' "Bash($script page:*)")"
         carve="You are a read-only fork child (fork $id) that writes one explain page. The only permitted exceptions to plan mode are running '$script page' (and '$script page --manifest') to write your page and its manifest into the fork's page directory, and '$script return' when the user asks you to return; both write only outside the repository and are not code changes. Do not exit plan mode and do not modify any other file."
       else
-        carve="You are a read-only fork child (fork $id). The only permitted exception to plan mode is running '$script return' when the user asks you to return; it saves your answer to a state directory outside the repository and is not a code change. Do not exit plan mode and do not modify files."
+        rules="$rules $(printf '%q' "Bash($script write:*)")"
+        carve="You are a read-only fork child (fork $id). The only permitted exceptions to plan mode are running '$script return' when the user asks you to return, and '$script write' when the user types /fork write; both write only to a state directory outside the repository and are not code changes. Do not exit plan mode yourself and do not modify files, unless the user has typed /fork write in this pane, '$script write' succeeded, and the user has switched plan mode off: from then on you may edit files in your working directory with the user's normal approvals."
       fi
       printf 'exec env %s claude%s --permission-mode plan --allowedTools %s --append-system-prompt %q%s "$(cat %q)"' \
         "$envp" "$nf" "$rules" "$carve" "$mf" "$brief"
       ;;
     agent)
-      printf 'exec env %s agent --mode ask%s "$(cat %q)"' "$envp" "$mf" "$brief"
+      if [ "$write" -eq 1 ]; then
+        printf 'exec env %s agent%s "$(cat %q)"' "$envp" "$mf" "$brief"
+      else
+        printf 'exec env %s agent --mode ask%s "$(cat %q)"' "$envp" "$mf" "$brief"
+      fi
       ;;
     codex)
-      printf 'exec env %s codex --sandbox read-only --ask-for-approval on-request%s "$(cat %q)"' \
-        "$envp" "$mf" "$brief"
+      printf 'exec env %s codex --sandbox %s --ask-for-approval on-request%s "$(cat %q)"' \
+        "$envp" "$([ "$write" -eq 1 ] && echo workspace-write || echo read-only)" "$mf" "$brief"
       ;;
     opencode)
-      printf 'exec env %s opencode%s --agent plan%s --prompt "$(cat %q)"' "$envp" "$nf" "$mf" "$brief"
+      printf 'exec env %s opencode%s --agent %s%s --prompt "$(cat %q)"' "$envp" "$nf" \
+        "$([ "$write" -eq 1 ] && echo build || echo plan)" "$mf" "$brief"
       ;;
     gemini)
-      printf 'exec env %s gemini --approval-mode plan%s -i "$(cat %q)"' "$envp" "$mf" "$brief"
+      printf 'exec env %s gemini --approval-mode %s%s -i "$(cat %q)"' "$envp" \
+        "$([ "$write" -eq 1 ] && echo default || echo plan)" "$mf" "$brief"
       ;;
     *) die "unsupported CLI '$cli'" ;;
   esac
@@ -586,19 +629,43 @@ build_launch_cmd() {
 
 # Protocol appended to every brief so the child knows how to return, whatever
 # the parent wrote.
+# $3: 1 = writable fork, 0 = read-only fork the user can unlock, page = page
+# fork (read-only, no unlock: it writes only its page).
 protocol_footer() {
-  local id=$1 script=$2
-  cat <<EOF
-
----
-## Fork protocol (fork $id)
-
+  local id=$1 script=$2 write=${3:-0}
+  printf '\n---\n## Fork protocol (fork %s)\n\n' "$id"
+  if [ "$write" = 1 ]; then
+    cat <<EOF
+- You are a **writable fork** of another agent session running in the tmux
+  pane next to you. Answer the user's questions about the context above
+  (in a full-context fork: the conversation you inherited), and you may
+  **edit files** in your working directory when the user asks, with the
+  CLI's normal approvals.
+- The parent session may be editing **the same checkout**: change only what
+  the user asks, and do not commit, push, switch branches or reset unless
+  the user asks for exactly that.
+- When you return, list every file you changed under **Files changed**.
+EOF
+  else
+    cat <<EOF
 - You are a **read-only fork** of another agent session running in the tmux
   pane next to you. Answer the user's questions about the context above
   (in a full-context fork: the conversation you inherited).
   Do **not** modify, create or delete files in the project, and do not run
   commands that change state. Reading files and running read-only commands
   is fine.
+EOF
+    [ "$write" = page ] || cat <<EOF
+- **Unlocking writes.** Files stay untouched unless the user types
+  \`/fork write\` in this pane. Then run exactly \`$script write\` (allowed
+  even in plan / read-only mode; it writes only the fork's state), tell the
+  user to switch this CLI out of its read-only mode (Claude Code and Gemini:
+  shift+tab; OpenCode: Tab to the build agent; Codex: /approvals), and only
+  after that edit files, with the CLI's normal approvals. Never unlock on
+  your own initiative.
+EOF
+  fi
+  cat <<EOF
 - For your first reply, briefly confirm what you understood and answer the
   question if one was given. Then wait for the user.
 - When the user says \`/fork return\` (or asks you to report back), write a
@@ -811,7 +878,7 @@ extract_marker_block() {
 # Subcommands
 
 cmd_open() {
-  local window=0 vertical=0 cli_opt="" cwd=$PWD model_opt="" parent_model="" brief_only=0 page_dir=""
+  local window=0 vertical=0 cli_opt="" cwd=$PWD model_opt="" parent_model="" brief_only=0 page_dir="" write=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --window)   window=1; shift ;;
@@ -829,6 +896,7 @@ cmd_open() {
       --cwd)      [ -n "${2:-}" ] || die "--cwd needs a value"
                   cwd=$2; shift 2 ;;
       --brief-only) brief_only=1; shift ;;
+      --write)    write=1; shift ;;
       --page-dir) [ -n "${2:-}" ] || die "--page-dir needs a value"
                   page_dir=$2; shift 2 ;;
       -h|--help)  usage; return 0 ;;
@@ -836,6 +904,10 @@ cmd_open() {
     esac
   done
   [ -z "${FORK_MODEL:-}" ] || check_model "\$FORK_MODEL" "$FORK_MODEL"
+  if [ "$write" -eq 1 ] && [ -n "$page_dir" ]; then
+    die "--write and --page-dir cannot be combined: a page fork writes only its page."
+  fi
+  [ "$write" -eq 0 ] || check_claude_write_mode
   if [ -n "$page_dir" ]; then
     case "$page_dir" in
       /*) ;;
@@ -867,7 +939,7 @@ cmd_open() {
   script=$(this_script)
   {
     printf '%s\n' "$brief_text"
-    protocol_footer "$id" "$script"
+    protocol_footer "$id" "$script" "$([ -n "$page_dir" ] && echo page || echo "$write")"
     [ -z "$page_dir" ] || page_protocol "$id" "$script" "$page_dir"
   } > "$dir/brief.md" || die "cannot write $dir/brief.md"
 
@@ -884,6 +956,7 @@ cmd_open() {
   meta_set context "${native%% *}" "$dir"
   meta_set context_source "${native#* }" "$dir"
   meta_set page_dir "$page_dir" "$dir"
+  meta_set write "$write" "$dir"
   meta_set status opening "$dir"
 
   # The launch line lives in a small bash script so it does not depend on the
@@ -892,7 +965,7 @@ cmd_open() {
     printf '#!/usr/bin/env bash\n'
     printf '# fork %s child launcher (generated by fork.sh open)\n' "$id"
     printf 'cd %q || exit 1\n' "$cwd"
-    build_launch_cmd "$cli" "$dir/brief.md" "$id" "$dir" "$parent" "$model" "$native" "$page_dir" || exit 1
+    build_launch_cmd "$cli" "$dir/brief.md" "$id" "$dir" "$parent" "$model" "$native" "$page_dir" "$write" || exit 1
     printf '\n'
   } > "$dir/launch.sh" || die "cannot write $dir/launch.sh"
   launch=$(printf 'bash %q' "$dir/launch.sh")
@@ -916,7 +989,7 @@ cmd_open() {
   tmux set-option -p -t "$child" @fork_id "$id" >/dev/null 2>&1
   tmux set-option -p -t "$child" @fork_dir "$dir" >/dev/null 2>&1
   tmux set-option -p -t "$child" @fork_parent "$parent" >/dev/null 2>&1
-  tmux select-pane -t "$child" -T "fork $id" >/dev/null 2>&1
+  tmux select-pane -t "$child" -T "fork $id$([ "$write" -eq 1 ] && printf ' (write)')" >/dev/null 2>&1
 
   meta_set child_pane "$child" "$dir"
   meta_set window "$win" "$dir"
@@ -925,6 +998,7 @@ cmd_open() {
   [ "$window" -eq 0 ] && arrange_layout "$parent" "$vertical"
 
   printf 'fork %s pane %s cli %s model %s\n' "$id" "$child" "$cli" "${model:-default}"
+  [ "$write" -eq 1 ] && printf '# access: write (the child may edit files in %s, with normal approvals)\n' "$cwd"
   case "$native" in
     "full claude session "*) printf '# context: full (claude --resume %s --fork-session)\n' "${native#full claude session }" ;;
     "full opencode "*)       printf '# context: full (opencode --continue --fork)\n' ;;
@@ -973,6 +1047,35 @@ resolve_own_fork_dir() {
     fi
   fi
   printf '%s' "$d"
+}
+
+# Child side: unlock writing in this fork. Records write=1 (state dir only),
+# retitles the child pane and tells the parent; the CLI's own read-only mode
+# is left by the user (the child cannot do that itself).
+cmd_write() {
+  local dir id parent pane
+  [ $# -eq 0 ] || die "write takes no arguments"
+  dir=$(resolve_own_fork_dir)
+  [ -n "$dir" ] || die "this session is not a fork (FORK_DIR is unset) — /fork write only works inside a fork child." 1
+  [ -d "$dir" ] || die "fork state dir not found: $dir" 1
+  id=$(meta_get id "$dir"); [ -n "$id" ] || id=${FORK_ID:-${dir##*/}}
+  if [ "$(meta_get write "$dir")" = 1 ]; then
+    printf 'fork %s is already writable.\n' "$id"
+    return 0
+  fi
+  [ -z "$(meta_get page_dir "$dir")" ] || die "fork $id is a page fork: it writes only its page and cannot be unlocked." 4
+  meta_set write 1 "$dir" || die "could not write $dir/meta (sandbox?)." 3
+  meta_set write_since "$(now)" "$dir"
+  recover_tmux_env
+  if tmux_ok; then
+    pane=$(meta_get child_pane "$dir"); [ -n "$pane" ] || pane=${TMUX_PANE:-}
+    [ -n "$pane" ] && tmux select-pane -t "$pane" -T "fork $id (write)" >/dev/null 2>&1
+    parent=$(meta_get parent_pane "$dir"); [ -n "$parent" ] || parent=${FORK_PARENT:-}
+    if [ -n "$parent" ] && pane_alive "$parent"; then
+      notify_parent "$parent" "fork $id can now write files"
+    fi
+  fi
+  printf 'fork %s: writing unlocked. Switch this CLI out of its read-only mode too (Claude Code, Gemini: shift+tab; OpenCode: Tab to build; Codex: /approvals); edits then ask for your normal approval.\n' "$id"
 }
 
 cmd_return() {
@@ -1139,7 +1242,8 @@ cmd_list() {
     model=$(meta_get model "$dir")
     ctx=$(meta_get context "$dir")
     q=$(meta_get question "$dir")
-    if [ "$st" != closed ] && ! pane_is_fork "$child" "$dir"; then
+    [ "$(meta_get write "$dir")" = 1 ] && st="$st,write"
+    if [ "${st%,write}" != closed ] && ! pane_is_fork "$child" "$dir"; then
       st="$st (pane gone)"
     fi
     # Forks opened before context modes existed were brief forks.
@@ -1243,6 +1347,7 @@ usage() {
 case "${1:-}" in
   open)       shift; cmd_open "$@" ;;
   return)     shift; cmd_return "$@" ;;
+  write)      shift; cmd_write "$@" ;;
   page)       shift; cmd_page "$@" ;;
   collect)    shift; cmd_collect "$@" ;;
   list)       shift; cmd_list "$@" ;;
@@ -1251,5 +1356,5 @@ case "${1:-}" in
   native)     shift; cmd_native "$@" ;;
   help|-h|--help) usage ;;
   '') usage >&2; exit 1 ;;
-  *) die "unknown subcommand: $1 (expected open|return|page|collect|list|close|native|detect-cli|help)" ;;
+  *) die "unknown subcommand: $1 (expected open|return|write|page|collect|list|close|native|detect-cli|help)" ;;
 esac

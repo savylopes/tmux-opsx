@@ -1,12 +1,12 @@
 ---
 name: fork
-description: "Fork the current agent conversation into a read-only child agent in a tmux pane (or window) that starts with this whole conversation (native fork on Claude Code and OpenCode) or a summary brief of it, so the user can ask side questions without derailing the main thread; the child returns a short result that the parent collects later. Works from Claude Code, Cursor CLI, Codex CLI, OpenCode and Gemini CLI. Use when the user types /fork, asks to 'fork', 'open a side agent', 'ask a question in parallel', or, inside a fork, says '/fork return'. Also /fork collect, /fork list, /fork close. Trigger: /fork"
+description: "Fork the current agent conversation into a read-only (or, with --write, writable) child agent in a tmux pane (or window) that starts with this whole conversation (native fork on Claude Code and OpenCode) or a summary brief of it, so the user can ask side questions without derailing the main thread; the child returns a short result that the parent collects later. Works from Claude Code, Cursor CLI, Codex CLI, OpenCode and Gemini CLI. Use when the user types /fork, asks to 'fork', 'open a side agent', 'ask a question in parallel', or, inside a fork, says '/fork return' or '/fork write'. Also /fork collect, /fork list, /fork close. Trigger: /fork"
 trigger: /fork
 ---
 
 # /fork
 
-Open a **read-only child agent** next to this one that already knows the current context (on Claude Code and OpenCode it is a native fork of this very conversation; otherwise it gets a brief you write), so the user can ask it side questions ("why did we pick X?", "where is Y handled?"). The child never edits code. When the user is done, the child **returns** a short result; the parent is **notified** (tmux message + pane badge, never typed into) and **collects** the result when the user asks.
+Open a **read-only child agent** next to this one that already knows the current context (on Claude Code and OpenCode it is a native fork of this very conversation; otherwise it gets a brief you write), so the user can ask it side questions ("why did we pick X?", "where is Y handled?"). The child never edits code, unless the user opens it with `--write` or unlocks it from inside with `/fork write`. When the user is done, the child **returns** a short result; the parent is **notified** (tmux message + pane badge, never typed into) and **collects** the result when the user asks.
 
 Independent of OpenSpec and `/opsx-run`. Requires tmux (except `/fork return`).
 
@@ -20,6 +20,8 @@ Independent of OpenSpec and `/opsx-run`. Requires tmux (except `/fork return`).
 | parent | `/fork --cli <claude\|agent\|codex\|opencode\|gemini> …` | use another CLI for the child (default: the same CLI as this session) |
 | parent | `/fork --brief ["question"]` | force a summary-brief child (no native fork): the child sees only the brief, not this conversation |
 | parent | `/fork --model <m> …` | run the child on model `<m>` (default: `$FORK_MODEL`, else this session's model when the child uses the same CLI, else the CLI's default) |
+| parent | `/fork --write ["question"]` | a **writable** child: its CLI's normal mode with normal approvals, allowed to edit files in its working directory (this checkout) |
+| child | `/fork write` | unlock writing in a read-only fork (the user also switches the CLI out of its read-only mode) |
 | child | `/fork return` | write the result and notify the parent |
 | parent | `/fork collect [id]` | read a fork's result into this conversation (default: the most recently returned) |
 | parent | `/fork list` | list this tmux session's forks (id, status, CLI, model, context, pane, question) |
@@ -37,9 +39,10 @@ FORK_SH=$(ls ~/.claude/skills/fork/fork.sh ~/.cursor/skills/fork/fork.sh ~/.agen
 ```
 fork.sh open [--window] [--vertical] [--cli <name>] [--cwd <dir>]
              [--model <m>] [--parent-model <m>] [--brief-only]
-             [--page-dir <abs dir>]                                  < brief
+             [--write | --page-dir <abs dir>]                        < brief
 fork.sh native [--cli <name>] [--cwd <dir>] [--brief-only]
 fork.sh return                                                      < result
+fork.sh write                                       (child: unlock writing)
 fork.sh page [--manifest]                                           < html|tsv
 fork.sh collect [<id>]
 fork.sh list
@@ -99,6 +102,8 @@ Model precedence: `--model` > `$FORK_MODEL` > `--parent-model` (only when the ch
 
    For `/fork --brief`, pass `--brief-only` to **both** `native` and `open`: the child then gets the full brief and never sees this conversation.
 
+   For `/fork --write`, pass `--write` to `open` and replace the Role line with: `You are a writable fork: answer questions, and edit files in this checkout only when the user asks.`
+
    Pipe the brief to `fork.sh open` on stdin with a quoted heredoc so nothing is expanded. **Always** pass `--parent-model <your own model id>` (the exact id you are running as, e.g. `claude-opus-5-5`), so the child inherits your model. `fork.sh` ignores it when the child runs on a different CLI (or `--model` / `$FORK_MODEL` gives a model), so passing it is always safe. If you do not know your model id, omit it; the child then uses its CLI's default.
 
    Add `--model <m>` only when the user names a model for the fork. Add `--window`, `--vertical`, `--cli <name>` or `--cwd <dir>` only when the user asked for them, and pass the same `--cli` / `--cwd` / `--brief-only` to `native` and `open`. `fork.sh` appends a generated **Fork protocol** section (read-only rule, the exact return command, the marker fallback), stores everything as `brief.md` and uses it as the child's first prompt.
@@ -133,6 +138,12 @@ You are in a fork when your first prompt contains a "Fork protocol" section (and
 
 Running `/fork return` outside a fork prints "this session is not a fork" — say so and stop.
 
+## Writable forks: `--write` and `/fork write`
+
+- **At creation.** Pass `--write` to `open` only when the user asked for a fork that may edit ("fork with write", "/fork --write …"). The child then starts in its CLI's normal mode with normal approvals (table below), its Fork protocol says it may edit files, warns that this session may edit the same checkout, and asks for a **Files changed** list in its result. `open` prints `# access: write …`; tell the user the fork can edit this checkout. `--write` cannot be combined with `--page-dir`.
+- **From inside a read-only fork.** When the user types `/fork write` in the fork, run the **exact** `fork.sh write` command from the Fork protocol (allowed in read-only mode like `return`). It records the fork as writable, retitles the pane `fork <id> (write)` and notifies the parent. Then tell the user to switch the CLI out of its read-only mode: Claude Code and Gemini shift+tab, OpenCode Tab to the build agent, Codex `/approvals`, Cursor its mode switch. Edit files only after both. Never run `fork.sh write` unless the user typed `/fork write`. Exit 1: not a fork; exit 4: a page fork, which writes only its page.
+- **In the parent.** `list` shows a writable fork as `open,write`. When collecting a writable fork's result, read its **Files changed** list and check those files before you edit them yourself.
+
 ## Child: `fork.sh page` (page forks)
 
 A fork opened with `--page-dir` (by `/explain`) writes one web page. Its brief ends with a **Page protocol** section and `$FORK_PAGE_DIR` is set; the brief's `Languages:` line says which language(s) the page carries (one article, or English and Portuguese with identical labels). Write the whole page, then its label manifest, with the exact commands from that section:
@@ -149,7 +160,7 @@ PAGE_EOF
 
 `page` replaces `<page dir>/index.html` atomically (`--manifest`: `manifest.tsv`) and prints the path; it never writes anywhere else. Exit codes: 1 not a fork, 2 empty input, 3 could not write, 4 the fork has no page directory. On Claude Code it is allowed in plan mode by a second narrow rule beside `fork.sh return`. There is **no marker fallback for pages**: if the command is refused, blocked or fails, tell the user the page cannot be written from this fork and stop; never print the HTML into the pane. Stay read-only otherwise.
 
-Stay read-only for the whole session: no edits, no state-changing commands, no git writes. `fork.sh return` (and, in a page fork, `fork.sh page`) are the only exceptions.
+Stay read-only for the whole session: no edits, no state-changing commands, no git writes. `fork.sh return` (and, in a page fork, `fork.sh page`) are the only exceptions, until the user unlocks writing with `/fork write` (not possible in a page fork).
 
 ## Parent: `/fork collect [id]`
 
@@ -163,23 +174,23 @@ Collecting clears that fork's badge on the parent pane. Summarize the result for
 
 ## Parent: `/fork list` and `/fork close`
 
-- `"$FORK_SH" list` — show the table (id, status `open` / `returned` / `closed`, CLI, model (`default` = the CLI's default), context (`full` = native fork, `brief` = summary brief), pane, first line of the question). `(pane gone)` means the child exited without being closed.
+- `"$FORK_SH" list` — show the table (id, status `open` / `returned` / `closed`, with `,write` for a writable fork, CLI, model (`default` = the CLI's default), context (`full` = native fork, `brief` = summary brief), pane, first line of the question). `(pane gone)` means the child exited without being closed.
 - `"$FORK_SH" close <id>` / `close --all` — if a fork has no result yet, a `capture.txt` is saved first, so a later `collect <id>` still returns something. The pane/window is killed; state is kept.
 
-## Read-only children per CLI
+## Children per CLI
 
-| CLI | Launched as | `return` |
-|---|---|---|
-| Claude Code | `claude --permission-mode plan` + an allow rule for exactly `fork.sh return` (and one for `fork.sh page` in a page fork) | writes `result.md` directly |
-| Codex CLI | `codex --sandbox read-only --ask-for-approval on-request` | sandbox blocks the write; Codex may ask the user to approve that one command, else marker fallback |
-| Gemini CLI | `gemini --approval-mode plan -i` | usually marker fallback |
-| Cursor CLI | `agent --mode ask` | usually marker fallback |
-| OpenCode | `opencode --agent plan --prompt` | marker fallback (plan agent refuses shell writes) |
+| CLI | Launched as (read-only) | With `--write` | `return` |
+|---|---|---|---|
+| Claude Code | `claude --permission-mode plan` + allow rules for exactly `fork.sh return` and `fork.sh write` (`fork.sh return` and `fork.sh page` in a page fork) | `--permission-mode manual` (`default` on older versions) + the `return` rule | writes `result.md` directly |
+| Codex CLI | `codex --sandbox read-only --ask-for-approval on-request` | `--sandbox workspace-write --ask-for-approval on-request` | read-only: sandbox blocks the write, Codex may ask to approve it, else marker fallback |
+| Gemini CLI | `gemini --approval-mode plan -i` | `--approval-mode default` | read-only: usually marker fallback |
+| Cursor CLI | `agent --mode ask` | `agent` (no `--mode`) | read-only: usually marker fallback |
+| OpenCode | `opencode --agent plan --prompt` | `--agent build` | read-only: marker fallback (plan agent refuses shell writes) |
 
-Native forks add `--resume <id> --fork-session` (Claude Code) or `--continue --fork` (OpenCode) to these lines and keep every read-only flag. No child is ever launched with bypass/force/auto-approve flags. Full-screen TUIs (OpenCode) keep little scrollback, so collect while the marker block is still on screen.
+Native forks add `--resume <id> --fork-session` (Claude Code) or `--continue --fork` (OpenCode) to these lines and keep every read-only (or `--write`) flag. No child is ever launched with bypass/force/auto-approve flags. Full-screen TUIs (OpenCode) keep little scrollback, so collect while the marker block is still on screen.
 
 ## Where things live
 
-`${XDG_STATE_HOME:-~/.local/state}/agent-forks/<tmux-session>/<id>/` — `brief.md`, `meta` (incl. `page_dir`, empty for an ordinary fork), `launch.sh`, `result.md`, `capture.txt`. Outside the repo; nothing to gitignore. Old forks are kept until the user deletes them.
+`${XDG_STATE_HOME:-~/.local/state}/agent-forks/<tmux-session>/<id>/` — `brief.md`, `meta` (incl. `page_dir`, empty for an ordinary fork, and `write=0|1`, `write_since` when unlocked), `launch.sh`, `result.md`, `capture.txt`. Outside the repo; nothing to gitignore. Old forks are kept until the user deletes them.
 
 The parent badge is the pane title `fork <ids> ✓` (tmux's default status line shows it) and the pane option `@fork_badge` (usable in `pane-border-format`). While a badge is shown, `allow-set-title` is turned off on the parent pane so the agent CLI does not overwrite it; `collect`/`close` restore it.
