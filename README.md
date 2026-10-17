@@ -9,7 +9,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  ├── workflow     /opsx-run: change → window → apply → gates → merge/land
  │                /opsx-review: PR ↔ ticket → review change (ticket ACs + project spec) → /opsx-run --validate
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
- ├── context      memory · fork
+ ├── context      memory · fork · learn: procedures an agent worked out → project skills in .opsx/skills/, seen by every CLI
  │                /explain: a topic → a designed, diagrammed web page with labelled blocks, written by a fork, served by /expose (directory)
  ├── sharing      /expose: local port or directory → https://<name>--<project>.<domain> behind a login, share links for clients (opt-in)
  │                /opsx-run <change> preview: a change's app → https://<change>--<project>.<domain>
@@ -68,6 +68,8 @@ Not in tmux? It starts a session named after the project folder for you.
 | `memory` skill | `~/.claude/skills/memory/` · `~/.cursor/skills/memory/` · `~/.agents/skills/memory/` · `~/.codex/skills/memory/` · `~/.config/opencode/skills/memory/` · `~/.gemini/skills/memory/` | Shared cross-agent memory protocol — read/save/update/forget, project tagging, safe concurrent writes |
 | Memory instruction block | `CLAUDE.md` (Claude config dir) · `~/.codex/AGENTS.md` · `~/.config/opencode/AGENTS.md` · `~/.gemini/GEMINI.md` | Marked block (`<!-- tmux-opsx:memory:start -->` … `:end -->`) telling each agent to use the shared store |
 | Memory store | `~/.agents/memory/` | Plain folder: `MEMORY.md` index + `user/` `feedback/` `project/` `reference/` — created once, never overwritten |
+| `learn` skill + `learn.sh` | `~/.claude/skills/learn/` · `~/.cursor/skills/learn/` · `~/.agents/skills/learn/` · `$CODEX_HOME/skills/learn/` · `~/.config/opencode/skills/learn/` · `~/.gemini/skills/learn/` | Save a procedure learned in a project as a project skill in `.opsx/skills/<name>/`, linked as `learned-<name>` for every CLI (see [Learned skills](#learned-skills)) |
+| Learn instruction block | same files as the memory block | Marked block (`<!-- tmux-opsx:learn:start -->` … `:end -->`) telling each agent when a procedure deserves a skill |
 | `/fork` skill + `fork.sh` | `~/.claude/skills/fork/` · `~/.cursor/skills/fork/` · `~/.agents/skills/fork/` · `$CODEX_HOME/skills/fork/` · `~/.config/opencode/skills/fork/` · `~/.gemini/skills/fork/` | Read-only side-question agent in a tmux pane, briefed with the current context; notify-then-pull results (see [Fork](#fork)) |
 | `/explain` skill + `explain.sh` | `~/.claude/skills/explain/` · `~/.cursor/skills/explain/` · `~/.agents/skills/explain/` · `$CODEX_HOME/skills/explain/` · `~/.config/opencode/skills/explain/` · `~/.gemini/skills/explain/` | A fork writes a self-contained web page about a topic, with labelled blocks you refine by name; the project's pages directory is published through `/expose` and served by Caddy (see [Explain](#explain)) |
 | `/opsx-review` skill + `opsx-review.sh` | `~/.claude/skills/opsx-review/` · `~/.cursor/skills/opsx-review/` · `~/.agents/skills/opsx-review/` · `$CODEX_HOME/skills/opsx-review/` · `~/.config/opencode/skills/opsx-review/` · `~/.gemini/skills/opsx-review/` | Review a PR against its ticket and the project's requirements as an OpenSpec change run by `/opsx-run --validate`; names the session `<TICKET>-review` (see [Reviewing a pull request](#reviewing-a-pull-request-opsx-review)) |
@@ -96,7 +98,7 @@ cd tmux-opsx
 ./install.sh
 ```
 
-The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec **skills and `/opsx:*` commands globally** for Claude Code, Cursor, Codex, OpenCode, and Gemini, verifies **Graphify** and copies `/graphify` into those same global skill dirs, installs the tmux-opsx subagent and `/opsx-run` skill, the `opsx` command and `/opsx-init` skill, registers the **browser-use** MCP server for Gemini, Codex, and OpenCode, and sets up the shared **memory** store (see [Memory](#memory) below).
+The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec **skills and `/opsx:*` commands globally** for Claude Code, Cursor, Codex, OpenCode, and Gemini, verifies **Graphify** and copies `/graphify` into those same global skill dirs, installs the tmux-opsx subagent and `/opsx-run` skill, the `opsx` command and `/opsx-init` skill, registers the **browser-use** MCP server for Gemini, Codex, and OpenCode, sets up the shared **memory** store (see [Memory](#memory) below), and installs the `learn` skill for project skills (see [Learned skills](#learned-skills)).
 
 ```
 ./install.sh --prefix <dir>     # Claude config dir (default ~/.claude, or $CLAUDE_CONFIG_DIR)
@@ -105,6 +107,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --skip-commands    # don't install global OpenSpec skills / /opsx:* commands
 ./install.sh --skip-mcp         # don't install the browser-use MCP server
 ./install.sh --skip-memory      # don't install the memory skill, instruction blocks, store, or import
+./install.sh --skip-learn       # don't install the learn skill or its instruction block
 ./install.sh --skip-fork        # don't install the /fork skill
 ./install.sh --skip-explain     # don't install the /explain skill
 ./install.sh --skip-review      # don't install the /opsx-review skill
@@ -617,6 +620,44 @@ Per CLI, the installer:
 
 `./install.sh --uninstall` removes the `memory` skill and the instruction blocks but **never deletes `~/.agents/memory/`** — your memories stay on disk.
 
+### Learned skills
+
+Memory keeps facts and preferences; **learned skills** keep procedures. When an agent finishes a task that taught it a new procedure in a project (re-run a proof against a cluster, regenerate a fixture, query a requirements document), it saves that procedure as a skill **in the project**, where every CLI finds it natively next time, and says so in one line:
+
+> Saved project skill `learned-rerun-zone-proof` (`.opsx/skills/rerun-zone-proof/SKILL.md`).
+
+It saves only when the procedure is multi-step, specific to the project, verified in that session, likely needed again, and not already covered by a skill, README or AGENTS.md; it updates an existing learned skill instead of adding a duplicate, and never writes secrets. The rule lives in a marked block (`<!-- tmux-opsx:learn:start -->` … `:end -->`) beside the memory block, the full procedure in `skills/learn/SKILL.md`.
+
+```
+<repo>/                              # the main checkout, also when saved from a worktree
+├── .opsx/skills/<name>/SKILL.md     # the one real copy (frontmatter name: learned-<name>)
+├── .claude/skills/learned-<name>  -> ../../.opsx/skills/<name>   # Claude Code (and OpenCode)
+├── .agents/skills/learned-<name>  -> ../../.opsx/skills/<name>   # Codex (and OpenCode)
+├── .cursor/skills/learned-<name>  -> ../../.opsx/skills/<name>   # Cursor CLI
+└── .gemini/skills/learned-<name>  -> ../../.opsx/skills/<name>   # Gemini CLI
+```
+
+CLIs only discover skills directly inside their skills folder, so each skill gets one relative symlink per CLI folder; the `learned-` prefix keeps them apart from skills the project commits (those are never touched). OpenCode reads `.claude/skills/` and `.agents/skills/`, so it gets no link of its own. The agent never writes there by hand; everything goes through `learn.sh` (in the installed `learn` skill folder):
+
+```
+learn.sh root            # the project root: main checkout of the repo, else the current dir
+learn.sh save <name>     # store a SKILL.md read from stdin and link it ([a-z0-9-], max 40 chars)
+learn.sh list            # name, description and linked CLI folders of every learned skill
+learn.sh sync            # recreate missing links, remove dangling learned-* links
+learn.sh remove <name>   # delete the skill and its links
+learn.sh ignore          # keep learned skills out of git (only when you ask)
+```
+
+Learned skills are not ignored by default: commit them to share them with the team, or ask the agent to "keep learned skills private", which runs `learn.sh ignore`. It adds two lines to the repo's `.gitignore`, `.opsx/skills/` and `**/skills/learned-*`: ignoring only the store would leave committed links pointing nowhere. Nothing else in tmux-opsx edits `.gitignore`.
+
+Discovery was checked with Claude Code 2.1.302: a `learned-<name>` symlink in `.claude/skills/` is listed and triggered by its description (a skill one folder deeper is not). Cursor CLI, Codex CLI and Gemini CLI were not installed on the test machine; their folders follow the same one-folder-per-skill convention but are not verified yet.
+
+```
+./install.sh --skip-learn       # skip the learn skill and its instruction block
+```
+
+`./install.sh --uninstall` removes the `learn` skill and its blocks; every project's `.opsx/skills/` and `learned-*` links stay. `bash tests/test-learn.sh` covers `learn.sh` in scratch repos, a worktree and a non-git directory (save, refused input, links, sync, list, remove, ignore with `git check-ignore`) and the install, `--skip-learn` and uninstall in scratch HOMEs.
+
 ### Fork
 
 `/fork` opens a **read-only child agent** beside the one you are talking to that already knows the current conversation (on Claude Code and OpenCode it is a native fork of it, elsewhere it gets a summary brief), so you can ask side questions ("why did we pick X?", "where is Y handled?") without derailing the main thread. It is independent of OpenSpec and `/opsx-run`, and works from Claude Code, Cursor CLI, Codex CLI, OpenCode and Gemini CLI. It needs tmux.
@@ -880,7 +921,7 @@ New windows default to the CLI of the calling session; override with `--agent-cl
 ./install.sh --uninstall
 ```
 
-Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-run`, `/opsx-init`, `memory`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/` nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`) is ever deleted. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps.
+Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-run`, `/opsx-init`, `memory`, `learn`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory and learn instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/`, a project's `.opsx/skills/`, nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`) is ever deleted. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps.
 
 ---
 

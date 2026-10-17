@@ -43,6 +43,10 @@
 #                                   -> marked block in CLAUDE.md / ~/.codex/AGENTS.md /
 #                                      ~/.config/opencode/AGENTS.md / ~/.gemini/GEMINI.md
 #                                   -> one-time import of existing Claude Code memories
+#   7b. the learn skill            -> ~/.claude/skills/learn/  (and the other five
+#                                      skill dirs, like memory; learn.sh)
+#                                   -> marked learn block in the same files as memory
+#      Learned skills live in each project's .opsx/skills/, never touched here.
 #   8. the /fork skill             -> ~/.claude/skills/fork/
 #                                   -> ~/.cursor/skills/fork/
 #                                   -> ~/.agents/skills/fork/
@@ -85,6 +89,7 @@
 #   --skip-commands    Don't install global OpenSpec skills / /opsx:* commands
 #   --skip-mcp         Don't install the browser-use MCP server
 #   --skip-memory      Don't install the memory skill, instruction blocks, store, or import
+#   --skip-learn       Don't install the learn skill or its instruction block
 #   --skip-fork        Don't install the /fork skill
 #   --skip-explain     Don't install the /explain skill
 #   --skip-review      Don't install the /opsx-review skill
@@ -111,6 +116,7 @@ SKIP_GRAPHIFY=0
 SKIP_COMMANDS=0
 SKIP_MCP=0
 SKIP_MEMORY=0
+SKIP_LEARN=0
 SKIP_FORK=0
 SKIP_EXPLAIN=0
 SKIP_REVIEW=0
@@ -143,6 +149,7 @@ while [ $# -gt 0 ]; do
     --skip-commands) SKIP_COMMANDS=1; shift ;;
     --skip-mcp)      SKIP_MCP=1; shift ;;
     --skip-memory)   SKIP_MEMORY=1; shift ;;
+    --skip-learn)    SKIP_LEARN=1; shift ;;
     --skip-fork)     SKIP_FORK=1; shift ;;
     --skip-explain)  SKIP_EXPLAIN=1; shift ;;
     --skip-review)   SKIP_REVIEW=1; shift ;;
@@ -550,6 +557,11 @@ AGENTS_MEMORY_SKILLS_DIR=$HOME/.agents/skills/memory
 OPENCODE_MEMORY_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/memory
 GEMINI_MEMORY_SKILLS_DIR=$GEMINI_HOME_DIR/skills/memory
 MEMORY_STORE_DIR=$HOME/.agents/memory
+CURSOR_LEARN_SKILLS_DIR=$HOME/.cursor/skills/learn
+CODEX_LEARN_SKILLS_DIR=$CODEX_HOME_DIR/skills/learn
+AGENTS_LEARN_SKILLS_DIR=$HOME/.agents/skills/learn
+OPENCODE_LEARN_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/learn
+GEMINI_LEARN_SKILLS_DIR=$GEMINI_HOME_DIR/skills/learn
 CURSOR_FORK_SKILLS_DIR=$HOME/.cursor/skills/fork
 CODEX_FORK_SKILLS_DIR=$CODEX_HOME_DIR/skills/fork
 AGENTS_FORK_SKILLS_DIR=$HOME/.agents/skills/fork
@@ -703,6 +715,15 @@ install_memory_skill() {
   install_file "$SRC/skills/memory/import-claude-memory.sh" "$dest/import-claude-memory.sh"
   chmod +x "$dest/import-claude-memory.sh" || die "cannot chmod +x $dest/import-claude-memory.sh"
   ok "memory -> $dest ($label)"
+}
+
+# Install the learn skill (SKILL.md + learn.sh) into one dest dir.
+install_learn_skill() {
+  local dest=$1 label=$2
+  install_file "$SRC/skills/learn/SKILL.md" "$dest/SKILL.md"
+  install_file "$SRC/skills/learn/learn.sh" "$dest/learn.sh"
+  chmod +x "$dest/learn.sh" || die "cannot chmod +x $dest/learn.sh"
+  ok "learn -> $dest ($label)"
 }
 
 # Install the /fork skill (SKILL.md + fork.sh) into one dest dir.
@@ -1214,6 +1235,30 @@ upsert_marked_block() {
   rm -f "$blockfile"
 }
 
+LEARN_BLOCK_START='<!-- tmux-opsx:learn:start -->'
+LEARN_BLOCK_END='<!-- tmux-opsx:learn:end -->'
+
+# The backticks are literal Markdown, not command substitutions.
+# shellcheck disable=SC2016
+learn_instruction_block() {
+  printf '%s\n' "$LEARN_BLOCK_START"
+  printf '%s\n' '## Learned skills'
+  printf '%s\n' 'Procedures learned in a project are saved as project skills in `<repo>/.opsx/skills/<name>/` (the main checkout, never a worktree), linked as `learned-<name>` for every CLI.'
+  printf '%s\n' '- After finishing a task, check whether it taught a procedure that is multi-step, specific to this project, verified to work in this session, reusable (likely needed again), and not already covered by a skill, README or AGENTS.md. If so, save it with the `learn` skill (`learn.sh save <name>`); when a learned skill already covers the task, update it instead of adding a duplicate.'
+  printf '%s\n' '- Facts and preferences stay in memory; only procedures become skills. Never save secrets.'
+  printf '%s\n' '- Announce each save in one line naming the skill and its path. Edit `.gitignore` only when the user asks (`learn.sh ignore`).'
+  printf '%s\n' "$LEARN_BLOCK_END"
+}
+
+# Create, replace-between-markers, or append the learn instruction block.
+upsert_learn_block() {
+  local dest=$1 blockfile
+  blockfile=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  learn_instruction_block > "$blockfile"
+  upsert_block_file "$dest" "$LEARN_BLOCK_START" "$LEARN_BLOCK_END" "$blockfile"
+  rm -f "$blockfile"
+}
+
 # Insert or replace the block delimited by $start/$end in $dest with the
 # contents of $blockfile (which must itself begin with $start and end with
 # $end). Everything else in the file is left alone.
@@ -1657,6 +1702,12 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -rf "$CODEX_MEMORY_SKILLS_DIR" && ok "removed $CODEX_MEMORY_SKILLS_DIR (Codex)"
   rm -rf "$OPENCODE_MEMORY_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/memory (OpenCode)"
   rm -rf "$GEMINI_MEMORY_SKILLS_DIR" && ok "removed ~/.gemini/skills/memory (Gemini CLI)"
+  rm -rf "$PREFIX/skills/learn" && ok "removed skills/learn (Claude Code)"
+  rm -rf "$CURSOR_LEARN_SKILLS_DIR" && ok "removed ~/.cursor/skills/learn (Cursor CLI)"
+  rm -rf "$AGENTS_LEARN_SKILLS_DIR" && ok "removed ~/.agents/skills/learn (Agent Skills)"
+  rm -rf "$CODEX_LEARN_SKILLS_DIR" && ok "removed $CODEX_LEARN_SKILLS_DIR (Codex)"
+  rm -rf "$OPENCODE_LEARN_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/learn (OpenCode)"
+  rm -rf "$GEMINI_LEARN_SKILLS_DIR" && ok "removed ~/.gemini/skills/learn (Gemini CLI)"
   rm -rf "$PREFIX/skills/fork" && ok "removed skills/fork (Claude Code)"
   rm -rf "$CURSOR_FORK_SKILLS_DIR" && ok "removed ~/.cursor/skills/fork (Cursor CLI)"
   rm -rf "$AGENTS_FORK_SKILLS_DIR" && ok "removed ~/.agents/skills/fork (Agent Skills)"
@@ -1692,6 +1743,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
   remove_marked_block "$CODEX_AGENTS_MD"
   remove_marked_block "$OPENCODE_AGENTS_MD"
   remove_marked_block "$GEMINI_MD"
+  for f in "$PREFIX/CLAUDE.md" "$CODEX_AGENTS_MD" "$OPENCODE_AGENTS_MD" "$GEMINI_MD"; do
+    remove_marked_block "$f" "$LEARN_BLOCK_START" "$LEARN_BLOCK_END" learn
+  done
   info ""
   info "The OpenSpec CLI was left installed. Remove it with:"
   info "  npm uninstall -g $NPM_PKG"
@@ -1699,6 +1753,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   info "  uv tool uninstall graphifyy"
   info "browser-use MCP entries in Gemini / Codex / OpenCode config were left in place."
   info "$MEMORY_STORE_DIR was left in place — your memories are never deleted."
+  info "Learned skills in each project's .opsx/skills/ (and their learned-* links) were left in place."
   info "Fork state and /explain pages in \${XDG_STATE_HOME:-~/.local/state}/agent-forks/ were left in place."
   exit 0
 fi
@@ -1999,6 +2054,41 @@ else
 fi
 info ""
 
+# ---------- 7b. learn skill + instruction block ----------
+if [ "$SKIP_LEARN" -eq 1 ]; then
+  step "Skipping the learn skill (--skip-learn)"
+else
+  step "Installing the learn skill"
+  [ -f "$SRC/skills/learn/SKILL.md" ] && [ -f "$SRC/skills/learn/learn.sh" ] \
+    || die "missing $SRC/skills/learn/ — run this script from the repo checkout"
+  install_learn_skill "$PREFIX/skills/learn" "Claude Code"
+  install_learn_skill "$CURSOR_LEARN_SKILLS_DIR" "Cursor CLI"
+  install_learn_skill "$AGENTS_LEARN_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
+  if [ "$CODEX_LEARN_SKILLS_DIR" != "$AGENTS_LEARN_SKILLS_DIR" ]; then
+    install_learn_skill "$CODEX_LEARN_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
+  fi
+  install_learn_skill "$OPENCODE_LEARN_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
+  install_learn_skill "$GEMINI_LEARN_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
+  info ""
+
+  step "Writing the learn instruction block"
+  upsert_learn_block "$PREFIX/CLAUDE.md"
+  ok "learn block -> $(printf '%s' "$PREFIX/CLAUDE.md" | sed "s|$HOME|~|") (Claude Code)"
+  upsert_learn_block "$CODEX_AGENTS_MD"
+  ok "learn block -> $(printf '%s' "$CODEX_AGENTS_MD" | sed "s|$HOME|~|") (Codex CLI)"
+  upsert_learn_block "$OPENCODE_AGENTS_MD"
+  ok "learn block -> $(printf '%s' "$OPENCODE_AGENTS_MD" | sed "s|$HOME|~|") (OpenCode)"
+  upsert_learn_block "$GEMINI_MD"
+  ok "learn block -> $(printf '%s' "$GEMINI_MD" | sed "s|$HOME|~|") (Gemini CLI)"
+  info ""
+
+  step "Cursor: add the learn block manually"
+  note "Cursor has no known global instructions file — paste this into Cursor Settings -> Rules -> User Rules:"
+  info ""
+  learn_instruction_block
+fi
+info ""
+
 # ---------- 8. /fork skill ----------
 if [ "$SKIP_FORK" -eq 1 ]; then
   step "Skipping the /fork skill (--skip-fork)"
@@ -2218,6 +2308,28 @@ if [ "$SKIP_MEMORY" -eq 0 ]; then
       ok "memory block in $(printf '%s' "$f" | sed "s|$HOME|~|")"
     else
       warn "memory block missing in $f"; FAIL=1
+    fi
+  done
+fi
+if [ "$SKIP_LEARN" -eq 0 ]; then
+  for d in "$PREFIX/skills/learn" "$CURSOR_LEARN_SKILLS_DIR" "$AGENTS_LEARN_SKILLS_DIR" \
+           "$CODEX_LEARN_SKILLS_DIR" "$OPENCODE_LEARN_SKILLS_DIR" "$GEMINI_LEARN_SKILLS_DIR"; do
+    if [ -f "$d/SKILL.md" ] && [ -x "$d/learn.sh" ]; then
+      ok "$(printf '%s' "$d" | sed "s|$HOME|~|")/{SKILL.md,learn.sh}"
+    else
+      warn "missing or not executable: $d/{SKILL.md,learn.sh}"; FAIL=1
+    fi
+  done
+  if bash -n "$PREFIX/skills/learn/learn.sh" 2>/dev/null; then
+    ok "learn.sh parses"
+  else
+    warn "learn.sh failed to parse"; FAIL=1
+  fi
+  for f in "$PREFIX/CLAUDE.md" "$CODEX_AGENTS_MD" "$OPENCODE_AGENTS_MD" "$GEMINI_MD"; do
+    if [ -f "$f" ] && grep -qF "$LEARN_BLOCK_START" "$f" 2>/dev/null; then
+      ok "learn block in $(printf '%s' "$f" | sed "s|$HOME|~|")"
+    else
+      warn "learn block missing in $f"; FAIL=1
     fi
   done
 fi
