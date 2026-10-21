@@ -65,7 +65,7 @@ One OpenSpec change = one tmux window named after the change, in the current tmu
 All tmux calls go through `~/.claude/skills/opsx-run/opsx-window.sh`. **Never hand-roll `tmux send-keys`** — the script handles literal-text quoting, newline collapsing, window-id targeting, and rename suppression, all of which break subtly when improvised.
 
 ```
-opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
+opsx-window.sh ensure <change> --prompt-file <f> [--goal-file <f>] [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
 opsx-window.sh detect-cli [--agent-cli <cmd>]                          # print agent|claude|codex|opencode|gemini for the host session
 opsx-window.sh detect-model [--model <id>]                             # print the model id to launch with (or `default`)
 opsx-window.sh models [<change>] [--agent-cli <cmd>] [--<agent>-model <m>]...  # "<agent> <model> <source>" per sub-agent
@@ -167,7 +167,7 @@ Both `openspec` and the window's agent CLI run from the current working director
 | Action | This session does | The window gets |
 |---|---|---|
 | `apply` (default) | `openspec status --change <c> --json` to confirm the change is applyable, then `detect-cli` + `detect-model` + `models` + `ensure` | Apply dispatcher prompt (**ops-applier only** — no eval, review, security, or QA) |
-| `apply --validate` | Fire-and-forget: `ensure` the **validate** dispatcher prompt. Do **not** CreateGoal, do **not** poll | One prompt: window `/goal` + apply → eval → review → security → qa → fix rounds until all PASS/SKIP |
+| `apply --validate` | Fire-and-forget: `ensure` the **validate** dispatcher prompt with `--goal-file`. Do **not** set a goal here, do **not** poll | One prompt: window `/goal` + apply → eval → review → security → qa → fix rounds until all PASS/SKIP |
 | `verify` | `openspec validate <c> --strict --json` **and** `openspec status --change <c> --json` inline; report pass/fail with the actual errors | Nothing on pass. On failure, `ensure` a fix prompt (creates the window if it was closed) |
 | `eval` / `eval --agentic` | `detect-cli` + `detect-model` + `ensure` (creates the window if missing). Resolve the change first if the user wrote `/opsx-run eval` | Eval dispatcher prompt — **ops-eval once**; do not auto-fix. `--agentic` also runs L3 checks. Never pass the applier's report |
 | `review` / `review "..."` | `detect-cli` + `detect-model` + `ensure` (creates the window if missing). Resolve the change first if the user wrote `/opsx-run review` / `/opsx-run review "..."` | Review dispatcher prompt — **ops-reviewer once**; do not auto-fix. If `"..."` is present, append it **verbatim** as extra notes for ops-reviewer |
@@ -200,20 +200,27 @@ On **Claude Code**, **Cursor CLI**, and **OpenCode**, every **window** prompt is
 
 When the user passes `--validate` (with `apply` or as the default action's flag):
 
-1. **You (the `/opsx-run` caller)** only `ensure` the **validate** window prompt below. Then report the window and **stop**. Do not CreateGoal. Do not UpdateGoal. Do not poll `status`. Do not wait for apply or QA. This session must stay free for other work.
+1. **You (the `/opsx-run` caller)** only `ensure` the **validate** window prompt below, plus `--goal-file <scratchpad>/opsx-<change>-validate.goal.txt` holding the **goal** below. Then report the window and **stop**. Do not CreateGoal. Do not UpdateGoal. Do not poll `status`. Do not wait for apply or QA. This session must stay free for other work.
 2. **The opsx-run window** (the dispatcher that spawns ops-applier / ops-eval / ops-reviewer / ops-security / ops-qa) owns `/goal` and the apply → eval → review → security → qa → fix loop. Put that in the window prompt; never run it here.
-3. Never `/loop` (timer) in this session or in the window. The window drives continuation by calling subagents with `run_in_background: false` (or equivalent) so *it* blocks, not you.
+3. **Claude Code has no `CreateGoal`/`UpdateGoal` tools** — a goal is the `/goal <condition>` slash command, which a model cannot call. With `--goal-file` on a Claude window, `ensure` makes the window's first input `/goal <goal> Dispatcher steps: read <prompt file> first and follow it.` (a new window launches with it; a reused one gets it typed), so the goal is set and the turn starts on the dispatcher steps. Claude Code's evaluator re-checks the goal at every stop until it holds. The condition is capped at 4000 characters (`ensure` refuses longer). Other CLIs ignore `--goal-file` and get the prompt as before.
+4. Never `/loop` (timer) in this session or in the window. The window drives continuation by calling subagents with `run_in_background: false` (or equivalent) so *it* blocks, not you.
 
 ### Window prompts
+
+**goal** (the `--goal-file` for `apply --validate`; one paragraph, well under 4000 characters, with the fail exit so a failed apply does not loop forever)
+
+> OpenSpec change `<change>` is applied on `opsx/<change>`; ops-eval, ops-reviewer, ops-security and ops-qa have each printed `VERDICT: PASS` or `SKIP` with no leftover P0/P1 FINDINGS, and the window is marked done. Also met if apply failed or reported BLOCKED and the window was marked fail with the reason printed.
+
+Add any extra completion step the change requires (e.g. "PR #13 is updated from the final branch") to the goal too.
 
 **validate** (`apply --validate` — dispatcher owns `/goal`)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`. Stay in this window. Do NOT implement product code yourself (Claude/Cursor/OpenCode).
-> Call `CreateGoal` **once in this window** (not the parent): Apply OpenSpec change `<change>` on `opsx/<change>`, then ops-eval, ops-reviewer, ops-security, and ops-qa each `VERDICT: PASS` or `SKIP` with no leftover P0/P1 FINDINGS. Ops-applier implements; eval/reviewer/security/qa only verify (ops-eval writes only `evals/`). If Goal tools are missing, keep that as this window's objective.
+> Goal (Claude Code: already set with `/goal` before this prompt — do not look for `CreateGoal`; Cursor/Codex/OpenCode/Gemini: call `CreateGoal` **once in this window** (not the parent) if your host has goal tools): Apply OpenSpec change `<change>` on `opsx/<change>`, then ops-eval, ops-reviewer, ops-security, and ops-qa each `VERDICT: PASS` or `SKIP` with no leftover P0/P1 FINDINGS. Ops-applier implements; eval/reviewer/security/qa only verify (ops-eval writes only `evals/`). Without goal tools, keep that as this window's objective.
 > Then loop in this window (never `/loop` timer):
 > <MODELS block — for all five agents>
 > 1. Delegate apply to **ops-applier** only (`subagent_type: "ops-applier"` / `@ops-applier`, `run_in_background: false`, model only as the models block says). Codex/Gemini: apply yourself on `opsx/<change>` / `../wt-<change>`.
-> 2. If apply failed, `UpdateGoal` incomplete, `opsx-window.sh mark <change> fail`, stop.
+> 2. If apply failed, `UpdateGoal` incomplete (hosts with goal tools), `opsx-window.sh mark <change> fail`, stop.
 > 3. Delegate eval to **ops-eval** only (`subagent_type: "ops-eval"` / `@ops-eval`, `run_in_background: false`). Pass only: change name, `opsx/<change>` / `../wt-<change>`, and any `DISPUTE` lines from the last eval-fix round. **Never pass the applier's report.** Print `VERDICT:` and FINDINGS. Codex/Gemini: run eval yourself per the ops-eval agent file, deriving expectations from the specs only.
 > 4. Eval `FAIL` → delegate **ops-applier** to fix eval FINDINGS **verbatim** (keep F1, F2, …) **without touching `evals/`**; it may answer `DISPUTE F<n>: <reason>` instead. Then go to step 3 with those disputes. Eval `PASS` or `SKIP` → step 5.
 > 5. Delegate review to **ops-reviewer** only (`run_in_background: false`). Print `VERDICT:` and FINDINGS in this pane. Codex/Gemini: run review yourself.
@@ -221,7 +228,7 @@ When the user passes `--validate` (with `apply` or as the default action's flag)
 > 7. Delegate security to **ops-security** only (`run_in_background: false`). Print `VERDICT:` and FINDINGS. Codex/Gemini: run security yourself.
 > 8. Security `FAIL` → delegate **ops-applier** to fix security FINDINGS **verbatim**, then go to step 7. Security `PASS` or `SKIP` → step 9.
 > 9. Before QA, run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`, then on exit 0 `<skills>/opsx-run/opsx-preview.sh share <change> --for ops-qa --ttl 1d`. On exit 0 of both pass the share command's last stdout line (a share link) to ops-qa as `PREVIEW_URL` (open it first and keep the same browser context so its login cookie applies; do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Then delegate QA to **ops-qa** only (`run_in_background: false`). Codex/Gemini: same, then run QA yourself against that URL. Print `VERDICT:` and FINDINGS. Leave the preview running.
-> 10. QA `PASS` or `SKIP` → `UpdateGoal` complete, `mark <change> done`, stop.
+> 10. QA `PASS` or `SKIP` → `UpdateGoal` complete (hosts with goal tools), `mark <change> done`, stop.
 > 11. QA `FAIL` → keep the goal active. Delegate **ops-applier** to fix QA FINDINGS **verbatim**. Then go to step 9.
 > Stop after marking. Do not return work to the parent session.
 
@@ -412,5 +419,5 @@ opsx-land.sh <change> [--into <branch>] [--branch <name>] [--skip-specs]
 - **OpenCode** loads this skill from `~/.config/opencode/skills/opsx-run/` (and also reads `~/.claude/skills` / `~/.agents/skills`). Restart OpenCode after install. Windows launch as `opencode --auto --prompt …` (`-m provider/model` from config when detected). `ops-applier` is `~/.config/opencode/agents/ops-applier.md`; `ensure` also links it into `<project>/.opencode/agents/`. Dispatcher windows use Task or `@ops-applier`.
 - **Gemini CLI** loads this skill from `~/.gemini/skills/opsx-run/` (and `~/.agents/skills`). Restart Gemini after install. Windows launch as `gemini --approval-mode=yolo --skip-trust -i …` (`-m` from `$GEMINI_MODEL` or `~/.gemini/settings.json`). Agents live in `~/.gemini/agents/`; `ensure` links them into `<project>/.gemini/agents/`. A Gemini window applies the change itself in `opsx/<change>`.
 - Forward `--agent-cli` and `--model` from the user's `/opsx-run` message to `opsx-window.sh ensure` when they name them; otherwise `detect-cli` / `detect-model`. Forward `--applier-model` / `--eval-model` / `--reviewer-model` / `--security-model` / `--qa-model` to `models`, `ensure` and `send` as given.
-- `ops-applier` / `ops-eval` / `ops-reviewer` / `ops-security` / `ops-qa` — Claude Code: `~/.claude/agents/opsx-*.md`. Cursor CLI: `~/.cursor/agents/` plus **`ensure` links into `<project>/.cursor/agents/`**. OpenCode: `~/.config/opencode/agents/` plus project `.opencode/agents/`. Codex: `~/.codex/agents/ops-*.toml`. Gemini: `~/.gemini/agents/opsx-*.md` plus project `.gemini/agents/`. Plain **apply** only runs ops-applier (no eval, review, security, or QA). **`apply --validate`**: the **opsx-run window** uses `/goal` (`CreateGoal`) and loops apply → eval → review → security → qa → fix; this calling session only `ensure`s that prompt and returns. Standalone **eval** / **review** / **security** / **qa** (and `review "..."` / `security "..."` / `qa "..."`) are one-shot with no auto-fix. Applier drives `openspec` and never edits `evals/`. ops-eval writes only `evals/` (its own `eval: <change>` commit); reviewer/security/qa are read-only gates. OpenSpec `/opsx:*` commands are installed globally by `./install.sh`.
+- `ops-applier` / `ops-eval` / `ops-reviewer` / `ops-security` / `ops-qa` — Claude Code: `~/.claude/agents/opsx-*.md`. Cursor CLI: `~/.cursor/agents/` plus **`ensure` links into `<project>/.cursor/agents/`**. OpenCode: `~/.config/opencode/agents/` plus project `.opencode/agents/`. Codex: `~/.codex/agents/ops-*.toml`. Gemini: `~/.gemini/agents/opsx-*.md` plus project `.gemini/agents/`. Plain **apply** only runs ops-applier (no eval, review, security, or QA). **`apply --validate`**: the **opsx-run window** gets its goal (`--goal-file` → `/goal` on Claude Code, `CreateGoal` where a host has goal tools) and loops apply → eval → review → security → qa → fix; this calling session only `ensure`s that prompt and returns. Standalone **eval** / **review** / **security** / **qa** (and `review "..."` / `security "..."` / `qa "..."`) are one-shot with no auto-fix. Applier drives `openspec` and never edits `evals/`. ops-eval writes only `evals/` (its own `eval: <change>` commit); reviewer/security/qa are read-only gates. OpenSpec `/opsx:*` commands are installed globally by `./install.sh`.
 - Window names are `ox ·change` / `ox …change` / `ox ✗change` with muted mint / amber / rose on a dark bar, plus a dark pane. Idle is never tmux default. `done` maps to idle so the window stays reusable. Busy windows that go silent (~40s) fall back to idle if the agent forgot `mark done`. Lookups use `@opsx_change`, not the display title.

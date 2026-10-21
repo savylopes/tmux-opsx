@@ -1140,12 +1140,38 @@ ensure_gemini_project_agents() {
   ensure_gemini_project_agent "$cwd" opsx-security.md || true
 }
 
+# Claude Code has no goal tools for the model to call: a goal is the /goal
+# slash command, which sets the condition and starts the turn. Its condition
+# is capped at 4000 characters, so the window's first input is
+# "/goal <condition> Dispatcher steps: read <prompt file> ..." instead of the
+# prompt itself. Prints the file to launch or send with: the goal file on
+# Claude Code, the prompt file unchanged on other CLIs or without a goal.
+goal_prompt_file() {
+  local cli=$1 prompt_file=$2 goal_file=$3 cond dir out
+  if [ -z "$goal_file" ] || [ "$cli" != claude ]; then
+    printf '%s' "$prompt_file"
+    return 0
+  fi
+  cond=$(tr '\n' ' ' <"$goal_file")
+  cond=${cond%"${cond##*[![:space:]]}"}
+  cond=${cond#"${cond%%[![:space:]]*}"}
+  [ -n "$cond" ] || die "goal file is empty: $goal_file"
+  dir=$(cd "$(dirname "$prompt_file")" && pwd) || die "cannot resolve $prompt_file"
+  cond="$cond Dispatcher steps: read $dir/$(basename "$prompt_file") first and follow it."
+  [ "${#cond}" -le 4000 ] \
+    || die "goal condition is ${#cond} characters; /goal allows 4000 — shorten $goal_file"
+  out="$dir/$(basename "$prompt_file").goal"
+  printf '/goal %s\n' "$cond" >"$out" || die "cannot write $out"
+  printf '%s' "$out"
+}
+
 cmd_ensure() {
-  local change=${1:-} prompt_file="" cwd="$PWD" create_only=0 agent_cli="" model=""
+  local change=${1:-} prompt_file="" goal_file="" cwd="$PWD" create_only=0 agent_cli="" model=""
   shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt-file) prompt_file=${2:-}; shift 2 ;;
+      --goal-file)   goal_file=${2:-}; shift 2 ;;
       --cwd)         cwd=${2:-}; shift 2 ;;
       --agent-cli)   agent_cli=${2:-}; shift 2 ;;
       --model)       model=${2:-}; shift 2 ;;
@@ -1154,9 +1180,10 @@ cmd_ensure() {
       *) die "unknown option: $1" ;;
     esac
   done
-  [ -n "$change" ] || die "usage: opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]..."
+  [ -n "$change" ] || die "usage: opsx-window.sh ensure <change> --prompt-file <f> [--goal-file <f>] [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]..."
   [ -n "$prompt_file" ] || die "--prompt-file is required"
   [ -f "$prompt_file" ] || die "prompt file not found: $prompt_file"
+  [ -z "$goal_file" ] || [ -f "$goal_file" ] || die "goal file not found: $goal_file"
   [ -d "$cwd" ] || die "cwd not found: $cwd"
 
   require_tmux
@@ -1172,7 +1199,9 @@ cmd_ensure() {
   if [ "$cli" = gemini ]; then
     ensure_gemini_project_agents "$cwd"
   fi
-  launch=$(build_launch_cmd "$prompt_file" "$cli" "$model")
+  local first_input
+  first_input=$(goal_prompt_file "$cli" "$prompt_file" "$goal_file") || exit 1
+  launch=$(build_launch_cmd "$first_input" "$cli" "$model")
 
   if inside_tmux; then
     sess=$(current_session) || exit 1
@@ -1201,7 +1230,8 @@ cmd_ensure() {
     [ "$create_only" -eq 1 ] && die "window '$change' already exists ($win)"
     store_agent_models "$win" "$(models_cli_key "$(window_cli "$win" "$cli")")"
     apply_window_status "$win" "$change" busy
-    send_prompt "$win" "$prompt_file"
+    first_input=$(goal_prompt_file "$(window_cli "$win" "$cli")" "$prompt_file" "$goal_file") || exit 1
+    send_prompt "$win" "$first_input"
     printf 'reused %s %s:%s\n' "$win" "$sess" "$change"
     inside_tmux || printf '# attach with: tmux attach -t %s\n' "$sess"
     return 0

@@ -110,7 +110,7 @@ Run `openspec validate <change> --strict` and fix the change until it passes.
 
 ### 6. Launch
 
-Unless `--no-run`, invoke **/opsx-run** as `/opsx-run <change> --validate` with the user's `--agent-cli`, `--model` and `--<agent>-model` flags, following its skill exactly (detect-cli, detect-model, models, prompt file, `ensure`). In the validate prompt file, insert the block below right after the `CreateGoal` paragraph. Fill in the placeholders, and add the user's extra focus text verbatim as its last bullet when given.
+Unless `--no-run`, invoke **/opsx-run** as `/opsx-run <change> --validate` with the user's `--agent-cli`, `--model` and `--<agent>-model` flags, following its skill exactly (detect-cli, detect-model, models, prompt file, `ensure`). In the validate prompt file, insert the block below right after the `Goal` paragraph, and pass the validate goal file to `ensure` with `--goal-file`. Fill in the placeholders, and add the user's extra focus text verbatim as its last bullet when given.
 
 > Review-change constraints (pass these to EVERY subagent verbatim):
 > - This change is a CODE REVIEW of PR #<n> (<repo slug>, branch `<head>`, head `<sha>`, ticket <TICKET>) against the ticket and the project's requirements. It produces review documents only and changes NO product code.
