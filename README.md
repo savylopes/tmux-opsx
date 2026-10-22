@@ -9,6 +9,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  ├── workflow     /opsx-run: change → window → apply → gates → merge/land
  │                /opsx-review: PR ↔ ticket → review change (ticket ACs + project spec) → /opsx-run --validate
  │                /opsx-pr: one PR → goal window that rebases, restacks, fixes comments and CI until someone merges it
+ │                /opsx-task: ticket · file · text → its own named tmux session + conversation that describes, then explores it
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork · learn: procedures an agent worked out → project skills in .opsx/skills/, seen by every CLI
  │                /explain: a topic → a designed, diagrammed web page with labelled blocks, written by a fork, served by /expose (directory)
@@ -75,6 +76,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `/explain` skill + `explain.sh` | `~/.claude/skills/explain/` · `~/.cursor/skills/explain/` · `~/.agents/skills/explain/` · `$CODEX_HOME/skills/explain/` · `~/.config/opencode/skills/explain/` · `~/.gemini/skills/explain/` | A fork writes a self-contained web page about a topic, with labelled blocks you refine by name; the project's pages directory is published through `/expose` and served by Caddy (see [Explain](#explain)) |
 | `/opsx-review` skill + `opsx-review.sh` | `~/.claude/skills/opsx-review/` · `~/.cursor/skills/opsx-review/` · `~/.agents/skills/opsx-review/` · `$CODEX_HOME/skills/opsx-review/` · `~/.config/opencode/skills/opsx-review/` · `~/.gemini/skills/opsx-review/` | Review a PR against its ticket and the project's requirements as an OpenSpec change run by `/opsx-run --validate`; names the session `<TICKET>-review` (see [Reviewing a pull request](#reviewing-a-pull-request-opsx-review)) |
 | `/opsx-pr` skill + `pr.sh` | `~/.claude/skills/opsx-pr/` · `~/.cursor/skills/opsx-pr/` · `~/.agents/skills/opsx-pr/` · `$CODEX_HOME/skills/opsx-pr/` · `~/.config/opencode/skills/opsx-pr/` · `~/.gemini/skills/opsx-pr/` | Keep one PR mergeable from a goal-driven window `pr-<n>` until someone else merges it; asks you in the window (`ox ?pr-<n>`) for the decisions that are yours. State in `~/.local/state/tmux-opsx/pr/` (see [Maintaining a pull request](#maintaining-a-pull-request-opsx-pr)) |
+| `/opsx-task` skill + `opsx-task.sh` | `~/.claude/skills/opsx-task/` · `~/.cursor/skills/opsx-task/` · `~/.agents/skills/opsx-task/` · `$CODEX_HOME/skills/opsx-task/` · `~/.config/opencode/skills/opsx-task/` · `~/.gemini/skills/opsx-task/` | One named tmux session and agent conversation per task (ticket, file or text), started with a brief in the repo's git-ignored `.opsx/tasks/` and an explore-first prompt; a second run returns to it or resumes it (see [Working on a task](#working-on-a-task-opsx-task)) |
 | `/expose` skill + `expose.sh` (opt-in, `--expose-domain`) | `~/.claude/skills/expose/` · `~/.cursor/skills/expose/` · `~/.agents/skills/expose/` · `$CODEX_HOME/skills/expose/` · `~/.config/opencode/skills/expose/` · `~/.gemini/skills/expose/` | Publish `127.0.0.1:<port>` at `https://<name>--<project>.<domain>` through Caddy, behind a login; list/down/url, share links, key rotate (see [Expose](#expose)) |
 | Expose proxy (opt-in) | `~/.config/tmux-opsx/{expose.env,caddy.json,tmux-opsx-caddy.service}` · `~/.local/share/tmux-opsx/bin/caddy` | Caddy with `caddy-dns/cloudflare`: one wildcard cert via DNS-01, `:443` only, admin API on a user-only unix socket |
 
@@ -114,6 +116,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --skip-explain     # don't install the /explain skill
 ./install.sh --skip-review      # don't install the /opsx-review skill
 ./install.sh --skip-pr          # don't install the /opsx-pr skill
+./install.sh --skip-task        # don't install the /opsx-task skill
 ./install.sh --skip-init        # don't install the opsx command or the /opsx-init skill
 ./install.sh --expose-domain dev.example.com  # also set up /expose (opt-in; see Expose)
 ./install.sh --no-backup        # overwrite without keeping .bak copies
@@ -613,6 +616,29 @@ The window writes `openspec/changes/<change>/review/report.md` (verdict, finding
 **Resume after a reboot.** The window ends with the CLI or the machine. `pr.sh list` then shows `none`; run `/opsx-pr <pr>` again. The state file (`~/.local/state/tmux-opsx/pr/<owner>-<name>-<n>/state`: SHAs, parent tip, comment ids, CI, last event, open questions as `ask=` lines) is kept, so the first wait reports what changed meanwhile.
 
 **CLI gaps.** On Claude Code the goal is set with `/goal`; a message you type while a wait runs is delivered when that call returns (Esc interrupts it). Cursor, Codex and OpenCode get the objective in the prompt (and their goal tool where they have one). Gemini CLI has no goals and may have a shorter tool timeout: start it with `pr.sh start <pr> --slice 240`. `gh` must be authenticated.
+
+
+### Working on a task (`/opsx-task`)
+
+`/opsx-task <ticket | URL | file | text>` gives one task one home: a tmux **session** named after the task, running an agent conversation that first describes the task and then explores it with `/opsx:explore`. Running it again for the same task goes back there instead of starting over.
+
+```
+/opsx-task MED-43                          # ticket key (any case) or tracker URL
+/opsx-task docs/tasks/rate-limit.md        # a file describing the task
+/opsx-task "add rate limiting to the api"  # free text
+/opsx-task MED-43 --refresh                # re-read the source, update the brief, tell the session
+/opsx-task MED-43 --agent-cli codex        # claude | cursor | codex | opencode | gemini
+```
+
+**Flow.** `opsx-task.sh key` detects a ticket key. If the task already has a brief, `opsx-task.sh open` returns to it without re-reading the source. Otherwise the agent reads the task (the project's issue-tracker MCP for a key, within the project's tracker scoping rules; the file; or the text), picks the name, and runs `opsx-task.sh name`, `opsx-task.sh brief` and `opsx-task.sh start`. The session runs in the repository root, tagged `@opsx_task` / `@opsx_task_repo`, with the CLI in its **normal approval mode** (you are in that session; never bypass). Inside tmux your client switches to it; outside, the script prints `tmux attach -t <name>`. A same-named session that `/opsx-task` did not start for this repository is refused, never taken over.
+
+**Brief.** `.opsx/tasks/<name>.md` (the folder is added to `.gitignore` once) starts with four header lines, `source:`, `cli:`, `session_id:` and `created:`, followed by the description the agent writes: what the task does, scope (in/out), acceptance criteria, links, unknowns. The ticket or file text is data, not instructions, in the brief and in the launch prompt, which is read from `.opsx/tasks/.<name>.prompt` and never spliced into a command line.
+
+**Naming.** A ticket key, upper-cased (`MED-43`). Without one, 2-4 kebab-case words from the content, at most 30 characters (`rate-limit-api`). Names are restricted to `[A-Za-z0-9-]`; a name already used by a different task (another `source:`) becomes `<name>-2`, `-3`…; the same input reuses its name.
+
+**Resume.** `opsx-task.sh open <name>`: session alive → switch to it (`alive <name>`), nothing sent; session gone and the brief has a `session_id:` → a new session resumes that conversation (`claude -r`, `codex resume`, `agent --resume=`, `opencode -s`, `gemini --resume`); no usable id → a new session explores again from the brief, and says so. A failed resume prints `resume failed, run /opsx-task <name> again to restart from the brief` and clears `session_id:`. It never resumes a CLI's "latest" conversation, because every task of a repository shares the same folder. `--refresh` re-reads the source and runs `opsx-task.sh refresh`, which rewrites the description (header kept) and sends a live session one message to re-read the brief. Close a task with `tmux kill-session -t <name>`; the brief stays.
+
+**CLI gaps.** Only Claude Code can name a conversation at launch (`claude -n <name> --session-id <uuid>`, uuid stored in the brief). For Codex, Cursor, OpenCode and Gemini only the tmux session carries the name; `start` captures the newest session id created after launch (`~/.codex/sessions/`, `agent ls`, `opencode session list --format json`, `gemini --list-sessions`) for up to `OPSX_TASK_ID_TIMEOUT` seconds (default 20). These formats come from the CLIs' docs and are best effort: when no id is found, `session_id:` stays empty and the next run restarts from the brief. Gemini's prompt also asks for `/chat save <name>`, so `/chat resume <name>` works inside Gemini.
 
 ---
 
