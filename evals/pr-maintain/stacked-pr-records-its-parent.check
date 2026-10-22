@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Stacked PR records its parent
+# level: L2
+# requirement: PR state file
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 43 >/dev/null 2>&1 || fail "start failed"
+f=$(state_file 43); cat "$f" 2>&1
+grep -qx "parent=42" "$f" || fail "no parent=42"
+grep -qx "parent_tip=$SHA_A" "$f" || fail "parent_tip is not PR 42 head SHA $SHA_A"
+echo OK

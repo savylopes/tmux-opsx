@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Skipped
+# level: L2
+# requirement: Install and documentation
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+out=$(run_install --skip-pr); rc=$?
+echo "$out" | tail -15; echo "install exit $rc"
+[ $rc -eq 0 ] || fail "install exit $rc"
+f=$(find "$HOME" -type d -name opsx-pr 2>/dev/null); echo "found: $f"
+[ -z "$f" ] || fail "opsx-pr folder created"
+echo OK

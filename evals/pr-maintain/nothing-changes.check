@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Nothing changes
+# level: L1
+# requirement: Wait for a PR event
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+s=$(date +%s)
+out=$("$PRSH" wait 42 --slice 2 --poll 1 --repo "$R" 2>&1); rc=$?
+e=$(( $(date +%s) - s ))
+echo "$out"; echo "exit $rc after ${e}s"
+[ $rc -eq 3 ] || fail "expected exit 3, got $rc"
+[ $e -le 15 ] || fail "took ${e}s"
+echo "$out" | grep -q "^event=" && fail "printed an event"
+echo OK

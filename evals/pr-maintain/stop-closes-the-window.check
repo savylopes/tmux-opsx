@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Stop closes the window
+# level: L2
+# requirement: List and stop
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+[ "$(win_count 42)" -ge 1 ] || fail "window not created"
+out=$("$PRSH" stop 42 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+[ "$(win_count 42)" -eq 0 ] || fail "pr-42 window remains"
+[ -f "$(state_file 42)" ] || fail "state file removed"
+echo OK

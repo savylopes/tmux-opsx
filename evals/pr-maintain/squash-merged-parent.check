@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Squash-merged parent
+# level: L2
+# requirement: Restack after the parent merges
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+"$PRSH" seen 43 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+# squash-merge parent (A,B) into main as one commit
+commit "$R" a.txt A "squash A+B"; $G -C "$R" add a.txt; printf "%s\n" B > "$R/b.txt"; $G -C "$R" add b.txt
+$G -C "$R" commit -q --amend -m "squash A+B"; $G -C "$R" push -q origin main
+setpr 42 ".state=\"MERGED\""; setpr 43 ".baseRefName=\"main\""
+out=$("$PRSH" restack 43 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+w="$SP/work/wt-pr-43"; [ -d "$w" ] || w=$($G -C "$R" worktree list --porcelain | awk "/^worktree /{p=\$2} /^branch .*feat-b/{print p}")
+[ -d "$w" ] || fail "no worktree on feat-b"
+subs=$($G -C "$w" log --format=%s main..HEAD 2>/dev/null | sort | tr "\n" " ")
+echo "commits on top of main: $subs"
+[ "$subs" = "C D " ] || fail "expected only C and D, got: $subs"
+$G -C "$w" merge-base --is-ancestor "$($G -C "$R" rev-parse main)" HEAD || fail "not on top of main"
+echo OK

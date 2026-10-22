@@ -59,6 +59,9 @@
 #                                      ~/.local/state/agent-forks/explain/, never touched here)
 #      the /opsx-review skill      -> ~/.claude/skills/opsx-review/  (and the other five
 #                                      skill dirs, like /fork; opsx-review.sh)
+#      the /opsx-pr skill          -> ~/.claude/skills/opsx-pr/  (and the other five
+#                                      skill dirs, like /fork; pr.sh; PR state lives in
+#                                      ~/.local/state/tmux-opsx/pr/, never touched here)
 #   9. the /expose skill + proxy   ONLY with --expose-domain <domain>:
 #                                   -> ~/.claude/skills/expose/  (and the other five
 #                                      skill dirs, like /fork; expose.sh)
@@ -93,6 +96,7 @@
 #   --skip-fork        Don't install the /fork skill
 #   --skip-explain     Don't install the /explain skill
 #   --skip-review      Don't install the /opsx-review skill
+#   --skip-pr          Don't install the /opsx-pr skill
 #   --skip-init        Don't install the opsx command or the /opsx-init skill
 #   --expose-domain <d>  Set up /expose: publish local ports at https://<name>--<project>.<d>
 #                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9).
@@ -120,6 +124,7 @@ SKIP_LEARN=0
 SKIP_FORK=0
 SKIP_EXPLAIN=0
 SKIP_REVIEW=0
+SKIP_PR=0
 SKIP_INIT=0
 EXPOSE_DOMAIN=""
 BACKUP=1
@@ -153,6 +158,7 @@ while [ $# -gt 0 ]; do
     --skip-fork)     SKIP_FORK=1; shift ;;
     --skip-explain)  SKIP_EXPLAIN=1; shift ;;
     --skip-review)   SKIP_REVIEW=1; shift ;;
+    --skip-pr)       SKIP_PR=1; shift ;;
     --skip-init)     SKIP_INIT=1; shift ;;
     --expose-domain) [ $# -ge 2 ] || die "--expose-domain needs a domain"
                      EXPOSE_DOMAIN=$2; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift 2 ;;
@@ -577,6 +583,11 @@ CODEX_REVIEW_SKILLS_DIR=$CODEX_HOME_DIR/skills/opsx-review
 AGENTS_REVIEW_SKILLS_DIR=$HOME/.agents/skills/opsx-review
 OPENCODE_REVIEW_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/opsx-review
 GEMINI_REVIEW_SKILLS_DIR=$GEMINI_HOME_DIR/skills/opsx-review
+CURSOR_PR_SKILLS_DIR=$HOME/.cursor/skills/opsx-pr
+CODEX_PR_SKILLS_DIR=$CODEX_HOME_DIR/skills/opsx-pr
+AGENTS_PR_SKILLS_DIR=$HOME/.agents/skills/opsx-pr
+OPENCODE_PR_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/opsx-pr
+GEMINI_PR_SKILLS_DIR=$GEMINI_HOME_DIR/skills/opsx-pr
 CURSOR_EXPOSE_SKILLS_DIR=$HOME/.cursor/skills/expose
 CODEX_EXPOSE_SKILLS_DIR=$CODEX_HOME_DIR/skills/expose
 AGENTS_EXPOSE_SKILLS_DIR=$HOME/.agents/skills/expose
@@ -751,6 +762,16 @@ install_review_skill() {
   install_file "$SRC/skills/opsx-review/opsx-review.sh" "$dest/opsx-review.sh"
   chmod +x "$dest/opsx-review.sh" || die "cannot chmod +x $dest/opsx-review.sh"
   ok "/opsx-review -> $dest ($label)"
+}
+
+# Install the /opsx-pr skill (SKILL.md + pr.sh) into one dest dir. pr.sh finds
+# opsx-window.sh in the sibling opsx-run skill folder.
+install_pr_skill() {
+  local dest=$1 label=$2
+  install_file "$SRC/skills/opsx-pr/SKILL.md" "$dest/SKILL.md"
+  install_file "$SRC/skills/opsx-pr/pr.sh"    "$dest/pr.sh"
+  chmod +x "$dest/pr.sh" || die "cannot chmod +x $dest/pr.sh"
+  ok "/opsx-pr -> $dest ($label)"
 }
 
 # Install the /opsx-init skill (SKILL.md + opsx-init.sh) into one dest dir.
@@ -1726,6 +1747,12 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -rf "$CODEX_REVIEW_SKILLS_DIR" && ok "removed $CODEX_REVIEW_SKILLS_DIR (Codex)"
   rm -rf "$OPENCODE_REVIEW_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/opsx-review (OpenCode)"
   rm -rf "$GEMINI_REVIEW_SKILLS_DIR" && ok "removed ~/.gemini/skills/opsx-review (Gemini CLI)"
+  rm -rf "$PREFIX/skills/opsx-pr" && ok "removed skills/opsx-pr (Claude Code)"
+  rm -rf "$CURSOR_PR_SKILLS_DIR" && ok "removed ~/.cursor/skills/opsx-pr (Cursor CLI)"
+  rm -rf "$AGENTS_PR_SKILLS_DIR" && ok "removed ~/.agents/skills/opsx-pr (Agent Skills)"
+  rm -rf "$CODEX_PR_SKILLS_DIR" && ok "removed $CODEX_PR_SKILLS_DIR (Codex)"
+  rm -rf "$OPENCODE_PR_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/opsx-pr (OpenCode)"
+  rm -rf "$GEMINI_PR_SKILLS_DIR" && ok "removed ~/.gemini/skills/opsx-pr (Gemini CLI)"
   rm -rf "$PREFIX/skills/opsx-init" && ok "removed skills/opsx-init (Claude Code)"
   rm -rf "$CURSOR_INIT_SKILLS_DIR" && ok "removed ~/.cursor/skills/opsx-init (Cursor CLI)"
   rm -rf "$AGENTS_INIT_SKILLS_DIR" && ok "removed ~/.agents/skills/opsx-init (Agent Skills)"
@@ -2141,6 +2168,25 @@ else
 fi
 info ""
 
+# ---------- 8d. /opsx-pr skill ----------
+if [ "$SKIP_PR" -eq 1 ]; then
+  step "Skipping the /opsx-pr skill (--skip-pr)"
+else
+  step "Installing the /opsx-pr skill"
+  [ -f "$SRC/skills/opsx-pr/SKILL.md" ] || die "missing $SRC/skills/opsx-pr/SKILL.md — run this script from the repo checkout"
+  [ -f "$SRC/skills/opsx-pr/pr.sh" ] || die "missing $SRC/skills/opsx-pr/pr.sh — run this script from the repo checkout"
+  install_pr_skill "$PREFIX/skills/opsx-pr" "Claude Code"
+  install_pr_skill "$CURSOR_PR_SKILLS_DIR" "Cursor CLI"
+  install_pr_skill "$AGENTS_PR_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
+  if [ "$CODEX_PR_SKILLS_DIR" != "$AGENTS_PR_SKILLS_DIR" ]; then
+    install_pr_skill "$CODEX_PR_SKILLS_DIR" "Codex (\$CODEX_HOME/skills)"
+  fi
+  install_pr_skill "$OPENCODE_PR_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
+  install_pr_skill "$GEMINI_PR_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
+  note "/opsx-pr windows push the PR branch (--force-with-lease) and post to the PR; they never merge"
+fi
+info ""
+
 # ---------- 9. /expose skill + proxy (only with --expose-domain) ----------
 if [ -n "$EXPOSE_DOMAIN" ]; then
   step "Setting up /expose for *.$EXPOSE_DOMAIN"
@@ -2376,6 +2422,21 @@ if [ "$SKIP_REVIEW" -eq 0 ]; then
     ok "opsx-review.sh parses"
   else
     warn "opsx-review.sh failed to parse"; FAIL=1
+  fi
+fi
+if [ "$SKIP_PR" -eq 0 ]; then
+  for d in "$PREFIX/skills/opsx-pr" "$CURSOR_PR_SKILLS_DIR" "$AGENTS_PR_SKILLS_DIR" \
+           "$CODEX_PR_SKILLS_DIR" "$OPENCODE_PR_SKILLS_DIR" "$GEMINI_PR_SKILLS_DIR"; do
+    if [ -f "$d/SKILL.md" ] && [ -x "$d/pr.sh" ]; then
+      ok "$(printf '%s' "$d" | sed "s|$HOME|~|")/{SKILL.md,pr.sh}"
+    else
+      warn "missing or not executable: $d/{SKILL.md,pr.sh}"; FAIL=1
+    fi
+  done
+  if bash -n "$PREFIX/skills/opsx-pr/pr.sh" 2>/dev/null; then
+    ok "pr.sh parses"
+  else
+    warn "pr.sh failed to parse"; FAIL=1
   fi
 fi
 if [ "$SKIP_INIT" -eq 0 ]; then

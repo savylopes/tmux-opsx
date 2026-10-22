@@ -22,7 +22,8 @@ context: |
   Conventions:
   - bash for all scripts; keep them shellcheck clean
   - install.sh keeps .bak copies of anything it overwrites (unless --no-backup)
-  - never push to a remote; landing stays local and prints the push command
+  - never push to a remote; landing stays local and prints the push command. Exception: a window the user
+    started with /opsx-pr pushes that PR's branch (--force-with-lease only) and posts to the PR, because that is its job
   - never hand-roll `tmux send-keys`; go through opsx-window.sh (literal sends, window ids)
   - do not rename the repo, install paths, skill names or the `ox` window prefix without a change
   - a change that adds a component updates the README overview tree and, if relevant, this file

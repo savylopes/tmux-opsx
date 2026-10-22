@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Existing worktree reused
+# level: L2
+# requirement: Maintenance worktree
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+$G -C "$R" worktree add -q "$SP/work/wt-add-thing" feat-a || fail "setup worktree"
+out=$("$PRSH" worktree 42 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+echo "$out" | grep -q "wt-add-thing" || fail "did not print the existing worktree"
+[ ! -e "$SP/work/wt-pr-42" ] || fail "created wt-pr-42"
+echo OK

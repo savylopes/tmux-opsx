@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / PR number resolves
+# level: L1
+# requirement: Resolve the PR to maintain
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+out=$("$PRSH" resolve 42 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "expected exit 0, got $rc"
+for l in pr=42 head=feat-a base=main state=OPEN; do echo "$out" | grep -qx "$l" || fail "missing line $l"; done
+echo OK

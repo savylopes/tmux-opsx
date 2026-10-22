@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Merged PR is refused
+# level: L2
+# requirement: Start a maintain window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+out=$(pr_start 41 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "expected non-zero exit"
+echo "$out" | grep -q MERGED || fail "message does not name the state"
+[ "$(win_count 41)" -eq 0 ] || fail "a window was created"
+echo OK

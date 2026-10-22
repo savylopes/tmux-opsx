@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / New review comment
+# level: L1
+# requirement: Wait for a PR event
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+set_ids repos/o/app/pulls/42/comments 10
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+set_ids repos/o/app/pulls/42/comments 10 11
+out=$("$PRSH" wait 42 --slice 3 --poll 1 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "expected exit 0, got $rc"
+echo "$out" | grep -qx "event=comments" || fail "no event=comments"
+echo OK

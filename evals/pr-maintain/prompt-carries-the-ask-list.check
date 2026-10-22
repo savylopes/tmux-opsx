@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt carries the ask list
+# level: L2
+# requirement: Ask the user on important or ambiguous decisions
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+p=$SP/prompt.copy; [ -s "$p" ] || fail "no prompt file"
+for pat in "conflict" "scope|design" "dependenc" "disabl|delet" "disagree" "write access" "overwrit" "clos" "twice"; do
+  grep -qiE "$pat" "$p" || fail "ask list lacks: $pat"
+done
+echo OK

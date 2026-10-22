@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Open PR starts a window
+# level: L2
+# requirement: Start a maintain window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+out=$(pr_start 42 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+[ "$(win_count 42)" -ge 1 ] || fail "no window tagged @opsx_change=pr-42"
+[ -s "$SP/goal.copy" ] || fail "ensure got no goal file"
+for w in 42 MERGED CLOSED; do grep -qi "$w" "$SP/goal.copy" || fail "goal lacks $w"; done
+grep -qi "stop" "$SP/goal.copy" || fail "goal lacks stop exit"
+echo OK

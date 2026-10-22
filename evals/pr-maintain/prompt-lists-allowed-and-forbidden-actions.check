@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt lists allowed and forbidden actions
+# level: L2
+# requirement: Autonomous actions
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+p=$SP/prompt.copy; [ -s "$p" ] || fail "no prompt file"
+grep -q -- "--force-with-lease" "$p" || fail "no --force-with-lease"
+grep -qiE "never merge|not merge|must not merge|do not merge|never merges" "$p" || fail "does not say the agent never merges"
+grep -qE -- "--force([^-a-z]|$)" "$p" || fail "plain --force is not mentioned as forbidden"
+grep -qiE "(forbid|never|not|no)[^.]*--force([^-a-z]|$)|--force([^-a-z]|$)[^.]*(forbid|never|not|no)" "$p" || fail "plain --force not marked forbidden"
+echo OK

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / New PR
+# level: L1
+# requirement: Open a PR for a branch
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+$G -C "$R" checkout -q -b feat-z; commit "$R" z.txt Z Z
+echo body > "$EVAL_TMP/b.md"
+out=$("$PRSH" open feat-z --title T --body-file "$EVAL_TMP/b.md" --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"; echo "--- gh.log"; cat "$GHD/gh.log"
+[ $rc -eq 0 ] || fail "exit $rc"
+n=$(grep -c "^pr create" "$GHD/gh.log"); [ "$n" -eq 1 ] || fail "expected 1 pr create call, got $n"
+grep "^pr create" "$GHD/gh.log" | grep -q "feat-z" || fail "pr create lacks head feat-z"
+echo "$out" | grep -q "^pr=[0-9]" || fail "no pr= line"
+git --git-dir="$ORIGIN" rev-parse -q --verify refs/heads/feat-z >/dev/null || fail "branch not pushed to origin"
+echo OK
