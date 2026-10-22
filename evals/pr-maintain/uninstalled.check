@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Uninstalled
+# level: L2
+# requirement: Install and documentation
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+run_install >/dev/null || fail "install failed"
+[ -d "$HOME/.claude/skills/opsx-pr" ] || fail "not installed first"
+out=$(run_install --uninstall); rc=$?
+echo "$out" | tail -15; echo "uninstall exit $rc"
+f=$(find "$HOME" -name opsx-pr 2>/dev/null); echo "left: $f"
+[ -z "$f" ] || fail "opsx-pr remains after uninstall"
+echo OK

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Parent merged
+# level: L1
+# requirement: Wait for a PR event
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+"$PRSH" seen 43 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+grep -qx "parent=42" "$(state_file 43)" || fail "state lacks parent=42"
+setpr 42 ".state=\"MERGED\""
+out=$("$PRSH" wait 43 --slice 3 --poll 1 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+echo "$out" | grep -qx "event=parent-merged" || fail "no event=parent-merged"
+echo OK

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Mark ask
+# level: L2
+# requirement: Ask window state
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+out=$("$WINSH" mark pr-42 ask 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "mark exit $rc"
+l=$(T list-windows -a -F "#{@opsx_change}|#{@opsx_status}|#{window_name}" | grep "^pr-42|")
+echo "$l"
+echo "$l" | grep -q "^pr-42|ask|" || fail "status is not ask"
+echo "$l" | awk -F"|" "{print \$3}" | grep -q "^ox ?" || fail "name does not start with ox ?"
+echo OK

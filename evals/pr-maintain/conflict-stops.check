@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Conflict stops
+# level: L2
+# requirement: Restack after the parent merges
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+"$PRSH" seen 43 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+commit "$R" a.txt A "squash A"; commit "$R" b.txt B "squash B"
+commit "$R" c.txt "other C" "main touches c.txt"; $G -C "$R" push -q origin main
+setpr 42 ".state=\"MERGED\""; setpr 43 ".baseRefName=\"main\""
+out=$("$PRSH" restack 43 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 4 ] || fail "expected exit 4, got $rc"
+echo "$out" | grep -q "c.txt" || fail "conflicted file c.txt not listed"
+echo OK

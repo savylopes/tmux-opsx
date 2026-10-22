@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Base moved
+# level: L1
+# requirement: Wait for a PR event
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+commit "$R" m.txt M "main moves"; $G -C "$R" push -q origin main
+out=$("$PRSH" wait 42 --slice 3 --poll 1 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "expected exit 0, got $rc"
+echo "$out" | grep -qx "event=base-moved" || fail "no event=base-moved"
+echo OK

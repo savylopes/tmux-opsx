@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Bad argument
+# level: L1
+# requirement: Resolve the PR to maintain
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+out=$("$PRSH" resolve not-a-pr --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "expected non-zero exit"
+[ -n "$out" ] || fail "expected a message"
+echo "$out" | grep -q "^pr=" && fail "printed a pr= line"
+echo OK

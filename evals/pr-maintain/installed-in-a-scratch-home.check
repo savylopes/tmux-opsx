@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Installed in a scratch HOME
+# level: L2
+# requirement: Install and documentation
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+out=$(run_install); rc=$?
+echo "$out" | tail -15; echo "install exit $rc"
+[ $rc -eq 0 ] || fail "install exit $rc"
+d="$HOME/.claude/skills/opsx-pr"
+[ -f "$d/SKILL.md" ] || fail "$d/SKILL.md missing"
+[ -x "$d/pr.sh" ] || fail "$d/pr.sh not executable"
+echo OK

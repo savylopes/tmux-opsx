@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt carries the gates
+# level: L2
+# requirement: Gates before a push
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+p=$SP/prompt.copy; [ -s "$p" ] || fail "no prompt file"
+grep -qi "test" "$p" || fail "no tests gate"
+grep -qi "ops-reviewer" "$p" || fail "no ops-reviewer gate"
+echo OK

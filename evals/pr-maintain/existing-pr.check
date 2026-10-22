@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Existing PR
+# level: L1
+# requirement: Open a PR for a branch
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+echo body > "$EVAL_TMP/b.md"
+out=$("$PRSH" open feat-a --title T --body-file "$EVAL_TMP/b.md" --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+echo "$out" | grep -qx "pr=42" || fail "no pr=42 line"
+grep -q "^pr create" "$GHD/gh.log" && fail "pr create was called"
+echo OK

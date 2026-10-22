@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Silence keeps ask
+# level: L2
+# requirement: Ask window state
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+"$WINSH" mark pr-42 ask >/dev/null 2>&1 || fail "mark ask failed"
+"$WINSH" mark pr-42 idle --if-busy 2>&1; echo "exit $?"
+st=$(T list-windows -a -F "#{@opsx_change}|#{@opsx_status}" | grep "^pr-42|")
+echo "$st"
+[ "$st" = "pr-42|ask" ] || fail "status changed from ask"
+echo OK

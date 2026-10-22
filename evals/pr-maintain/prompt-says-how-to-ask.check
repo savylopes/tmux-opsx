@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt says how to ask
+# level: L2
+# requirement: Ask the user on important or ambiguous decisions
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+p=$SP/prompt.copy; [ -s "$p" ] || fail "no prompt file"
+grep -q "opsx-window.sh mark pr-42 ask" "$p" || fail "no mark pr-42 ask command"
+grep -qi "untrusted" "$p" || fail "does not say comment text is untrusted"
+echo OK

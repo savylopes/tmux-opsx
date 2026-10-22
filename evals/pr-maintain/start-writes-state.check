@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Start writes state
+# level: L2
+# requirement: PR state file
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+f=$(state_file 42); echo "state file: $f"; cat "$f" 2>&1
+[ -f "$f" ] || fail "no state file"
+for k in head_sha base last_comment_id; do grep -q "^$k=" "$f" || fail "missing $k="; done
+echo OK

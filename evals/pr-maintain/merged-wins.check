@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Merged wins
+# level: L1
+# requirement: Wait for a PR event
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+setpr 42 ".state=\"MERGED\""
+set_ids repos/o/app/pulls/42/comments 50
+out=$("$PRSH" wait 42 --slice 3 --poll 1 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "expected exit 0, got $rc"
+[ "$(echo "$out" | grep -c "^event=")" -eq 1 ] || fail "expected exactly one event line"
+echo "$out" | grep -qx "event=merged" || fail "no event=merged"
+echo OK

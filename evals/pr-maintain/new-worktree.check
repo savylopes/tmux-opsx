@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / New worktree
+# level: L2
+# requirement: Maintenance worktree
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+before=$($G -C "$R" rev-parse --abbrev-ref HEAD)
+out=$("$PRSH" worktree 42 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+w="$SP/work/wt-pr-42"
+[ -d "$w" ] || fail "$w missing"
+[ "$($G -C "$w" rev-parse --abbrev-ref HEAD)" = feat-a ] || fail "worktree not on feat-a"
+[ "$($G -C "$R" rev-parse --abbrev-ref HEAD)" = "$before" ] || fail "main checkout branch changed"
+echo OK

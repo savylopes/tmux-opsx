@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / List shows a running PR
+# level: L2
+# requirement: List and stop
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+out=$("$PRSH" list 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+l=$(echo "$out" | grep "42" | head -1); [ -n "$l" ] || fail "no line with 42"
+echo "$l" | grep -qiE "busy|idle|ask|done|fail" || fail "line has no window status"
+echo "$l" | grep -qw none && fail "status is none although window exists"
+echo OK

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Unknown PR
+# level: L1
+# requirement: Resolve the PR to maintain
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+"$PRSH" resolve 999 --repo "$R"; rc=$?
+echo "exit $rc"; [ $rc -eq 2 ] || fail "expected exit 2, got $rc"
+echo OK

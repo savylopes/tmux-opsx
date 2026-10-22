@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Second start reuses the window
+# level: L2
+# requirement: Start a maintain window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "first start failed"
+out=$(pr_start 42 2>/dev/null); rc=$?
+echo "$out"; echo "exit $rc"
+[ "$(win_count 42)" -eq 1 ] || fail "expected exactly 1 pr-42 window, got $(win_count 42)"
+echo "$out" | head -1 | grep -q "^reused" || fail "output does not start with reused"
+echo OK
