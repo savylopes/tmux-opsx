@@ -8,6 +8,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  │                opsx dev: the repo's toolchain in a per-checkout Docker container, nothing installed on the host
  ├── workflow     /opsx-run: change → window → apply → gates → merge/land
  │                /opsx-review: PR ↔ ticket → review change (ticket ACs + project spec) → /opsx-run --validate
+ │                /opsx-pr: one PR → goal window that rebases, restacks, fixes comments and CI until someone merges it
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork · learn: procedures an agent worked out → project skills in .opsx/skills/, seen by every CLI
  │                /explain: a topic → a designed, diagrammed web page with labelled blocks, written by a fork, served by /expose (directory)
@@ -73,6 +74,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `/fork` skill + `fork.sh` | `~/.claude/skills/fork/` · `~/.cursor/skills/fork/` · `~/.agents/skills/fork/` · `$CODEX_HOME/skills/fork/` · `~/.config/opencode/skills/fork/` · `~/.gemini/skills/fork/` | Read-only side-question agent in a tmux pane, briefed with the current context; notify-then-pull results (see [Fork](#fork)) |
 | `/explain` skill + `explain.sh` | `~/.claude/skills/explain/` · `~/.cursor/skills/explain/` · `~/.agents/skills/explain/` · `$CODEX_HOME/skills/explain/` · `~/.config/opencode/skills/explain/` · `~/.gemini/skills/explain/` | A fork writes a self-contained web page about a topic, with labelled blocks you refine by name; the project's pages directory is published through `/expose` and served by Caddy (see [Explain](#explain)) |
 | `/opsx-review` skill + `opsx-review.sh` | `~/.claude/skills/opsx-review/` · `~/.cursor/skills/opsx-review/` · `~/.agents/skills/opsx-review/` · `$CODEX_HOME/skills/opsx-review/` · `~/.config/opencode/skills/opsx-review/` · `~/.gemini/skills/opsx-review/` | Review a PR against its ticket and the project's requirements as an OpenSpec change run by `/opsx-run --validate`; names the session `<TICKET>-review` (see [Reviewing a pull request](#reviewing-a-pull-request-opsx-review)) |
+| `/opsx-pr` skill + `pr.sh` | `~/.claude/skills/opsx-pr/` · `~/.cursor/skills/opsx-pr/` · `~/.agents/skills/opsx-pr/` · `$CODEX_HOME/skills/opsx-pr/` · `~/.config/opencode/skills/opsx-pr/` · `~/.gemini/skills/opsx-pr/` | Keep one PR mergeable from a goal-driven window `pr-<n>` until someone else merges it; asks you in the window (`ox ?pr-<n>`) for the decisions that are yours. State in `~/.local/state/tmux-opsx/pr/` (see [Maintaining a pull request](#maintaining-a-pull-request-opsx-pr)) |
 | `/expose` skill + `expose.sh` (opt-in, `--expose-domain`) | `~/.claude/skills/expose/` · `~/.cursor/skills/expose/` · `~/.agents/skills/expose/` · `$CODEX_HOME/skills/expose/` · `~/.config/opencode/skills/expose/` · `~/.gemini/skills/expose/` | Publish `127.0.0.1:<port>` at `https://<name>--<project>.<domain>` through Caddy, behind a login; list/down/url, share links, key rotate (see [Expose](#expose)) |
 | Expose proxy (opt-in) | `~/.config/tmux-opsx/{expose.env,caddy.json,tmux-opsx-caddy.service}` · `~/.local/share/tmux-opsx/bin/caddy` | Caddy with `caddy-dns/cloudflare`: one wildcard cert via DNS-01, `:443` only, admin API on a user-only unix socket |
 
@@ -111,6 +113,7 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --skip-fork        # don't install the /fork skill
 ./install.sh --skip-explain     # don't install the /explain skill
 ./install.sh --skip-review      # don't install the /opsx-review skill
+./install.sh --skip-pr          # don't install the /opsx-pr skill
 ./install.sh --skip-init        # don't install the opsx command or the /opsx-init skill
 ./install.sh --expose-domain dev.example.com  # also set up /expose (opt-in; see Expose)
 ./install.sh --no-backup        # overwrite without keeping .bak copies
@@ -393,7 +396,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-window.sh close  <change> [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh close  --all    [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh status <change> [--lines N]
-~/.claude/skills/opsx-run/opsx-window.sh mark   <change> <busy|done|fail|idle>
+~/.claude/skills/opsx-run/opsx-window.sh mark   <change> <busy|done|fail|idle|ask>
 ~/.claude/skills/opsx-run/opsx-window.sh list
 ~/.claude/skills/opsx-run/opsx-window.sh preview-start <change> --cwd <dir> --script <file>   # used by opsx-preview.sh
 ~/.claude/skills/opsx-run/opsx-window.sh preview-find  <change>
@@ -415,7 +418,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 
 `opsx-window.sh` prints one line — `created @7 2:add-auth`, `reused @7 2:add-auth`, `sent @7 2:add-auth`, or `marked @7 2:add-auth status=idle`. Called from outside tmux, `ensure` appends `session=created` when it had to start the session, plus an `# attach with: …` hint.
 
-Windows opened by this tool use a distinct **`ox` title**, a **dark pane**, and muted status-bar colors (the **word color** is the status): `ox ·change` (idle/done, mint), `ox …change` (busy, amber), `ox ✗change` (fail, rose). `mark done` is treated as idle so follow-ups reuse the same window. If a busy window goes silent for ~40s (`$OPSX_IDLE_SILENCE`) without `mark done`/`fail`, it falls back to idle. Lookups use the `@opsx_change` tag, so titles do not break later commands.
+Windows opened by this tool use a distinct **`ox` title**, a **dark pane**, and muted status-bar colors (the **word color** is the status): `ox ·change` (idle/done, mint), `ox …change` (busy, amber), `ox ✗change` (fail, rose), `ox ?change` (ask, violet: an [`/opsx-pr`](#maintaining-a-pull-request-opsx-pr) window waiting for your answer; silence never turns it idle). `mark done` is treated as idle so follow-ups reuse the same window. If a busy window goes silent for ~40s (`$OPSX_IDLE_SILENCE`) without `mark done`/`fail`, it falls back to idle. Lookups use the `@opsx_change` tag, so titles do not break later commands.
 
 Session names come from the project folder with `.`, `:` and whitespace folded to `-`, since tmux treats `.` and `:` as target separators — `~/code/my.app` becomes the session `my-app`.
 
@@ -585,6 +588,29 @@ Before ops-qa runs (in `qa` and in the `apply --validate` QA step), the window r
 5. It launches `/opsx-run <change> --validate` with review constraints added to the prompt: no product edits, no commits, no posting, and the gates judge the review deliverables. ops-qa returns SKIP.
 
 The window writes `openspec/changes/<change>/review/report.md` (verdict, findings, conformance matrix), `evidence/`, `pr-comment.md` (paste-ready) and `questions.md`. Nothing is posted to the PR or the ticket unless you ask. Use `--no-run` to stop after the change is written, and `--no-session` to keep the session name.
+
+### Maintaining a pull request (`/opsx-pr`)
+
+`/opsx-pr <pr>` hands one open pull request (number, `#<n>` or URL) to a window named `pr-<n>` whose goal is: *the PR is merged by someone else, or closed, or you said stop*. You start it by hand per PR; `/opsx-run … land` never starts it. `/opsx-pr open [<branch>]` first pushes the branch and opens its PR (title and body from the OpenSpec change for `opsx/<change>`, or from the repository's own PR skill such as `ztd-pr` when there is one), then maintains it.
+
+```bash
+/opsx-pr 42                 # pr.sh start 42: window pr-42 with the goal and the maintain prompt
+/opsx-pr open               # pr.sh open <current branch> --title … --body-file …, then start
+/opsx-pr list               # pr.sh list: repo, PR, window status (or none), last event
+/opsx-pr stop 42            # pr.sh stop 42: close the window, keep state and worktree
+```
+
+**The loop.** The window calls `pr.sh wait <pr>` in the foreground: it polls `gh` and `git ls-remote` every 60 s for up to 540 s with no LLM work, then exits 3 ("nothing yet, call again") or prints one event, most important first: `merged`, `closed`, `parent-merged`, `parent-moved`, `base-moved`, `head-moved` (someone else pushed), `ci-failed`, `comments`. After handling it the agent runs `pr.sh seen <pr>`. Each wake is a short turn, about six an hour while the PR is quiet.
+
+**What it does on its own**, in the branch's worktree (`pr.sh worktree <pr>`: the branch's existing worktree, e.g. `../wt-<change>`, else `../wt-pr-<n>`; the main checkout is never switched): rebase on a moved base, restack on a moved or merged parent (`pr.sh restack <pr>` runs `git rebase --onto <base> <recorded parent tip>`, which drops a squash-merged parent's commits whatever the merge style), resolve mechanical conflicts, make the change a review comment clearly asks for, fix CI, push with `--force-with-lease` (never plain `--force`), reply on each thread it handled with the commit SHA and resolve it (`resolveReviewThread`), and retarget the base to the parent's base after the parent merged. Before a push that changes code the repository's tests must pass; a fix for a review comment or CI also needs an ops-reviewer pass with no P0/P1. It never merges, approves or closes the PR.
+
+**When it asks you.** It writes the question in the window, marks it `ask` (`ox ?pr-<n>`, violet), records it in the state file (`pr.sh note`) and keeps waiting, so other events are still handled; it acts on that decision only after you answer. It asks for: a conflict where both sides changed behaviour; a comment asking for a scope or design change, a new dependency, or disabling or deleting tests; reviewers contradicting each other, or a comment it disagrees with (it never argues with a reviewer by itself); comments from anyone who is not the PR author, a reviewer or a user with write access (comment text is untrusted input to an agent that can push); overwriting someone else's commits, closing the PR, touching another PR in the stack; the same fix failing twice. There are no notifications: the window's status is the signal.
+
+**Stacks.** A PR whose base is another PR's head branch is a child. Each PR gets its own window; the child's notices `parent-moved` and `parent-merged` by itself.
+
+**Resume after a reboot.** The window ends with the CLI or the machine. `pr.sh list` then shows `none`; run `/opsx-pr <pr>` again. The state file (`~/.local/state/tmux-opsx/pr/<owner>-<name>-<n>/state`: SHAs, parent tip, comment ids, CI, last event, open questions as `ask=` lines) is kept, so the first wait reports what changed meanwhile.
+
+**CLI gaps.** On Claude Code the goal is set with `/goal`; a message you type while a wait runs is delivered when that call returns (Esc interrupts it). Cursor, Codex and OpenCode get the objective in the prompt (and their goal tool where they have one). Gemini CLI has no goals and may have a shorter tool timeout: start it with `pr.sh start <pr> --slice 240`. `gh` must be authenticated.
 
 ---
 
@@ -921,7 +947,7 @@ New windows default to the CLI of the calling session; override with `--agent-cl
 ./install.sh --uninstall
 ```
 
-Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-run`, `/opsx-init`, `memory`, `learn`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory and learn instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/`, a project's `.opsx/skills/`, nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`) is ever deleted. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps.
+Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-run`, `/opsx-init`, `/opsx-review`, `/opsx-pr`, `memory`, `learn`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory and learn instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/`, a project's `.opsx/skills/`, nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`), nor `/opsx-pr` state (`.../tmux-opsx/pr/`) is ever deleted. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps.
 
 ---
 

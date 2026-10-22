@@ -15,7 +15,7 @@
 #   opsx-window.sh status <change> [--lines N]
 #   opsx-window.sh detect-cli [--agent-cli <cmd>]
 #   opsx-window.sh detect-model [--model <id>]
-#   opsx-window.sh mark   <change> <busy|done|fail|idle>   # title badge + status color
+#   opsx-window.sh mark   <change> <busy|done|fail|idle|ask>   # title badge + status color
 #   opsx-window.sh list                                # last column: remembered <agent>=<model> pairs
 #   opsx-window.sh preview-start <change> --cwd <dir> --script <file>
 #   opsx-window.sh preview-find  <change>
@@ -42,9 +42,11 @@
 #   idle  ox ·change   mint on dark teal
 #   busy  ox …change   amber on dark olive
 #   fail  ox ✗change   rose on dark wine
+#   ask   ox ?change   violet on dark plum (an /opsx-pr window waiting for the user)
 # `done` is an alias of idle: a finished window is still reusable.
 # Busy windows enable monitor-silence; after $OPSX_IDLE_SILENCE seconds with no
-# pane output (default 40) they fall back to idle unless already fail.
+# pane output (default 40) they fall back to idle; `mark … idle --if-busy`
+# leaves every non-busy status (fail, ask, idle) alone.
 # Agent CLI selection (ensure only):
 #   --agent-cli <name>   Launch with this command (claude, agent, cursor, codex,
 #                         opencode, gemini, or a path)
@@ -287,8 +289,13 @@ apply_window_status() {
       style="fg=#c98a8a,bg=#241818,nobold,noitalics"
       status=fail
       ;;
+    ask|asking|question)
+      title="ox ?${change}"
+      style="fg=#b9a3e0,bg=#211a2b,nobold,noitalics"
+      status=ask
+      ;;
     *)
-      die "unknown status '$status' (expected busy|done|fail|idle)"
+      die "unknown status '$status' (expected busy|done|fail|idle|ask)"
       ;;
   esac
   tmux set-option -w -t "$win" @opsx_status "$status" >/dev/null 2>&1
@@ -1542,13 +1549,13 @@ cmd_mark() {
       *)
         if [ -z "$change" ]; then change=$1
         elif [ -z "$status" ]; then status=$1
-        else die "usage: opsx-window.sh mark <change> <busy|done|fail|idle> [--if-busy]"
+        else die "usage: opsx-window.sh mark <change> <busy|done|fail|idle|ask> [--if-busy]"
         fi
         shift ;;
     esac
   done
-  [ -n "$change" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle> [--if-busy]"
-  [ -n "$status" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle> [--if-busy]"
+  [ -n "$change" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle|ask> [--if-busy]"
+  [ -n "$status" ] || die "usage: opsx-window.sh mark <change> <busy|done|fail|idle|ask> [--if-busy]"
 
   require_tmux
   local sess win
@@ -1575,7 +1582,7 @@ cmd_list() {
   sess=$(lookup_session) || exit 1
   printf '# session %s\n' "$sess"
   # The opsx column marks windows this script created (see tag_window).
-  # status comes from @opsx_status (busy|fail|idle; done is stored as idle).
+  # status comes from @opsx_status (busy|fail|idle|ask; done is stored as idle).
   # A last column lists remembered per-agent models as <agent>=<model> pairs.
   tmux list-windows -t "$sess" \
     -F '#{window_id}	#{?@opsx_change,opsx,#{?@opsx_preview,preview,-}}	#{@opsx_status}	#{window_name}	#{pane_current_command}	#{pane_current_path}	#{@opsx_model_applier}	#{@opsx_model_eval}	#{@opsx_model_reviewer}	#{@opsx_model_security}	#{@opsx_model_qa}' \
