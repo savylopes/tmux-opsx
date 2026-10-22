@@ -113,7 +113,7 @@ PR_FIELDS=number,url,headRefName,headRefOid,baseRefName,state,author
 # PR JSON for number $1, run in $REPO. Exit 2 when gh finds no such PR.
 pr_json() {
   local j
-  j=$(cd "$REPO" && gh pr view "$1" --json "$PR_FIELDS" 2>/dev/null) || {
+  j=$(cd "$REPO" && gh pr view "$1" -R "$SLUG" --json "$PR_FIELDS" 2>/dev/null) || {
     printf 'pr: PR %s not found\n' "$1" >&2; exit 2; }
   [ -n "$j" ] || { printf 'pr: PR %s not found\n' "$1" >&2; exit 2; }
   printf '%s' "$j"
@@ -136,10 +136,11 @@ remote_tip() {
   git -C "$REPO" ls-remote origin "refs/heads/$1" 2>/dev/null | awk 'NR==1 { print $1 }'
 }
 
-# Highest id in a gh api list endpoint, 0 when none or on error.
+# Highest id in a gh api list endpoint, 0 when none. Prints nothing and
+# fails when gh fails, so a failed fetch is never taken for "no comments".
 max_id() {
   local out
-  out=$(cd "$REPO" && gh api --paginate "$1" --jq '.[].id' 2>/dev/null) || out=""
+  out=$(cd "$REPO" && gh api --paginate "$1" --jq '.[].id' 2>/dev/null) || return 1
   printf '%s\n' "$out" | awk 'BEGIN { m = 0 } /^[0-9]+$/ { if ($1 + 0 > m) m = $1 + 0 } END { printf "%d", m }'
 }
 
@@ -147,7 +148,7 @@ max_id() {
 # pass when all passed, none when there are no checks.
 ci_state() {
   local out
-  out=$(cd "$REPO" && gh pr checks "$1" --json bucket 2>/dev/null) || true
+  out=$(cd "$REPO" && gh pr checks "$1" -R "$SLUG" --json bucket 2>/dev/null) || true
   [ -n "$out" ] || { printf 'none'; return; }
   jq -r '[.[].bucket] as $b
          | if ($b | length) == 0 then "none"
@@ -181,7 +182,7 @@ sset() { # key value
 # Current values into CUR_* variables (read indirectly by write_seen/detect_event).
 # shellcheck disable=SC2034
 snapshot() {
-  local j pj rec_parent rec_parent_head
+  local j pj rec_parent rec_parent_head rec_parent_base p_state p_head
   j=$(pr_json "$PR")
   CUR_state=$(jq -r .state <<<"$j")
   CUR_head=$(jq -r .headRefName <<<"$j")
@@ -191,16 +192,28 @@ snapshot() {
   CUR_url=$(jq -r .url <<<"$j")
   CUR_base_sha=$(remote_tip "$CUR_base")
   CUR_parent="" CUR_parent_tip="" CUR_parent_state="" CUR_parent_head="" CUR_parent_base=""
-  # A parent stays the parent while our base is still its head branch (also
-  # after it merged, so restack keeps the tip recorded before the merge).
-  rec_parent=$(sget parent); rec_parent_head=$(sget parent_head)
-  if [ -n "$rec_parent" ] && [ "$rec_parent_head" = "$CUR_base" ]; then
-    pj=$(cd "$REPO" && gh pr view "$rec_parent" --json number,headRefName,headRefOid,baseRefName,state 2>/dev/null) || pj=""
-  else
-    pj=$(cd "$REPO" && gh pr list --head "$CUR_base" --state open --limit 1 \
-          --json number,headRefName,headRefOid,baseRefName,state 2>/dev/null | jq -c '.[0] // empty' 2>/dev/null) || pj=""
+  # A recorded parent is always looked up. It stays the parent while our base
+  # is its head branch, and after it merged also when GitHub moved our base to
+  # the parent's base (its branch deleted), so the merge is still reported as
+  # parent-merged and restack keeps the tip recorded before the merge.
+  rec_parent=$(sget parent); rec_parent_head=$(sget parent_head); rec_parent_base=$(sget parent_base)
+  pj=""
+  if [ -n "$rec_parent" ]; then
+    pj=$(cd "$REPO" && gh pr view "$rec_parent" -R "$SLUG" --json number,headRefName,headRefOid,baseRefName,state 2>/dev/null) || pj=""
+    if [ -n "$pj" ]; then
+      p_state=$(jq -r .state <<<"$pj"); p_head=$(jq -r .headRefName <<<"$pj")
+      if [ "$p_head" = "$CUR_base" ]; then :
+      elif [ "$p_state" = MERGED ] && { [ "$CUR_base" = "$rec_parent_base" ] || [ "$CUR_base" = "$rec_parent_head" ]; }; then :
+      else pj=""
+      fi
+    fi
   fi
-  if [ -n "$pj" ] && [ "$(jq -r .headRefName <<<"$pj")" = "$CUR_base" ]; then
+  if [ -z "$pj" ]; then
+    pj=$(cd "$REPO" && gh pr list --head "$CUR_base" -R "$SLUG" --state open --limit 1 \
+          --json number,headRefName,headRefOid,baseRefName,state 2>/dev/null | jq -c '.[0] // empty' 2>/dev/null) || pj=""
+    [ -z "$pj" ] || [ "$(jq -r .headRefName <<<"$pj")" = "$CUR_base" ] || pj=""
+  fi
+  if [ -n "$pj" ]; then
     CUR_parent=$(jq -r .number <<<"$pj")
     CUR_parent_tip=$(jq -r .headRefOid <<<"$pj")
     CUR_parent_state=$(jq -r .state <<<"$pj")
@@ -208,9 +221,10 @@ snapshot() {
     CUR_parent_base=$(jq -r .baseRefName <<<"$pj")
   fi
   CUR_ci=$(ci_state "$PR")
-  CUR_last_comment_id=$(max_id "repos/$SLUG/pulls/$PR/comments")
-  CUR_last_issue_comment_id=$(max_id "repos/$SLUG/issues/$PR/comments")
-  CUR_last_review_id=$(max_id "repos/$SLUG/pulls/$PR/reviews")
+  # Empty when the fetch failed: write_seen then keeps the previous id.
+  CUR_last_comment_id=$(max_id "repos/$SLUG/pulls/$PR/comments" || true)
+  CUR_last_issue_comment_id=$(max_id "repos/$SLUG/issues/$PR/comments" || true)
+  CUR_last_review_id=$(max_id "repos/$SLUG/pulls/$PR/reviews" || true)
 }
 
 write_seen() {
@@ -223,7 +237,11 @@ write_seen() {
   sset repo "$SLUG"; sset pr "$PR"; sset url "$CUR_url"; sset repo_dir "$REPO"
   for k in state author head head_sha base base_sha parent parent_tip parent_state parent_head parent_base \
            ci last_comment_id last_issue_comment_id last_review_id; do
-    v="CUR_$k"; sset "$k" "${!v}"
+    v="CUR_$k"
+    case $k in
+      last_*_id) [ -n "${!v}" ] || continue ;;  # fetch failed: keep the old id
+    esac
+    sset "$k" "${!v}"
   done
   sset seen_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -258,9 +276,16 @@ setup_pr() {
   [ -n "$ARG1" ] || die "$1 needs a PR number, #<n> or PR URL"
   PR=$(pr_number "$ARG1")
   REPO=$(repo_dir "$REPO_OPT")
-  SLUG=""
-  if [[ $ARG1 == http* ]]; then SLUG=$(slug_of_url "$ARG1"); fi
-  [ -n "$SLUG" ] || SLUG=$(repo_slug)
+  SLUG=$(repo_slug)
+  # A URL must name this repository: the worktree, pushes and state all come
+  # from $REPO, so another repository's PR with the same number is refused.
+  if [[ $ARG1 == http* ]]; then
+    local url_slug
+    url_slug=$(slug_of_url "$ARG1")
+    [ -n "$url_slug" ] || die "'$ARG1' is not a PR URL."
+    [ "$(printf '%s' "$url_slug" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$SLUG" | tr '[:upper:]' '[:lower:]')" ] \
+      || die "$ARG1 is a PR of $url_slug, but $REPO is $SLUG; pass --repo <a checkout of $url_slug>."
+  fi
 }
 
 # ---------------------------------------------------------------- tmux
@@ -309,6 +334,12 @@ Repository (main checkout): $REPO
 State file: $(state_file)
 Helper: $SELF   (below: pr.sh)
 Window marks: $W mark pr-$PR busy|idle|ask|done
+
+## First turn
+Before the first wait (also after a restart), look at where the PR stands now, since events from
+before the watch started are not all reported: \`gh pr view $PR -R $SLUG\`, \`gh pr checks $PR -R $SLUG\`,
+unresolved review threads and recent comments (endpoints under Events), and the open questions
+(\`ask=\` lines) in the state file. Handle what is still open with the rules below, then start the loop.
 
 ## Loop
 1. \`$W mark pr-$PR idle\` (or \`ask\` while a question to the user is open), then run
@@ -481,7 +512,7 @@ cmd_restack() {
   tip=$(sget parent_tip); pstate=$(sget parent_state); pbase=$(sget parent_base)
   # The parent may have merged since the last seen: ask GitHub, not the state.
   if [ -n "$(sget parent)" ]; then
-    pj=$(cd "$REPO" && gh pr view "$(sget parent)" --json state,baseRefName 2>/dev/null) || pj=""
+    pj=$(cd "$REPO" && gh pr view "$(sget parent)" -R "$SLUG" --json state,baseRefName 2>/dev/null) || pj=""
     if [ -n "$pj" ]; then
       pstate=$(jq -r .state <<<"$pj"); pbase=$(jq -r .baseRefName <<<"$pj")
     fi
@@ -530,13 +561,14 @@ cmd_open() {
   parse_opts "$@"
   need gh; need jq
   REPO=$(repo_dir "$REPO_OPT")
+  SLUG=$(repo_slug)
   local branch=$ARG1 existing url n args
   [ -z "$ARG2" ] || die "open takes one branch"
   if [ -z "$branch" ]; then
     branch=$(git -C "$REPO" symbolic-ref -q --short HEAD) || die "not on a branch; pass the branch to open."
   fi
   git -C "$REPO" show-ref -q --verify "refs/heads/$branch" || die "no local branch $branch."
-  existing=$(cd "$REPO" && gh pr list --head "$branch" --state open --limit 1 --json number,url 2>/dev/null \
+  existing=$(cd "$REPO" && gh pr list --head "$branch" -R "$SLUG" --state open --limit 1 --json number,url 2>/dev/null \
              | jq -c '.[0] // empty' 2>/dev/null) || existing=""
   if [ -n "$existing" ]; then
     jq -r '"pr=\(.number)\nurl=\(.url)\ncreated=0"' <<<"$existing"
@@ -545,7 +577,7 @@ cmd_open() {
   [ -n "$TITLE" ] || die "open needs --title"
   if [ -z "$BODY_FILE" ] || [ ! -f "$BODY_FILE" ]; then die "open needs --body-file <existing file>"; fi
   git -C "$REPO" push -q -u origin "$branch" >&2 || die "git push -u origin $branch failed."
-  args=(pr create --head "$branch" --title "$TITLE" --body-file "$BODY_FILE")
+  args=(pr create --head "$branch" -R "$SLUG" --title "$TITLE" --body-file "$BODY_FILE")
   [ -z "$BASE_OPT" ] || args+=(--base "$BASE_OPT")
   url=$(cd "$REPO" && gh "${args[@]}" | grep -Eo 'https?://[^ ]+/pull/[0-9]+' | tail -n1) \
     || die "gh pr create failed."
@@ -585,12 +617,19 @@ cmd_start() {
     printf 'state kept %s\n' "$(state_file)" >&2
   else
     snapshot
+    # CI already failing when the watch starts is still reported by the first
+    # wait; comments already there are reviewed by the prompt's first step.
+    CUR_ci=""
     write_seen
   fi
   write_prompt_files
-  local args=(ensure "pr-$PR" --prompt-file "$(state_dir)/prompt.md" --goal-file "$(state_dir)/goal.txt" --cwd "$REPO")
+  # The window runs in the main checkout, so ensure names a session created
+  # outside tmux after it, the same name tmux_session looked in above.
+  local main
+  main=$(main_checkout "$REPO")
+  local args=(ensure "pr-$PR" --prompt-file "$(state_dir)/prompt.md" --goal-file "$(state_dir)/goal.txt" --cwd "$main")
   [ -z "$AGENT_CLI" ] || args+=(--agent-cli "$AGENT_CLI")
-  out=$(cd "$REPO" && "$W" "${args[@]}") || { printf '%s\n' "$out"; die "opsx-window.sh ensure pr-$PR failed."; }
+  out=$(cd "$main" && "$W" "${args[@]}") || { printf '%s\n' "$out"; die "opsx-window.sh ensure pr-$PR failed."; }
   printf '%s\n' "$out"
   win=$(printf '%s\n' "$out" | awk '$1 == "created" || $1 == "reused" { print $2; exit }')
   [ -z "$win" ] || tmux set-option -w -t "$win" @opsx_pr_repo "$SLUG" >/dev/null 2>&1 || true

@@ -76,6 +76,7 @@ case "\$1 \$2" in
   "pr checks")
     f="\$D/checks/\$3.json"; [ -f "\$f" ] || { echo "no checks reported" >&2; exit 1; }; cat "\$f" ;;
   "api --paginate")
+    [ -e "\$D/api_fail" ] && { echo "HTTP 502" >&2; exit 1; }
     f="\$D/api/\$(printf '%s' "\$3" | tr '/' '_')"; [ -f "\$f" ] || { echo '[]' | jq -r '.[].id'; exit 0; }
     jq -r '.[].id' "\$f" ;;
   *) echo "unexpected gh \$*" >&2; exit 9 ;;
@@ -105,6 +106,9 @@ out=$(P resolve not-a-pr 2>&1); rc=$?
 ok "bad argument fails with a message, no pr= line" '[ $rc -ne 0 ] && [ -n "$out" ] && ! printf "%s" "$out" | grep -q "^pr="'
 out=$(cd "$SP" && "$PRSH" resolve 42 2>&1); rc=$?
 ok "outside a repo without --repo fails clearly" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q -- "--repo"'
+out=$(P resolve https://github.com/x/other/pull/42 2>&1); rc=$?
+ok "F2: URL of another repository refused" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "x/other" && ! printf "%s" "$out" | grep -q "^pr="'
+ok "F2: gh pr calls name the repository with -R" 'grep "^pr view" "$SP/gh/gh.log" | grep -q -- "-R o/app" && ! grep "^pr view" "$SP/gh/gh.log" | grep -vq -- "-R o/app"'
 
 # ---------------------------------------------------------------- state (2.2)
 ST42=$SD/o-app-42/state; ST43=$SD/o-app-43/state
@@ -160,6 +164,23 @@ setpr 42 '.state="MERGED"'
 out=$(P wait 43 --slice 5 --poll 1)
 ok "parent merged -> event=parent-merged" '[ "$out" = "event=parent-merged" ]'
 setpr 42 ".state=\"OPEN\" | .headRefOid=\"$SHA_A\""
+# F1: parent merged, its branch deleted, GitHub moved the child's base to main.
+P seen 43 >/dev/null
+setpr 42 '.state="MERGED"'; setpr 43 '.baseRefName="main"'
+out=$(P wait 43 --slice 5 --poll 1)
+ok "F1: base retargeted by GitHub after the parent merged -> parent-merged" '[ "$out" = "event=parent-merged" ]'
+P seen 43 >/dev/null
+ok "F1: seen keeps parent and the pre-merge parent tip" 'grep -qx "parent=42" "$ST43" && grep -qx "parent_tip=$SHA_A" "$ST43" && grep -qx "parent_state=MERGED" "$ST43" && grep -qx "base=main" "$ST43"'
+out=$(P wait 43 --slice 1 --poll 1 2>/dev/null); rc=$?
+ok "F1: the merge is not reported again" '[ $rc -eq 3 ]'
+setpr 42 '.state="OPEN"'; setpr 43 '.baseRefName="feat-a"'; P seen 43 >/dev/null
+# F5: a failed comment fetch keeps the recorded ids.
+before=$(grep "^last_comment_id=" "$ST42")
+touch "$SP/gh/api_fail"; P seen 42 >/dev/null
+ok "F5: failed gh api during seen keeps the comment ids" '[ "$(grep "^last_comment_id=" "$ST42")" = "$before" ] && [ "$before" != "last_comment_id=0" ]'
+rm -f "$SP/gh/api_fail"
+out=$(P wait 42 --slice 1 --poll 1 2>/dev/null); rc=$?
+ok "F5: no false comments event afterwards" '[ $rc -eq 3 ]'
 mv "$ST42" "$ST42.bak"
 out=$(P wait 42 --slice 1 --poll 1 2>&1); rc=$?
 ok "wait without a state file fails clearly" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "start"'
@@ -186,7 +207,7 @@ $G -C "$SP/other" pull -q origin main
 printf 'A\n' > "$SP/other/a.txt"; printf 'B\n' > "$SP/other/b.txt"
 $G -C "$SP/other" add a.txt b.txt; $G -C "$SP/other" commit -qm "Squashed: A and B (#42)"
 $G -C "$SP/other" push -q origin main
-setpr 42 '.state="MERGED"'
+setpr 42 '.state="MERGED"'; setpr 43 '.baseRefName="main"'
 out=$(P restack 43 2>/dev/null); rc=$?
 WTB=$SP/work/wt-add-thing
 ok "squash-merged parent: branch holds only C and D on top of main" '[ $rc -eq 0 ] && [ "$(git -C "$WTB" log --format=%s origin/main..HEAD | tr "\n" " ")" = "D C " ] && git -C "$WTB" merge-base --is-ancestor origin/main HEAD && [ "$(get "$out" onto)" = origin/main ]'
@@ -197,7 +218,7 @@ out=$(P restack 43 2>/dev/null); rc=$?
 ok "conflict stops with exit 4 and names the file" '[ $rc -eq 4 ] && printf "%s" "$out" | grep -qx "conflict=c.txt"'
 ok "rebase left in progress for the agent" '[ -d "$(git -C "$WTB" rev-parse --git-path rebase-merge)" ] || [ -d "$(git -C "$WTB" rev-parse --git-path rebase-apply)" ]'
 git -C "$WTB" rebase --abort 2>/dev/null
-setpr 42 '.state="OPEN"'
+setpr 42 '.state="OPEN"'; setpr 43 '.baseRefName="feat-a"'
 
 # ---------------------------------------------------------------- open (2.6)
 $G -C "$R" checkout -q -b feat-new main; commit "$R" n.txt N "N"; $G -C "$R" checkout -q main
@@ -226,7 +247,7 @@ opt(){ $L show-options -wqv -t "$1" "$2"; }
 
 # ---------------------------------------------------------------- start (3.2, 3.3)
 rm -rf "$SD/o-app-42"
-out=$(P start 42 --agent-cli claude 2>&1); rc=$?
+out=$("$PRSH" start 42 --repo "$WT42" --agent-cli claude 2>&1); rc=$?  # --repo is a worktree (F4)
 WIN=$(winof pr-42)
 ok "start: window tagged @opsx_change=pr-42" '[ $rc -eq 0 ] && [ -n "$WIN" ] && [ "$(winof pr-42 | wc -l)" -eq 1 ]'
 ok "start: window tagged with the repo" '[ "$(opt "$WIN" @opsx_pr_repo)" = o/app ]'
@@ -234,6 +255,13 @@ GOAL=$SD/o-app-42/goal.txt; PROMPT=$SD/o-app-42/prompt.md
 ok "start: goal names PR 42 and the merged, closed and stop exits" 'grep -q "o/app#42" "$GOAL" && grep -q MERGED "$GOAL" && grep -q CLOSED "$GOAL" && grep -q "said stop" "$GOAL"'
 ok "start: Claude gets /goal with the dispatcher line, under 4000 chars" '[ -f "$PROMPT.goal" ] && head -c 6 "$PROMPT.goal" | grep -q "^/goal " && grep -q "Dispatcher steps: read $PROMPT" "$PROMPT.goal" && [ $(( $(wc -c < "$PROMPT.goal") - 7 )) -le 4000 ]'
 ok "start writes state (head_sha, base, last_comment_id)" 'grep -q "^head_sha=" "$ST42" && grep -q "^base=" "$ST42" && grep -q "^last_comment_id=" "$ST42"'
+ok "F3: a fresh start leaves CI unrecorded" 'grep -qx "ci=" "$ST42"'
+ok "F3: prompt has a first-turn step for the current state" 'grep -q "^## First turn" "$PROMPT" && grep -q "gh pr checks 42 -R o/app" "$PROMPT" && grep -q "unresolved review threads" "$PROMPT"'
+echo '[{"bucket":"fail"}]' > "$SP/gh/checks/42.json"
+out=$(P wait 42 --slice 3 --poll 1 2>/dev/null)
+ok "F3: CI already failing at start is reported by the first wait" '[ "$out" = "event=ci-failed" ]'
+rm -f "$SP/gh/checks/42.json"; P seen 42 >/dev/null
+ok "F4: window runs in the main checkout (the session name source)" '[ "$($L display -p -t "$WIN" "#{pane_start_path}")" = "$R" ] || [ "$($L display -p -t "$WIN" "#{pane_current_path}")" = "$R" ]'
 ok "prompt: --force-with-lease, never merges, forbids plain --force" 'grep -q -- "--force-with-lease" "$PROMPT" && grep -q "Never merge the PR" "$PROMPT" && grep -q "never a plain \`--force\`" "$PROMPT"'
 ok "prompt: wait/seen usage and marks" 'grep -q "pr.sh wait 42\|$PRSH wait 42" "$PROMPT" && grep -q "seen 42" "$PROMPT" && grep -q "opsx-window.sh mark pr-42 ask" "$PROMPT" && grep -q "mark pr-42 busy" "$PROMPT" && grep -q "mark pr-42 idle" "$PROMPT"'
 ok "prompt: ask list" 'grep -q "both sides changed behaviour" "$PROMPT" && grep -q "scope or design change" "$PROMPT" && grep -q "new dependency" "$PROMPT" && grep -q "disabling or deleting tests" "$PROMPT" && grep -q "contradict each other" "$PROMPT" && grep -q "disagree" "$PROMPT" && grep -q "not the PR author, a reviewer" "$PROMPT" && grep -q "write access" "$PROMPT" && grep -q "overwriting commits someone else pushed" "$PROMPT" && grep -q "closing the PR" "$PROMPT" && grep -q "another PR" "$PROMPT" && grep -q "failed twice" "$PROMPT"'
