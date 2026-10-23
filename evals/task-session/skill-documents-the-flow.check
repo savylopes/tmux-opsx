@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: task-session / Skill documents the flow
+# level: L1
+# requirement: Skill flow
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+f="$EVAL_ROOT/skills/opsx-task/SKILL.md"; [ -f "$f" ] || fail "SKILL.md missing"
+for w in key name brief start open refresh; do grep -qE "opsx-task\.sh +$w( |\`|$)" "$f" || fail "subcommand $w not named"; done
+grep -q -- '--refresh' "$f" || fail "--refresh missing"
+grep -q -- '--agent-cli' "$f" || fail "--agent-cli missing"
+grep -qiE "without re-reading|not re-read|never re-read|does not re-read|don't re-read|do not re-read|no re-read" "$f" || fail "no-reread rule not found"

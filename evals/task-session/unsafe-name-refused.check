@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: task-session / Unsafe name refused
+# level: L1
+# requirement: Validate and allocate a name
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+out=$("$TASK" name 'a;rm -rf x' --source s --repo "$R" 2>/dev/null); rc=$?
+echo "stdout=[$out] rc=$rc"
+[ $rc -ne 0 ] || fail "expected non-zero"
+[ -z "$out" ] || fail "printed a name"

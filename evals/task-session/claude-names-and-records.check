@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: task-session / Claude names and records
+# level: L2
+# requirement: Name the conversation
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief MED-43 jira:MED-43
+"$TASK" start MED-43 --agent-cli claude --no-switch --repo "$R" >/dev/null 2>&1 || fail "start failed"
+wait_args claude; echo
+f="$FAKE_LOG/claude.args"
+n=$(grep -nx -- '-n' "$f" | cut -d: -f1 | head -1); [ -n "$n" ] || fail "no -n"
+[ "$(sed -n "$((n+1))p" "$f")" = MED-43 ] || fail "-n not followed by MED-43"
+s=$(grep -nx -- '--session-id' "$f" | cut -d: -f1 | head -1); [ -n "$s" ] || fail "no --session-id"
+u=$(sed -n "$((s+1))p" "$f"); echo "uuid=$u"
+echo "$u" | grep -qE "^$UUID_RE\$" || fail "not a uuid"
+[ "$(hdr MED-43 session_id)" = "$u" ] || fail "brief session_id '$(hdr MED-43 session_id)' != $u"

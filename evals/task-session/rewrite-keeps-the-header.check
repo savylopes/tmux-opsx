@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: task-session / Rewrite keeps the header
+# level: L1
+# requirement: Brief file
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief MED-43 jira:MED-43
+b=$(brief MED-43)
+if grep -q '^session_id:' "$b"; then sed -i 's/^session_id:.*/session_id: abc/' "$b"; else fail "no session_id header"; fi
+created=$(hdr MED-43 created)
+printf 'brand-new-body\n' > n.md
+"$TASK" brief MED-43 --source jira:MED-43 --body-file n.md --repo "$R" || fail "rewrite failed"
+cat "$b"
+[ "$(hdr MED-43 session_id)" = abc ] || fail "session_id lost"
+[ "$(hdr MED-43 created)" = "$created" ] || fail "created changed"
+grep -q brand-new-body "$b" || fail "new body missing"
+grep -q 'body of the task' "$b" && fail "old body kept"
+n=$(grep -cx '\.opsx/tasks/' .gitignore); [ "$n" = 1 ] || fail "gitignore has $n lines"

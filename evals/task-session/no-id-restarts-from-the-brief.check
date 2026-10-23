@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: task-session / No id restarts from the brief
+# level: L2
+# requirement: Return to a task
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief MED-43 jira:MED-43
+"$TASK" start MED-43 --agent-cli codex --no-switch --repo "$R" >/dev/null 2>&1 || fail "start failed"
+wait_args codex >/dev/null
+[ -z "$(hdr MED-43 session_id)" ] || fail "precondition: session_id should be empty"
+T kill-session -t =MED-43; rm -f "$FAKE_LOG/codex.args"
+out=$("$TASK" open MED-43 --no-switch --repo "$R" 2>&1); rc=$?; echo "$out"
+[ $rc -eq 0 ] || fail "exit $rc"
+echo "$out" | grep -qi 'restart' || fail "output does not say restart"
+echo "$out" | grep -qi 'brief' || fail "output does not mention the brief"
+wait_args codex >/dev/null
+grep -qF '/opsx:explore' "$FAKE_LOG/codex.args" || fail "explore-first prompt not run"
+grep -qx resume "$FAKE_LOG/codex.args" && fail "resumed without an id"
+echo ok

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: task-session / No id found
+# level: L2
+# requirement: Name the conversation
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+cat > "$EVAL_TMP/fakebin/opencode" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = session ] && [ "\${2:-}" = list ]; then
+  printf '[{"id":"ses_old1","directory":"$R","time":{"created":1000000000000}}]\n'; exit 0
+fi
+case "\${1:-}" in --help|--version) exit 0;; esac
+printf '%s\n' "\$@" > "\$FAKE_LOG/opencode.args"
+exec cat >> "\$FAKE_LOG/stdin.log"
+SH
+chmod +x "$EVAL_TMP/fakebin/opencode"
+mkbrief MED-43 jira:MED-43
+"$TASK" start MED-43 --agent-cli opencode --no-switch --repo "$R" 2>&1; rc=$?
+[ $rc -eq 0 ] || fail "start exit $rc"
+b=$(brief MED-43); grep -n '^session_id:' "$b" || fail "session_id header missing"
+[ -z "$(hdr MED-43 session_id)" ] || fail "session_id not empty"

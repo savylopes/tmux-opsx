@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scenario: task-session / No key
+# level: L1
+# requirement: Detect a ticket key
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+out=$("$TASK" key "add rate limiting to the api" 2>&1); rc=$?
+echo "out=[$out] rc=$rc"
+[ -z "$out" ] && [ $rc -eq 1 ] || fail "expected empty output, exit 1"

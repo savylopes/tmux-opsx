@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# scenario: task-session / Tracker URL
+# level: L1
+# requirement: Detect a ticket key
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+out=$("$TASK" key https://acme.atlassian.net/browse/MED-43 2>&1); echo "out=[$out]"
+[ "$out" = "MED-43" ] || fail "expected MED-43"
