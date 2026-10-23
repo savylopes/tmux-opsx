@@ -7,7 +7,7 @@ Gives each task (a ticket, a task file or a text) one named tmux session and age
 ## ADDED Requirements
 
 ### Requirement: Detect a ticket key
-`opsx-task.sh key <input>` SHALL print the first ticket key in the input (a ticket key, a tracker URL or text containing one), upper-cased, matched as a whole key `[A-Za-z][A-Za-z0-9]+-[0-9]+`. It SHALL print nothing and exit 1 when there is none. A path to an existing file SHALL be read for its content only by the agent, never matched as a key from its path.
+`opsx-task.sh key <input>` SHALL print the first ticket key in the input, upper-cased, matched as a whole key `[A-Za-z][A-Za-z0-9]+-[0-9]+`: the whole input in any case, a whole path segment or query value of a tracker URL (never the host or part of a segment), or an upper-case key as a whole word in free text. Prefixes of common technical names (`UTF-8`, `SHA-256`, `ISO-8601`) SHALL never be keys. It SHALL print nothing and exit 1 when there is none. A path to an existing file SHALL be read for its content only by the agent, never matched as a key from its path.
 
 #### Scenario: Lower-case key
 - **WHEN** `opsx-task.sh key med-43` runs

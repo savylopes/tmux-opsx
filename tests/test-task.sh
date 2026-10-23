@@ -18,7 +18,8 @@ REAL_TMUX=$(command -v tmux)
 SP=$(cd -P -- "$(mktemp -d "${TMPDIR:-/tmp}/task-test.XXXXXX")" && pwd)
 SOCK=task-test-$$
 L="$REAL_TMUX -L $SOCK"
-trap '$L kill-server 2>/dev/null; rm -rf "$SP"' EXIT
+SOCK2=task-test-fresh-$$
+trap '$L kill-server 2>/dev/null; "$REAL_TMUX" -L "$SOCK2" kill-server 2>/dev/null; rm -rf "$SP"' EXIT
 pass=0; fail=0
 ok(){ if eval "$2"; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 # wait_for <seconds> <condition>
@@ -36,6 +37,7 @@ cat > "$FB/claude" <<EOF
 { printf -- '--- call\n'; printf '%s\n' "\$@"; } >> "$SP/log/claude"
 for a in "\$@"; do
   if [ "\$a" = -r ] && [ -f "$SP/claude.fail-resume" ]; then echo "No conversation found"; exit 1; fi
+  if [ "\$a" = -r ] && [ -f "$SP/claude.exit-resume" ]; then echo "interrupted"; exit 130; fi
 done
 exec sleep 300
 EOF
@@ -86,7 +88,8 @@ EOF
 chmod +x "$FB"/*
 echo new > "$SP/opencode.mode"
 
-export PATH="$FB:$PATH" CODEX_HOME=$SP/codex OPSX_TASK_CLAUDE_MODE=default OPSX_TASK_ID_TIMEOUT=4 SHELL=/bin/sh
+mkdir -p "$SP/claudecfg/projects/-work-app"
+export PATH="$FB:$PATH" CODEX_HOME=$SP/codex CLAUDE_CONFIG_DIR=$SP/claudecfg OPSX_TASK_CLAUDE_MODE=default OPSX_TASK_ID_TIMEOUT=4 SHELL=/bin/sh
 unset TMUX TMUX_PANE OPSX_AGENT_CLI CLAUDECODE CLAUDE_CODE_ENTRYPOINT CURSOR_AGENT CODEX_SANDBOX GEMINI_CLI
 # The private server inherits this PATH, so panes find the stubs.
 $L -f /dev/null new-session -d -s keep -x 200 -y 50 'exec sleep 600'
@@ -112,8 +115,21 @@ out=$("$TS" key https://acme.atlassian.net/browse/MED-43); rc=$?
 ok "key: tracker URL" '[ $rc -eq 0 ] && [ "$out" = MED-43 ]'
 out=$("$TS" key "add rate limiting to the api"); rc=$?
 ok "key: no key prints nothing, exit 1" '[ $rc -eq 1 ] && [ -z "$out" ]'
+out=$("$TS" key "please look at MED-7 and XY-9"); rc=$?
+ok "key: first key in text" '[ $rc -eq 0 ] && [ "$out" = MED-7 ]'
 out=$("$TS" key "please look at abc-7 and XY-9"); rc=$?
-ok "key: first key in text" '[ $rc -eq 0 ] && [ "$out" = ABC-7 ]'
+ok "key: lower-case word in text is not a key" '[ $rc -eq 0 ] && [ "$out" = XY-9 ]'
+for t in "convert the importer to utf-8" "support sha-256 hashes" "store dates as ISO-8601" "fix UTF-8 handling" \
+         "https://github.com/acme/my-app-2/issues/5" "https://med-43.example.com/x" "see CVE-2024-1234"; do
+  out=$("$TS" key "$t"); rc=$?
+  ok "key: no false key in '$t'" '[ $rc -eq 1 ] && [ -z "$out" ]'
+done
+out=$("$TS" key "fix UTF-8 in MED-12"); rc=$?
+ok "key: technical names skipped, real key found" '[ $rc -eq 0 ] && [ "$out" = MED-12 ]'
+out=$("$TS" key "https://linear.app/acme/issue/eng-12/fix-the-thing"); rc=$?
+ok "key: URL path segment (any case)" '[ $rc -eq 0 ] && [ "$out" = ENG-12 ]'
+out=$("$TS" key "https://acme.atlassian.net/jira/software/projects/MED/boards/1?selectedIssue=MED-7"); rc=$?
+ok "key: URL query value" '[ $rc -eq 0 ] && [ "$out" = MED-7 ]'
 printf 'task\n' > "$SP/MED-99.md"
 out=$("$TS" key "$SP/MED-99.md"); rc=$?
 ok "key: existing file path is never matched" '[ $rc -eq 1 ] && [ -z "$out" ]'
@@ -143,6 +159,29 @@ long=abcdefghij-abcdefghij-abcdefgh  # 30 chars
 printf 'source: other\ncli: \nsession_id: \ncreated: x\n\nb\n' > "$B/$long.md"
 out=$(T name "$long" --source mine)
 ok "name: suffix keeps the 30-character limit" '[ ${#out} -le 30 ] && [[ $out == *-2 ]]'
+rm -f "$B"/*.md
+
+# ---------------------------------------------------------------- find (same input, any proposed name)
+: > "$SP/empty.md"
+long80=$(printf 'x%.0s' $(seq 100))
+T brief rate-limit-api --source "text:add   rate limiting
+to the api" --body-file "$SP/empty.md" >/dev/null
+ok "find: text source normalised to one squeezed line" '[ "$(hdr "$B/rate-limit-api.md" source)" = "text:add rate limiting to the api" ]'
+out=$(T find --source "text:add rate limiting to the api"); rc=$?
+ok "find: same text finds the task" '[ $rc -eq 0 ] && [ "$out" = rate-limit-api ]'
+out=$(T find --source "text:add rate limiting to the web"); rc=$?
+ok "find: other text finds nothing, exit 1" '[ $rc -eq 1 ] && [ -z "$out" ]'
+T brief long-text --source "text:$long80" --body-file "$SP/empty.md" >/dev/null
+ok "find: text: cut to its first 80 characters" '[ "$(hdr "$B/long-text.md" source)" = "text:${long80:0:80}" ]'
+out=$(T find --source "text:${long80}yyy")
+ok "find: long text matches on its first 80 characters" '[ "$out" = long-text ]'
+mkdir -p "$SP/docs"; printf 'task\n' > "$SP/docs/t.md"
+T brief file-task --source "file:$SP/docs/../docs/t.md" --body-file "$SP/empty.md" >/dev/null
+ok "find: file: source made absolute" '[ "$(hdr "$B/file-task.md" source)" = "file:$SP/docs/t.md" ]'
+out=$(cd "$SP" && T find --source "file:docs/t.md")
+ok "find: relative path to the same file finds the task" '[ "$out" = file-task ]'
+out=$(T name limit-requests --source "text:add rate limiting to the api")
+ok "name: a different proposed name is not a new task when find matched" '[ "$out" = limit-requests ] && [ "$(T find --source "text:add rate limiting to the api")" = rate-limit-api ]'
 rm -f "$B"/*.md
 
 # ---------------------------------------------------------------- brief (1.3)
@@ -277,6 +316,25 @@ ok "open: failed resume leaves a message in the pane" '$L capture-pane -J -p -t 
 rm -f "$SP/claude.fail-resume"
 $L kill-session -t =MED-43
 
+# A non-zero exit after a normal session keeps the id the CLI still knows.
+sed -i 's/^session_id: .*/session_id: 0e0e0e0e-1111-2222-3333-444455556666/' "$B/MED-43.md"
+touch "$SP/claudecfg/projects/-work-app/0e0e0e0e-1111-2222-3333-444455556666.jsonl" "$SP/claude.exit-resume"
+out=$(T open MED-43 --no-switch 2>&1); rc=$?
+wait_for 8 '$L capture-pane -J -p -t =MED-43: | grep -q "session id kept"'
+ok "open: non-zero exit of a known conversation keeps session_id:" '[ $rc -eq 0 ] && [ "$(hdr "$B/MED-43.md" session_id)" = 0e0e0e0e-1111-2222-3333-444455556666 ] && $L capture-pane -J -p -t =MED-43: | grep -q "claude exited with code 130; session id kept" && ! $L capture-pane -J -p -t =MED-43: | grep -q "resume failed"'
+rm -f "$SP/claude.exit-resume"
+$L kill-session -t =MED-43
+"$TS" _resume-failed MED-43 --repo "$R" --cli claude --sid 0e0e0e0e-1111-2222-3333-444455556666 --rc 1 --elapsed 0 >/dev/null
+ok "_resume-failed: known id kept even on a fast exit" '[ "$(hdr "$B/MED-43.md" session_id)" = 0e0e0e0e-1111-2222-3333-444455556666 ]'
+"$TS" _resume-failed MED-43 --repo "$R" --cli claude --sid 99999999-1111-2222-3333-444455556666 --rc 1 --elapsed 0 >/dev/null
+ok "_resume-failed: never clears an id other than the one tried" '[ "$(hdr "$B/MED-43.md" session_id)" = 0e0e0e0e-1111-2222-3333-444455556666 ]'
+mv "$SP/claudecfg/projects" "$SP/claudecfg/projects.off"
+"$TS" _resume-failed MED-43 --repo "$R" --cli claude --sid 0e0e0e0e-1111-2222-3333-444455556666 --rc 1 --elapsed 60 >/dev/null
+ok "_resume-failed: cannot check, long run keeps the id" '[ "$(hdr "$B/MED-43.md" session_id)" = 0e0e0e0e-1111-2222-3333-444455556666 ]'
+out=$("$TS" _resume-failed MED-43 --repo "$R" --cli claude --sid 0e0e0e0e-1111-2222-3333-444455556666 --rc 1 --elapsed 1)
+ok "_resume-failed: cannot check, fast exit clears the id" '[ -z "$(hdr "$B/MED-43.md" session_id)" ] && printf "%s" "$out" | grep -q "resume failed"'
+mv "$SP/claudecfg/projects.off" "$SP/claudecfg/projects"
+
 n=$(calls claude)
 out=$(T open MED-43 --no-switch 2>&1); rc=$?
 wait_for 5 '[ "$(calls claude)" -gt "$n" ]'
@@ -331,11 +389,32 @@ $L kill-session -t =EV-1
 ok "safety: lock file under .opsx/tasks" '[ -f "$B/.lock" ]'
 ok "safety: user tmux server untouched (all sessions on the private socket)" '$L has-session -t =keep'
 
+# ---------------------------------------------------------------- fresh tmux server (start launches it)
+# No server runs on this socket: the first start forks it and must not hand it the lock.
+FB2=$SP/fakebin2; mkdir -p "$FB2"
+printf '#!/bin/sh\nexec "%s" -L "%s" "$@"\n' "$REAL_TMUX" "$SOCK2" > "$FB2/tmux"; chmod +x "$FB2/tmux"
+"$REAL_TMUX" -L "$SOCK2" kill-server 2>/dev/null
+ok "fresh: no server on the second socket" '! "$REAL_TMUX" -L "$SOCK2" list-sessions >/dev/null 2>&1'
+T brief A-1 --source jira:A-1 --body-file "$SP/d.md" >/dev/null
+T brief A-2 --source jira:A-2 --body-file "$SP/d.md" >/dev/null
+t0=$(date +%s)
+out=$(PATH="$FB2:$PATH" timeout 30 "$TS" start A-1 --agent-cli claude --no-switch --repo "$R" 2>&1); rc1=$?
+spid=$("$REAL_TMUX" -L "$SOCK2" display -p '#{pid}' 2>/dev/null)
+ok "fresh: first start launched the server" '[ $rc1 -eq 0 ] && [ -n "$spid" ] && "$REAL_TMUX" -L "$SOCK2" has-session -t =A-1'
+ok "fresh: the server does not hold .opsx/tasks/.lock" '! ls -l /proc/$spid/fd 2>/dev/null | grep -q "/.opsx/tasks/.lock"'
+out=$(PATH="$FB2:$PATH" timeout 30 "$TS" start A-2 --agent-cli claude --no-switch --repo "$R" 2>&1); rc2=$?
+ok "fresh: a second start on that server is not blocked by the lock" '[ $rc2 -eq 0 ] && "$REAL_TMUX" -L "$SOCK2" has-session -t =A-2 && [ $(( $(date +%s) - t0 )) -lt 20 ]'
+"$REAL_TMUX" -L "$SOCK2" kill-session -t =A-2 2>/dev/null
+sed -i 's/^session_id: .*/session_id: /' "$B/A-2.md"
+out=$(PATH="$FB2:$PATH" timeout 30 "$TS" open A-2 --no-switch --repo "$R" 2>&1); rc3=$?
+ok "fresh: open falling back to start is not blocked either" '[ $rc3 -eq 0 ] && "$REAL_TMUX" -L "$SOCK2" has-session -t =A-2'
+"$REAL_TMUX" -L "$SOCK2" kill-server 2>/dev/null
+
 # ---------------------------------------------------------------- skill (3.1)
 SK=$REPO/skills/opsx-task/SKILL.md
 ok "SKILL.md frontmatter has name and description" 'awk "/^---\$/{n++; next} n==1" "$SK" | grep -qx "name: opsx-task" && awk "/^---\$/{n++; next} n==1" "$SK" | grep -q "^description: ."'
 ok "SKILL.md: every opsx-task.sh subcommand it names exists in --help" '( for c in $(grep -oE "opsx-task\.sh [a-z]+" "$SK" | awk "{print \$2}" | sort -u); do "$TS" --help | grep -qE "opsx-task\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done )'
-ok "SKILL.md: uses all six subcommands" '( for c in key name brief start open refresh; do grep -qE "opsx-task\.sh $c" "$SK" || { echo "unused: $c"; exit 1; }; done )'
+ok "SKILL.md: uses all seven subcommands" '( for c in key name find brief start open refresh; do grep -qE "opsx-task\.sh $c" "$SK" || { echo "unused: $c"; exit 1; }; done )'
 ok "SKILL.md: --refresh, --agent-cli, no re-read on a second run" 'grep -q -- "--refresh" "$SK" && grep -q -- "--agent-cli" "$SK" && grep -qi "without re-reading" "$SK"'
 ok "SKILL.md: data, not instructions" 'grep -q "data, not instructions" "$SK"'
 

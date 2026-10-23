@@ -3,16 +3,23 @@
 #
 #   opsx-task.sh key <input>
 #   opsx-task.sh name <name> --source <source> [--repo <dir>]
+#   opsx-task.sh find --source <source> [--repo <dir>]
 #   opsx-task.sh brief <name> --source <source> --body-file <file> [--repo <dir>]
 #   opsx-task.sh start <name> [--agent-cli <cli>] [--no-switch] [--repo <dir>]
 #   opsx-task.sh open <name> [--agent-cli <cli>] [--no-switch] [--repo <dir>]
 #   opsx-task.sh refresh <name> --body-file <file> [--repo <dir>]
 #
 # key      prints the first ticket key (ABC-123) in the input, upper-cased; exit 1
-#          when there is none. A path to an existing file is never matched.
+#          when there is none. The whole input may be a key in any case; in a URL
+#          only a whole path segment or query value counts; in free text only an
+#          upper-case key (MED-43), and never UTF-8, SHA-256 and the like. A path
+#          to an existing file is never matched.
 # name     validates a task name ([A-Za-z0-9-], 1-30 characters) and prints it, or
 #          the first free <name>-2, <name>-3, ... when another task (another
 #          source:) already owns it.
+# find     prints the name of the task whose brief has this source:, exit 1 when
+#          none (how a text or file input finds its task again).
+#          Sources are normalised: text: to its first 80 characters, file: absolute.
 # brief    writes .opsx/tasks/<name>.md: source:/cli:/session_id:/created: header
 #          (kept on rewrite, except source:) and the description from --body-file.
 #          Adds .opsx/tasks/ to .gitignore once.
@@ -26,17 +33,20 @@
 # Environment: OPSX_TASK_ID_TIMEOUT (seconds to wait for a non-Claude session id,
 # default 20), OPSX_TASK_CLAUDE_MODE (claude permission mode, default: manual
 # when `claude --help` lists it, else default), OPSX_AGENT_CLI (default CLI).
-# Internal: `opsx-task.sh _clear-id <name> --repo <dir>` (used by the resume wrapper).
+# Internal: `opsx-task.sh _resume-failed <name> --repo <dir> --cli <cli> --sid <id>
+# --rc <n> --elapsed <s>` (used by the resume wrapper).
 set -euo pipefail
 
 die() { printf 'opsx-task: %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # Same ticket key shape as skills/opsx-review/opsx-review.sh (ticket_in).
 KEY_RE='[A-Za-z][A-Za-z0-9]+-[0-9]+'
 NAME_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,29}$'
 ID_RE='^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
 SUPPORTED_CLIS="claude agent codex opencode gemini"
+# Prefixes of common technical names that look like keys (UTF-8, SHA-256, ISO-8601).
+NOT_KEYS="UTF UCS SHA MD AES RSA DES ECDSA ISO RFC CVE CWE HTTP TLS SSL IPV PEP ES ECMA IEEE GPT UTC GMT X86 BASE LATIN WINDOWS COVID ANSI"
 
 this_script() { (cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && printf '%s/%s' "$(pwd -P)" "$(basename -- "${BASH_SOURCE[0]}")"); }
 
@@ -58,6 +68,26 @@ check_name() {
 
 # One line, no control characters: the source sits in a one-line header field.
 one_line() { printf '%s' "$1" | tr '\n\r\t' '   ' | tr -d '\000-\037' | sed -E 's/^ +//; s/ +$//'; }
+
+# norm_source <source>: one line; text: squeezed and cut to its first 80
+# characters; file: made absolute when the file exists. The same input always
+# gives the same source, so `find` and `name` recognise it on a second run.
+norm_source() {
+  local s p d
+  s=$(one_line "$1")
+  case $s in
+    text:*)
+      s=$(printf '%s' "${s#text:}" | tr -s ' ')
+      s=${s:0:80}; s=${s%"${s##*[! ]}"}
+      s=text:$s ;;
+    file:*)
+      p=${s#file:}
+      if [ -e "$p" ]; then
+        d=$(cd -P -- "$(dirname -- "$p")" 2>/dev/null && pwd) && s=file:${d%/}/$(basename -- "$p")
+      fi ;;
+  esac
+  printf '%s' "$s"
+}
 
 tasks_dir() { printf '%s/.opsx/tasks' "$1"; }
 brief_path() { printf '%s/.opsx/tasks/%s.md' "$1" "$2"; }
@@ -264,8 +294,10 @@ launch_cmd() {
   esac
 }
 
-# Resume one conversation by id, through a wrapper: a failed resume leaves a
-# message in the pane and clears session_id: in the brief.
+# Resume one conversation by id, through a wrapper: on a non-zero exit it asks
+# `_resume-failed`, which clears session_id: only when the CLI does not know
+# the id (a Ctrl-C or crash after a normal session keeps it), and leaves a
+# message and a shell in the pane.
 # shellcheck disable=SC2016
 resume_cmd() {
   local cli=$1 name=$2 sid=$3 root=$4 run
@@ -276,8 +308,8 @@ resume_cmd() {
     opencode) run=$(printf 'opencode --agent build -s %q' "$sid") ;;
     gemini)   run=$(printf 'gemini --approval-mode default --resume %q' "$sid") ;;
   esac
-  printf '%s; rc=$?; if [ "$rc" -ne 0 ]; then printf %q; %q _clear-id %q --repo %q; exec "${SHELL:-/bin/sh}"; fi' \
-    "$run" "resume failed, run /opsx-task $name again to restart from the brief\n" "$(this_script)" "$name" "$root"
+  printf 't0=$(date +%%s); %s; rc=$?; if [ "$rc" -ne 0 ]; then %q _resume-failed %q --repo %q --cli %q --sid %q --rc "$rc" --elapsed "$(( $(date +%%s) - t0 ))" || printf %q; exec "${SHELL:-/bin/sh}"; fi' \
+    "$run" "$(this_script)" "$name" "$root" "$cli" "$sid" "resume failed, run /opsx-task $name again to restart from the brief\n"
 }
 
 write_prompt() {
@@ -365,11 +397,26 @@ capture_id() {
 
 cmd_key() {
   [ $# -eq 1 ] || die "key needs one input"
-  local in=$1 k
+  local in=$1 rest cands k
   # A file is read by the agent, never matched from its path.
   if [ -e "$in" ]; then exit 1; fi
-  k=$(printf '%s' "$in" | grep -oE "(^|[^A-Za-z0-9])$KEY_RE([^A-Za-z0-9]|\$)" | head -n1 \
-      | sed -E 's/^[^A-Za-z0-9]//; s/[^A-Za-z0-9]$//' | tr '[:lower:]' '[:upper:]' || true)
+  if [[ $in =~ ^[[:space:]]*($KEY_RE)[[:space:]]*$ ]]; then
+    # The whole input is a key, in any case (med-43).
+    cands=${BASH_REMATCH[1]}
+  elif [[ $in =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]; then
+    # URL: a whole path segment, query value or fragment equal to a key; never
+    # the host, never part of a segment (github.com/acme/my-app-2 has no key).
+    rest=${in#*://}
+    case $rest in */*|*\?*|*#*) rest=${rest#*[/?#]} ;; *) rest="" ;; esac
+    cands=$(printf '%s' "$rest" | tr -s '/?&=#;' '[\n*]' | grep -xE "$KEY_RE" || true)
+  else
+    # Free text: only a key written with an upper-case project (MED-43), as a
+    # whole word; "utf-8" or "sha-256" in prose is not a ticket.
+    cands=$(printf '%s' "$in" | grep -oE "(^|[^A-Za-z0-9-])[A-Z][A-Z0-9]+-[0-9]+([^A-Za-z0-9-]|\$)" \
+      | sed -E 's/^[^A-Za-z0-9]//; s/[^A-Za-z0-9]$//' || true)
+  fi
+  k=$(printf '%s\n' "$cands" | tr '[:lower:]' '[:upper:]' \
+      | awk -F- -v deny=" $NOT_KEYS " 'NF == 2 && $1 != "" && index(deny, " " $1 " ") == 0 { print; exit }')
   [ -n "$k" ] || exit 1
   printf '%s\n' "$k"
 }
@@ -397,7 +444,7 @@ cmd_name() {
   check_name "$NAME"
   [ "$SOURCE_SET" -eq 1 ] || die "name needs --source <source>"
   local root src n cand base f
-  root=$(repo_root "$REPO"); src=$(one_line "$SOURCE")
+  root=$(repo_root "$REPO"); src=$(norm_source "$SOURCE")
   n=1; cand=$NAME
   while :; do
     f=$(brief_path "$root" "$cand")
@@ -413,6 +460,27 @@ cmd_name() {
   done
 }
 
+cmd_find() {
+  local repo="" source="" has=0 root src f n
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --repo) [ $# -ge 2 ] || die "--repo needs a value"; repo=$2; shift 2 ;;
+      --source) [ $# -ge 2 ] || die "--source needs a value"; source=$2; has=1; shift 2 ;;
+      *) die "find takes only --source <source> [--repo <dir>]" ;;
+    esac
+  done
+  [ "$has" -eq 1 ] || die "find needs --source <source>"
+  root=$(repo_root "$repo"); src=$(norm_source "$source")
+  [ -n "$src" ] || exit 1
+  for f in "$(tasks_dir "$root")"/*.md; do
+    [ -f "$f" ] || continue
+    n=$(basename -- "$f" .md)
+    [[ $n =~ $NAME_RE ]] || continue
+    if [ "$(header_get "$f" source)" = "$src" ]; then printf '%s\n' "$n"; return 0; fi
+  done
+  exit 1
+}
+
 cmd_brief() {
   parse_common "$@"
   check_name "$NAME"
@@ -425,7 +493,7 @@ cmd_brief() {
     cli=$(header_get "$f" cli); sid=$(header_get "$f" session_id); created=$(header_get "$f" created)
   fi
   [ -n "$created" ] || created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  write_brief "$f" "$(one_line "$SOURCE")" "$cli" "$sid" "$created" "$BODY"
+  write_brief "$f" "$(norm_source "$SOURCE")" "$cli" "$sid" "$created" "$BODY"
   ensure_gitignore "$root"
   printf 'brief %s\n' "${f#"$root"/}"
 }
@@ -457,18 +525,20 @@ do_start() {
   if [ "$cli" = claude ]; then
     sid=$(new_uuid)
   else
-    before=$(list_sessions "$cli" "$root" | awk '{ print $2 }')
+    before=$(list_sessions "$cli" "$root" 9>&- | awk '{ print $2 }')
   fi
   cmd=$(launch_cmd "$cli" "$name" "$prompt" "$sid")
   launch=$(date +%s)
-  tmux new-session -d -s "$name" -c "$root" bash -c "$cmd" || die "failed to create tmux session '$name'."
-  if ! tmux set-option -t "=$name:" @opsx_task "$name" >/dev/null 2>&1 \
-     || ! tmux set-option -t "=$name:" @opsx_task_repo "$root" >/dev/null 2>&1; then
+  # 9>&-: when no tmux server runs yet, new-session forks one; it must not
+  # inherit the lock, or it would hold it for the server's whole life.
+  tmux new-session -d -s "$name" -c "$root" bash -c "$cmd" 9>&- || die "failed to create tmux session '$name'."
+  if ! tmux set-option -t "=$name:" @opsx_task "$name" >/dev/null 2>&1 9>&- \
+     || ! tmux set-option -t "=$name:" @opsx_task_repo "$root" >/dev/null 2>&1 9>&-; then
     die "session '$name' exited right after launch; check that '$cli' starts in $root."
   fi
   set_field "$f" cli "$cli"
   if [ "$cli" != claude ]; then
-    sid=$(capture_id "$cli" "$root" "$launch" "$before")
+    sid=$(capture_id "$cli" "$root" "$launch" "$before" 9>&-)
   fi
   set_field "$f" session_id "$sid"
   exec 9>&-
@@ -540,13 +610,56 @@ cmd_refresh() {
   fi
 }
 
-cmd_clear_id() {
-  parse_common "$@"
-  check_name "$NAME"
-  local root f
-  root=$(repo_root "$REPO"); f=$(brief_path "$root" "$NAME")
-  [ -f "$f" ] || exit 0
-  set_field "$f" session_id ""
+# id_known <cli> <root> <id>: 0 the CLI knows the conversation, 1 it does not,
+# 2 cannot tell (no session store or listing).
+id_known() {
+  local cli=$1 root=$2 sid=$3 dir ids
+  if [ "$cli" = claude ]; then
+    dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects
+    [ -d "$dir" ] || return 2
+    if find "$dir" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | grep -q .; then return 0; fi
+    return 1
+  fi
+  ids=$(list_sessions "$cli" "$root" | awk '{ print $2 }')
+  [ -n "$ids" ] || return 2
+  printf '%s\n' "$ids" | grep -qxF -- "$sid" && return 0
+  return 1
+}
+
+# Quicker than this, a non-zero exit of a resume we cannot check is a failed resume.
+RESUME_FAST_FAIL=10
+
+cmd_resume_failed() {
+  local name="" repo="" cli="" sid="" rc="" elapsed=0 root f known=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --repo) repo=${2:-}; shift 2 ;;
+      --cli) cli=${2:-}; shift 2 ;;
+      --sid) sid=${2:-}; shift 2 ;;
+      --rc) rc=${2:-}; shift 2 ;;
+      --elapsed) elapsed=${2:-0}; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) name=$1; shift ;;
+    esac
+  done
+  check_name "$name"
+  supported_cli "$cli" || die "unsupported agent CLI '$cli'"
+  [[ $sid =~ $ID_RE ]] || die "invalid session id"
+  [[ $elapsed =~ ^[0-9]+$ ]] || elapsed=0
+  root=$(repo_root "$repo"); f=$(brief_path "$root" "$name")
+  id_known "$cli" "$root" "$sid" || known=$?
+  if [ "$known" -eq 2 ]; then
+    if [ "$elapsed" -lt "$RESUME_FAST_FAIL" ]; then known=1; else known=0; fi
+  fi
+  if [ "$known" -eq 0 ]; then
+    printf '%s exited with code %s; session id kept, run /opsx-task %s again to resume\n' "$cli" "${rc:-?}" "$name"
+    return 0
+  fi
+  # Clear only the id we tried: a newer start may have recorded another one.
+  if [ -f "$f" ] && [ "$(header_get "$f" session_id)" = "$sid" ]; then
+    set_field "$f" session_id ""
+  fi
+  printf 'resume failed, run /opsx-task %s again to restart from the brief\n' "$name"
 }
 
 [ $# -ge 1 ] || usage 1
@@ -554,11 +667,12 @@ sub=$1; shift
 case $sub in
   key)       cmd_key "$@" ;;
   name)      cmd_name "$@" ;;
+  find)      cmd_find "$@" ;;
   brief)     cmd_brief "$@" ;;
   start)     cmd_start "$@" ;;
   open)      cmd_open "$@" ;;
   refresh)   cmd_refresh "$@" ;;
-  _clear-id) cmd_clear_id "$@" ;;
+  _resume-failed) cmd_resume_failed "$@" ;;
   -h|--help|help) usage 0 ;;
-  *) die "unknown command: $sub (key | name | brief | start | open | refresh)" ;;
+  *) die "unknown command: $sub (key | name | find | brief | start | open | refresh)" ;;
 esac
