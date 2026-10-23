@@ -97,7 +97,7 @@ Describe; do not plan the implementation. Quote ticket text only where wording m
 
 ### 6. Start the session
 
-Run `"$TK" start <name> [--agent-cli <cli>]` (`opsx-task.sh start`). It creates the detached tmux session `<name>` in the repository root, tagged as an opsx task for this repository, and launches the agent CLI with **normal approvals** (the user is in that session; never bypass). Its first input tells the agent to read the brief, describe the task, then explore it with `/opsx:explore` (the openspec-explore skill on CLIs without the slash command), and not to implement anything.
+Run `"$TK" start <name> [--agent-cli <cli>]` (`opsx-task.sh start`). It creates the detached tmux session `<name>` in the repository root, tagged as an opsx task for this repository, and launches the agent CLI in a mode where edits and commands need the user's approval (the user is in that session; never bypass): Claude Code `--permission-mode manual` (or `default`), Codex `--sandbox read-only --ask-for-approval on-request` (writes ask), OpenCode `--agent plan` (edits denied, shell asks), Gemini `--approval-mode default`, Cursor in its normal mode. The session reads untrusted ticket text, so it stays there while exploring; when the user moves on to `/opsx:propose` they widen it themselves (OpenCode: Tab to build; Codex: `/approvals`). Its first input tells the agent to read the brief, describe the task, then explore it with `/opsx:explore` (the openspec-explore skill on CLIs without the slash command), and not to implement anything.
 
 Inside tmux the client switches to the new session; this conversation stays where it was. Outside tmux the script prints `tmux attach -t <name>`. Pass `--no-switch` to stay put.
 
@@ -105,7 +105,7 @@ A tmux session with the same name that `/opsx-task` did not start for this repos
 
 ### 7. Refresh (only with `--refresh`)
 
-Re-read the source (step 3), write the new description to a file and run `"$TK" refresh <name> --body-file <file>` (`opsx-task.sh refresh`). The header (and the session id) is kept; a live session gets one message asking it to re-read the brief. Then `open` the task if it is not running. No other path re-reads the source.
+Re-read the source (step 3), write the new description to a file and run `"$TK" refresh <name> --body-file <file>` (`opsx-task.sh refresh`). The header (and the session id) is kept; a live session gets one message asking it to re-read the brief, sent only to the agent pane recorded at launch (never to another pane the user split off). Then `open` the task if it is not running. No other path re-reads the source.
 
 ### 8. Report
 
@@ -116,11 +116,11 @@ The task name, the session (`tmux attach -t <name>` or "switched"), the CLI and 
 | CLI | Name at launch | Session id | Resume |
 |-----|----------------|------------|--------|
 | Claude Code | `claude -n <name> --session-id <uuid>` | chosen by the script | `claude -r <id>` |
-| Codex | tmux session only | newest `~/.codex/sessions/**/*.jsonl` after launch | `codex resume <id>` |
+| Codex | tmux session only | newest `~/.codex/sessions/**/*.jsonl` after launch | `codex --sandbox read-only resume <id>` |
 | Cursor (`agent`) | tmux session only | new id in `agent ls` | `agent --resume=<id>` |
-| OpenCode | tmux session only | newest in `opencode session list --format json` | `opencode -s <id>` |
+| OpenCode | tmux session only | newest in `opencode session list --format json` | `opencode --agent plan -s <id>` |
 | Gemini | tmux session; the prompt asks for `/chat save <name>` | new id in `gemini --list-sessions` | `gemini --resume <id>` |
 
-Ids for the non-Claude CLIs are captured best effort within `OPSX_TASK_ID_TIMEOUT` seconds (default 20). When none is found, `session_id:` stays empty and a later run restarts from the brief. A resume that fails (the CLI does not know the id) prints `resume failed, run /opsx-task <name> again to restart from the brief` in the pane and clears `session_id:`. A non-zero exit after a normal session (Ctrl-C, a crash) keeps the id when the CLI still lists that conversation (or, when it cannot be checked, when the CLI ran more than a few seconds), and prints `<cli> exited with code <n>; session id kept`. The script never resumes a CLI's "latest" conversation: every task of a repository shares the same folder.
+Ids for the non-Claude CLIs are captured best effort within `OPSX_TASK_ID_TIMEOUT` seconds (default 20). When none is found, `session_id:` stays empty and a later run restarts from the brief. A resume that fails (the CLI does not know the id) prints `resume failed, run /opsx-task <name> again to restart from the brief` in the pane and clears `session_id:`. A non-zero exit after a normal session (Ctrl-C, a crash) keeps the id when the CLI still lists that conversation (or, when it cannot be checked, when the CLI ran more than a few seconds), and prints `<cli> exited with code <n>; session id kept`. The script never resumes a CLI's "latest" conversation: every task of a repository shares the same folder. It resumes only ids of the shape it records (a uuid; `ses_<token>` for OpenCode), never a conversation name, so a brief committed by someone else cannot pick another local conversation. Briefs, prompts and the lock are written only to real files in a real `.opsx/tasks/` directory: a symlinked `.opsx`, `.opsx/tasks`, brief, prompt, `.lock` or `.gitignore` is refused.
 
 Close a task session with `tmux kill-session -t <name>`; the brief stays, so `/opsx-task <name>` brings it back.

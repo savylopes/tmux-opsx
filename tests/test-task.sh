@@ -252,7 +252,7 @@ $L kill-session -t =MED-6; $L kill-session -t =MED-600
 T brief OC-1 --source text:oc --body-file "$SP/d.md" >/dev/null
 out=$(T start OC-1 --agent-cli opencode --no-switch 2>&1); rc=$?
 ok "capture: opencode session newer than launch recorded" '[ $rc -eq 0 ] && [ "$(hdr "$B/OC-1.md" session_id)" = ses_new1 ] && [ "$(hdr "$B/OC-1.md" cli)" = opencode ]'
-ok "capture: opencode launched with --agent build and the prompt" 'last_call opencode | grep -A1 -x -- --agent | tail -n1 | grep -qx build && last_call opencode | grep -q "Read the task brief .opsx/tasks/OC-1.md"'
+ok "capture: opencode launched with the plan agent (edits denied, shell asks) and the prompt" 'last_call opencode | grep -A1 -x -- --agent | tail -n1 | grep -qx plan && last_call opencode | grep -q "Read the task brief .opsx/tasks/OC-1.md"'
 $L kill-session -t =OC-1; rm -f "$SP/opencode.launched"; echo none > "$SP/opencode.mode"
 T brief OC-2 --source text:oc2 --body-file "$SP/d.md" >/dev/null
 t0=$(date +%s)
@@ -263,7 +263,7 @@ $L kill-session -t =OC-2; echo new > "$SP/opencode.mode"
 T brief CX-1 --source text:cx --body-file "$SP/d.md" >/dev/null
 out=$(T start CX-1 --agent-cli codex --no-switch 2>&1); rc=$?
 ok "capture: codex id from the newest ~/.codex/sessions file" '[ $rc -eq 0 ] && [ "$(hdr "$B/CX-1.md" session_id)" = 0199aaaa-bbbb-cccc-dddd-eeeeffff0001 ]'
-ok "capture: codex in workspace-write / on-request" 'last_call codex | grep -qx workspace-write && last_call codex | grep -qx on-request'
+ok "capture: codex in a read-only sandbox, writes on request" 'last_call codex | grep -A1 -x -- --sandbox | tail -n1 | grep -qx read-only && last_call codex | grep -qx on-request && ! last_call codex | grep -qx workspace-write'
 $L kill-session -t =CX-1
 T brief GM-1 --source text:gm --body-file "$SP/d.md" >/dev/null
 out=$(T start GM-1 --agent-cli gemini --no-switch 2>&1); rc=$?
@@ -347,11 +347,13 @@ n=$(calls opencode)
 out=$(T open OC-1 --no-switch 2>&1); rc=$?
 wait_for 5 '[ "$(calls opencode)" -gt "$n" ]'
 ok "open: opencode resumes with -s <id>" '[ $rc -eq 0 ] && last_call opencode | grep -A1 -x -- -s | tail -n1 | grep -qx ses_new1'
+ok "open: opencode resumes in the plan agent" 'last_call opencode | grep -A1 -x -- --agent | tail -n1 | grep -qx plan'
 $L kill-session -t =OC-1
 n=$(calls codex)
 T open CX-1 --no-switch >/dev/null 2>&1
 wait_for 5 '[ "$(calls codex)" -gt "$n" ]'
 ok "open: codex resumes with resume <id>" 'last_call codex | grep -A1 -x resume | tail -n1 | grep -qx 0199aaaa-bbbb-cccc-dddd-eeeeffff0001'
+ok "open: codex resumes in a read-only sandbox" 'last_call codex | grep -A1 -x -- --sandbox | tail -n1 | grep -qx read-only'
 $L kill-session -t =CX-1
 n=$(calls gemini)
 T open GM-1 --no-switch >/dev/null 2>&1
@@ -373,6 +375,19 @@ out=$(T refresh MED-43 --body-file "$SP/new.md" 2>&1); rc=$?
 ok "refresh: new description, old header" '[ $rc -eq 0 ] && grep -q "Refreshed body." "$B/MED-43.md" && ! grep -q "New body." "$B/MED-43.md" && [ "$(hdr "$B/MED-43.md" session_id)" = "$sid" ] && [ "$(hdr "$B/MED-43.md" source)" = jira:MED-43 ]'
 wait_for 3 '$L capture-pane -J -p -t =MED-43: | grep -q "MED-43.md was refreshed"'
 ok "refresh: live session received one message naming the brief" 'printf "%s" "$out" | grep -qx "notified MED-43" && [ "$($L capture-pane -J -p -t =MED-43: | grep -c ".opsx/tasks/MED-43.md was refreshed")" -eq 1 ]'
+# A split shell pane that is active never gets the message: only the agent pane.
+AP=$($L show-options -qv -t =MED-43: @opsx_task_pane)
+ok "refresh: start/open record the agent pane id" 'printf "%s" "$AP" | grep -qE "^%[0-9]+$" && [ "$($L display -p -t "$AP" "#{session_name}")" = MED-43 ]'
+SPN=$($L split-window -P -F '#{pane_id}' -t =MED-43: "cat > '$SP/shellpane'")
+$L select-pane -t "$SPN"
+out=$(T refresh MED-43 --body-file "$SP/new.md" 2>&1); rc=$?
+wait_for 3 '[ "$($L capture-pane -J -p -t "$AP" | grep -c ".opsx/tasks/MED-43.md was refreshed")" -eq 2 ]'
+ok "refresh: sent to the recorded agent pane, not the active split pane" '[ $rc -eq 0 ] && [ "$($L display -p -t =MED-43: "#{pane_id}")" = "$SPN" ] && [ "$($L capture-pane -J -p -t "$AP" | grep -c ".opsx/tasks/MED-43.md was refreshed")" -eq 2 ] && ! grep -q refreshed "$SP/shellpane" 2>/dev/null'
+$L kill-pane -t "$SPN"
+$L set-option -t =MED-43: @opsx_task_pane "%99999" >/dev/null
+out=$(T refresh MED-43 --body-file "$SP/new.md" 2>&1); rc=$?
+ok "refresh: unknown agent pane sends nothing, says so" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "agent pane of session MED-43 not found" && ! printf "%s" "$out" | grep -q notified'
+$L set-option -t =MED-43: @opsx_task_pane "$AP" >/dev/null
 out=$(T refresh OC-2 --body-file "$SP/new.md" 2>&1); rc=$?
 ok "refresh: no live session only rewrites" '[ $rc -eq 0 ] && grep -q "Refreshed body." "$B/OC-2.md" && printf "%s" "$out" | grep -q "not running"'
 
@@ -388,6 +403,52 @@ ok "safety: task text is never executed" '[ ! -e "$SP/pwned" ] && [ ! -e "$SP/pw
 $L kill-session -t =EV-1
 ok "safety: lock file under .opsx/tasks" '[ -f "$B/.lock" ]'
 ok "safety: user tmux server untouched (all sessions on the private socket)" '$L has-session -t =keep'
+
+# ---------------------------------------------------------------- symlinks planted by a clone (F1)
+R2=$SP/work/clone; mkdir -p "$R2"
+$G -C "$R2" init -q; printf 'x\n' > "$R2/f"; $G -C "$R2" add f; $G -C "$R2" commit -qm init
+V=$SP/victims; mkdir -p "$V"
+for v in lock prompt gi brief; do printf 'precious-%s\n' "$v" > "$V/$v"; done
+mkdir -p "$R2/.opsx/tasks"
+ln -s "$V/lock" "$R2/.opsx/tasks/.lock"; ln -s "$V/prompt" "$R2/.opsx/tasks/.T1.prompt"
+out=$("$TS" brief T1 --source text:x --body-file "$SP/d.md" --repo "$R2" 2>&1); rc=$?
+ok "symlink: brief in a clone with planted links still works" '[ $rc -eq 0 ] && [ -f "$R2/.opsx/tasks/T1.md" ] && [ ! -L "$R2/.opsx/tasks/T1.md" ]'
+out=$("$TS" start T1 --agent-cli claude --no-switch --repo "$R2" 2>&1); rc=$?
+ok "symlink: start refuses a symlinked .lock, victim untouched" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "symlink" && [ "$(cat "$V/lock")" = precious-lock ] && ! has T1'
+rm "$R2/.opsx/tasks/.lock"
+out=$("$TS" start T1 --agent-cli claude --no-switch --repo "$R2" 2>&1); rc=$?
+ok "symlink: start refuses a symlinked prompt file, victim untouched" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "symlink" && [ "$(cat "$V/prompt")" = precious-prompt ] && ! has T1'
+ok "symlink: .lock is created as a regular file" '[ -f "$R2/.opsx/tasks/.lock" ] && [ ! -L "$R2/.opsx/tasks/.lock" ]'
+rm "$R2/.opsx/tasks/.T1.prompt"
+ln -s "$V/brief" "$R2/.opsx/tasks/T2.md"
+out=$("$TS" brief T2 --source text:y --body-file "$SP/d.md" --repo "$R2" 2>&1); rc=$?
+ok "symlink: brief refuses a symlinked brief file" '[ $rc -ne 0 ] && [ "$(cat "$V/brief")" = precious-brief ]'
+out=$("$TS" open T2 --agent-cli claude --no-switch --repo "$R2" 2>&1); rc=$?
+ok "symlink: open refuses a symlinked brief file" '[ $rc -ne 0 ] && ! has T2'
+rm -rf "$R2/.opsx"; mkdir -p "$V/tasksdir" "$R2/.opsx"; ln -s "$V/tasksdir" "$R2/.opsx/tasks"
+out=$("$TS" brief T3 --source text:z --body-file "$SP/d.md" --repo "$R2" 2>&1); rc=$?
+ok "symlink: brief refuses a symlinked .opsx/tasks" '[ $rc -ne 0 ] && [ -z "$(ls -A "$V/tasksdir")" ]'
+rm -rf "$R2/.opsx"; ln -s "$V/tasksdir" "$R2/.opsx"
+out=$("$TS" brief T3 --source text:z --body-file "$SP/d.md" --repo "$R2" 2>&1); rc=$?
+ok "symlink: brief refuses a symlinked .opsx" '[ $rc -ne 0 ] && [ -z "$(ls -A "$V/tasksdir")" ]'
+rm -f "$R2/.opsx" "$R2/.gitignore"; ln -s "$V/gi" "$R2/.gitignore"
+out=$("$TS" brief T3 --source text:z --body-file "$SP/d.md" --repo "$R2" 2>&1); rc=$?
+ok "symlink: brief refuses a symlinked .gitignore, writes nothing" '[ $rc -ne 0 ] && [ "$(cat "$V/gi")" = precious-gi ] && [ ! -e "$R2/.opsx/tasks/T3.md" ]'
+rm -f "$R2/.gitignore"
+
+# ---------------------------------------------------------------- planted session ids (F4)
+printf 'source: jira:PL-1\ncli: claude\nsession_id: my-other-conversation\ncreated: x\n\nb\n' > "$B/PL-1.md"
+n=$(calls claude)
+out=$(T open PL-1 --no-switch 2>&1); rc=$?
+wait_for 5 '[ "$(calls claude)" -gt "$n" ]'
+ok "planted id: claude conversation name is never resumed" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "restarts from the brief" && ! last_call claude | grep -qx -- -r && ! last_call claude | grep -qx my-other-conversation'
+$L kill-session -t =PL-1
+printf 'source: jira:PL-2\ncli: codex\nsession_id: some-thread-name\ncreated: x\n\nb\n' > "$B/PL-2.md"
+n=$(calls codex)
+out=$(T open PL-2 --no-switch 2>&1); rc=$?
+wait_for 5 '[ "$(calls codex)" -gt "$n" ]'
+ok "planted id: codex non-uuid id is never resumed" '[ $rc -eq 0 ] && ! last_call codex | grep -qx resume && ! last_call codex | grep -qx some-thread-name'
+$L kill-session -t =PL-2
 
 # ---------------------------------------------------------------- fresh tmux server (start launches it)
 # No server runs on this socket: the first start forks it and must not hand it the lock.
