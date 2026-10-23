@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: task-session / Different task gets a suffix
+# level: L1
+# requirement: Validate and allocate a name
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief rate-limit-api "text:something else"
+out=$("$TASK" name rate-limit-api --source "text:add rate limiting" --repo "$R" 2>&1); echo "out=[$out]"
+[ "$out" = "rate-limit-api-2" ] || fail "expected rate-limit-api-2"
+mkbrief rate-limit-api-2 "text:third"
+out=$("$TASK" name rate-limit-api --source "text:add rate limiting" --repo "$R" 2>&1); echo "out=[$out]"
+[ "$out" = "rate-limit-api-3" ] || fail "expected rate-limit-api-3"

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: task-session / No brief
+# level: L2
+# requirement: Start a task session
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+out=$("$TASK" start MED-50 --agent-cli claude --no-switch --repo "$R" 2>&1); rc=$?; echo "$out"
+[ $rc -ne 0 ] || fail "expected non-zero"
+echo "$out" | grep -q 'MED-50' || fail "message does not name the brief"
+T has-session -t =MED-50 2>/dev/null && fail "session created"
+echo ok

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# scenario: task-session / Captured id for another CLI
+# level: L2
+# requirement: Name the conversation
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+command -v jq >/dev/null || { echo "jq missing"; exit 77; }
+cat > "$EVAL_TMP/fakebin/opencode" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = session ] && [ "\${2:-}" = list ]; then
+  now=\$(date +%s)000
+  if [ -e "\$FAKE_LOG/opencode.args" ]; then
+    printf '[{"id":"ses_old1","directory":"$R","time":{"created":1000000000000}},{"id":"ses_newone","directory":"$R","time":{"created":%s}}]\n' "\$((now+1000))"
+  else
+    printf '[{"id":"ses_old1","directory":"$R","time":{"created":1000000000000}}]\n'
+  fi
+  exit 0
+fi
+case "\${1:-}" in --help|--version) exit 0;; esac
+printf '%s\n' "\$@" > "\$FAKE_LOG/opencode.args"
+exec cat >> "\$FAKE_LOG/stdin.log"
+SH
+chmod +x "$EVAL_TMP/fakebin/opencode"
+mkbrief MED-43 jira:MED-43
+"$TASK" start MED-43 --agent-cli opencode --no-switch --repo "$R" 2>&1; rc=$?
+[ $rc -eq 0 ] || fail "start exit $rc"
+echo "session_id=$(hdr MED-43 session_id)"
+[ "$(hdr MED-43 session_id)" = ses_newone ] || fail "expected ses_newone"

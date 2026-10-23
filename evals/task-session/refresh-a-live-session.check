@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: task-session / Refresh a live session
+# level: L2
+# requirement: Refresh on request
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief MED-43 jira:MED-43
+"$TASK" start MED-43 --agent-cli claude --no-switch --repo "$R" >/dev/null 2>&1 || fail "start failed"
+wait_args claude >/dev/null
+u=$(hdr MED-43 session_id)
+printf 'refreshed-description-xyz\n' > new.md
+out=$("$TASK" refresh MED-43 --body-file new.md --repo "$R" 2>&1); rc=$?; echo "$out"
+[ $rc -eq 0 ] || fail "refresh exit $rc"
+b=$(brief MED-43)
+grep -q refreshed-description-xyz "$b" || fail "new body missing"
+[ "$(hdr MED-43 session_id)" = "$u" ] || fail "session_id changed"
+i=0; while ! grep -qF '.opsx/tasks/MED-43.md' "$FAKE_LOG/stdin.log" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+echo "stdin: $(cat "$FAKE_LOG/stdin.log" 2>/dev/null)"
+grep -qF '.opsx/tasks/MED-43.md' "$FAKE_LOG/stdin.log" || fail "session did not receive a message naming the brief"

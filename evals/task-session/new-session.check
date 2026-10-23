@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: task-session / New session
+# level: L2
+# requirement: Start a task session
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief MED-43 jira:MED-43
+out=$("$TASK" start MED-43 --agent-cli claude --no-switch --repo "$R" 2>&1); rc=$?; echo "$out"
+[ $rc -eq 0 ] || fail "start exit $rc"
+T has-session -t =MED-43 || fail "no session"
+[ "$(T show-option -qv -t =MED-43: @opsx_task)" = MED-43 ] || fail "@opsx_task not set"
+wait_args claude >/dev/null
+cwd=$(cat "$FAKE_LOG/claude.cwd"); echo "cwd=$cwd"; [ "$cwd" = "$R" ] || fail "pane cwd $cwd != $R"
+pc=$(T display -p -t =MED-43: '#{pane_current_path}'); [ "$pc" = "$R" ] || fail "pane path $pc"
+grep -q '^cli: *claude' "$(brief MED-43)" || fail "cli: not recorded"
+r=$(T show-option -qv -t =MED-43: @opsx_task_repo); echo "repo tag=$r"; [ "$r" = "$R" ] || fail "@opsx_task_repo=$r"

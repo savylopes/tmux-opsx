@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: task-session / Skipped
+# level: L2
+# requirement: Install and documentation
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install --skip-task); rc=$?; echo "$out" | tail -5
+[ $rc -eq 0 ] || fail "install exit $rc"
+f=$(find "$HOME" -type d -name opsx-task 2>/dev/null); [ -z "$f" ] || fail "found: $f"

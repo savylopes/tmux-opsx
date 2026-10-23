@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: task-session / Alive session
+# level: L2
+# requirement: Return to a task
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief MED-43 jira:MED-43
+"$TASK" start MED-43 --agent-cli claude --no-switch --repo "$R" >/dev/null 2>&1 || fail "start failed"
+wait_args claude >/dev/null; sleep 0.5
+: > "$FAKE_LOG/stdin.log" 2>/dev/null; before=$(T list-sessions -F '#{session_name}' | sort | tr '\n' ,)
+out=$("$TASK" open MED-43 --no-switch --repo "$R" 2>&1); rc=$?; echo "$out"
+[ $rc -eq 0 ] || fail "exit $rc"
+echo "$out" | grep -qx 'alive MED-43' || fail "expected 'alive MED-43'"
+after=$(T list-sessions -F '#{session_name}' | sort | tr '\n' ,)
+[ "$before" = "$after" ] || fail "sessions changed: $before -> $after"
+sleep 0.5
+[ ! -s "$FAKE_LOG/stdin.log" ] || fail "something was sent: $(cat "$FAKE_LOG/stdin.log")"

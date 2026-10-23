@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scenario: task-session / Same source reuses
+# level: L1
+# requirement: Validate and allocate a name
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief rate-limit-api "text:add rate limiting"
+out=$("$TASK" name rate-limit-api --source "text:add rate limiting" --repo "$R" 2>&1); echo "out=[$out]"
+[ "$out" = "rate-limit-api" ] || fail "expected rate-limit-api"

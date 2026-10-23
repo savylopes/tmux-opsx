@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: task-session / Foreign session with the same name
+# level: L2
+# requirement: Start a task session
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief MED-43 jira:MED-43
+T new-session -d -s MED-43 -c "$EVAL_TMP" 'exec sleep 600'
+out=$("$TASK" start MED-43 --agent-cli claude --no-switch --repo "$R" 2>&1); rc=$?; echo "$out"
+[ $rc -ne 0 ] || fail "untagged: expected non-zero"
+[ -z "$(T show-option -qv -t =MED-43: @opsx_task)" ] || fail "foreign session got tagged"
+[ ! -e "$FAKE_LOG/claude.args" ] || fail "agent launched"
+T kill-session -t =MED-43
+T new-session -d -s MED-43 -c "$EVAL_TMP" 'exec sleep 600'
+T set-option -t =MED-43: @opsx_task MED-43; T set-option -t =MED-43: @opsx_task_repo /some/other/repo
+out=$("$TASK" start MED-43 --agent-cli claude --no-switch --repo "$R" 2>&1); rc=$?; echo "$out"
+[ $rc -ne 0 ] || fail "other-repo: expected non-zero"
+[ "$(T show-option -qv -t =MED-43: @opsx_task_repo)" = /some/other/repo ] || fail "touched"
+[ ! -e "$FAKE_LOG/claude.args" ] || fail "agent launched"

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: task-session / Uninstalled
+# level: L2
+# requirement: Install and documentation
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+run_install >/dev/null || fail "install failed"
+[ -d "$HOME/.claude/skills/opsx-task" ] || fail "precondition: not installed"
+out=$(run_install --uninstall); rc=$?; echo "$out" | tail -5
+f=$(find "$HOME" -type d -name opsx-task 2>/dev/null); [ -z "$f" ] || fail "remaining: $f"

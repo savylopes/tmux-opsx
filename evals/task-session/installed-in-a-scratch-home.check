@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: task-session / Installed in a scratch HOME
+# level: L2
+# requirement: Install and documentation
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install); rc=$?; echo "$out" | tail -5
+[ $rc -eq 0 ] || fail "install exit $rc"
+d="$HOME/.claude/skills/opsx-task"
+[ -f "$d/SKILL.md" ] || fail "no SKILL.md"
+[ -x "$d/opsx-task.sh" ] || fail "opsx-task.sh not executable"
+for p in .cursor .agents .codex .config/opencode .gemini; do [ -d "$HOME/$p/skills/opsx-task" ] || fail "missing $p/skills/opsx-task"; done
+grep -q '/opsx-task' "$EVAL_ROOT/README.md" || fail "README does not document /opsx-task"

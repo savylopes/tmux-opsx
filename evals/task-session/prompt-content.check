@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: task-session / Prompt content
+# level: L2
+# requirement: Explore-first prompt
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+mkbrief MED-43 jira:MED-43
+"$TASK" start MED-43 --agent-cli claude --no-switch --repo "$R" >/dev/null 2>&1 || fail "start failed"
+a=$(wait_args claude); echo "args: $a"
+grep -qF '.opsx/tasks/MED-43.md' "$FAKE_LOG/claude.args" || fail "prompt does not name the brief"
+grep -qF '/opsx:explore' "$FAKE_LOG/claude.args" || fail "no /opsx:explore"
+grep -qi 'data' "$FAKE_LOG/claude.args" || fail "no 'data' statement"
+grep -qi 'instruction' "$FAKE_LOG/claude.args" || fail "no 'instructions' statement"
+grep -qiE "not (to )?implement|do not implement|don't implement|never implement" "$FAKE_LOG/claude.args" || fail "no do-not-implement"

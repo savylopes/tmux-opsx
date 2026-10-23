@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# scenario: task-session / Lower-case key
+# level: L1
+# requirement: Detect a ticket key
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+out=$("$TASK" key med-43 2>&1); rc=$?
+echo "out=[$out] rc=$rc"
+[ "$out" = "MED-43" ] && [ $rc -eq 0 ] || fail "expected MED-43 exit 0"

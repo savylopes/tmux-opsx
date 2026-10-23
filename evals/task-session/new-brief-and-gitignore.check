@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: task-session / New brief and gitignore
+# level: L1
+# requirement: Brief file
+set -u
+. "$EVAL_ROOT/evals/_lib/task.sh"
+printf 'unique-body-text-123\n' > d.md
+"$TASK" brief MED-43 --source jira:MED-43 --body-file d.md --repo "$R"; rc=$?
+[ $rc -eq 0 ] || fail "brief exit $rc"
+b=$(brief MED-43); [ -f "$b" ] || fail "no brief"
+cat "$b"
+head -1 "$b" | grep -qx 'source: jira:MED-43' || fail "first line not source:"
+for k in cli session_id created; do grep -q "^$k:" "$b" || fail "missing $k: header"; done
+grep -q unique-body-text-123 "$b" || fail "body missing"
+n=$(grep -cx '\.opsx/tasks/' .gitignore); [ "$n" = 1 ] || fail "gitignore has $n lines"
+"$TASK" brief MED-44 --source jira:MED-44 --body-file d.md --repo "$R" >/dev/null
+n=$(grep -cx '\.opsx/tasks/' .gitignore); [ "$n" = 1 ] || fail "gitignore has $n lines after second brief"
