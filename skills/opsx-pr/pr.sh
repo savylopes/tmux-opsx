@@ -4,6 +4,7 @@
 #   pr.sh resolve  <pr> [--repo <dir>]
 #   pr.sh open     [<branch>] --title <t> --body-file <f> [--base <b>] [--repo <dir>]
 #   pr.sh start    <pr> [--repo <dir>] [--agent-cli <cmd>] [--slice <s>] [--poll <s>]
+#   pr.sh restart-input <pr> [--repo <dir>] [--agent-cli <cmd>]
 #   pr.sh seen     <pr> [--repo <dir>]
 #   pr.sh wait     <pr> [--slice <s>] [--poll <s>] [--repo <dir>]
 #   pr.sh worktree <pr> [--repo <dir>]
@@ -23,6 +24,12 @@
 # start     refuses a PR that is not OPEN or comes from a fork, writes the state file (kept as is when
 #           it exists) and starts or reuses tmux window pr-<n> through
 #           opsx-window.sh ensure with a goal and a prompt (the maintain loop).
+# restart-input  same refusals as start (not OPEN, from a fork), keeps the state
+#           file (writes one only when missing), rewrites the prompt and goal
+#           files and prints the window's first input: on Claude Code (default,
+#           or --agent-cli claude) `/goal <goal> Dispatcher steps: read
+#           <prompt> first and follow it.`, else the prompt on one line. Never
+#           touches tmux; opsx-sessions.sh restore types it after a tmux restart.
 # seen      records the PR's current head, base, parent, CI and comment ids.
 # wait      polls gh/git every --poll seconds (default 60) for --slice seconds
 #           (default 540) and prints one event=<kind> line, exit 0, kinds in
@@ -61,7 +68,7 @@
 set -euo pipefail
 
 die() { printf 'pr: %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 SELF=$HERE/$(basename -- "$0")
@@ -785,6 +792,40 @@ cmd_start() {
   printf 'state=%s\n' "$(state_file)"
 }
 
+# First input of a maintain window, for a window that is already running
+# (opsx-sessions.sh restore resumes it with this as the first prompt).
+cmd_restart_input() {
+  parse_opts "$@"
+  setup_pr restart-input
+  local j state cond dir
+  j=$(pr_json "$PR")
+  state=$(jq -r .state <<<"$j")
+  [ "$state" = OPEN ] || die "PR $SLUG#$PR is $state; only an OPEN PR can be maintained."
+  refuse_fork "$j"
+  if [ -f "$(state_file)" ] && [ -n "$(sget head_sha)" ]; then
+    sset repo_dir "$REPO"
+  else
+    snapshot
+    CUR_ci=""
+    write_seen
+  fi
+  write_prompt_files
+  dir=$(cd "$(state_dir)" && pwd) || die "cannot resolve $(state_dir)"
+  case "${AGENT_CLI:-claude}" in
+    claude|*/claude)
+      cond=$(tr '\n' ' ' <"$dir/goal.txt")
+      cond=${cond%"${cond##*[![:space:]]}"}
+      cond="$cond Dispatcher steps: read $dir/prompt.md first and follow it."
+      [ "${#cond}" -le 4000 ] || die "goal condition is ${#cond} characters; /goal allows 4000."
+      printf '/goal %s\n' "$cond"
+      ;;
+    *)
+      cond=$(tr '\n' ' ' <"$dir/prompt.md")
+      printf '%s\n' "${cond%"${cond##*[![:space:]]}"}"
+      ;;
+  esac
+}
+
 cmd_list() {
   [ $# -eq 0 ] || die "list takes no arguments"
   local f repo pr status last wins
@@ -821,6 +862,7 @@ case $sub in
   resolve)  cmd_resolve "$@" ;;
   open)     cmd_open "$@" ;;
   start)    cmd_start "$@" ;;
+  restart-input) cmd_restart_input "$@" ;;
   seen)     cmd_seen "$@" ;;
   wait)     cmd_wait "$@" ;;
   worktree) cmd_worktree "$@" ;;
@@ -832,5 +874,5 @@ case $sub in
   list)     cmd_list "$@" ;;
   stop)     cmd_stop "$@" ;;
   -h|--help|help) usage 0 ;;
-  *) die "unknown command: $sub (resolve | open | start | seen | wait | worktree | restack | push | rerun | note | prompt | list | stop)" ;;
+  *) die "unknown command: $sub (resolve | open | start | restart-input | seen | wait | worktree | restack | push | rerun | note | prompt | list | stop)" ;;
 esac
