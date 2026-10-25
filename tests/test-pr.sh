@@ -155,6 +155,7 @@ ok "a CI failure already seen is not reported again" '[ $rc -eq 3 ]'
 # fix-opsx-pr-ci-gaps 1.1-1.3: cancelled checks fail, ci-failed once per head.
 CK42=$SP/gh/checks/42.json
 BBB=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+CCC=cccccccccccccccccccccccccccccccccccccccc
 ok "wait records the reported head as ci_reported" 'grep -qx "ci_reported=$SHA_A" "$ST42"'
 echo '[{"bucket":"pass"}]' > "$CK42"; P seen 42 >/dev/null
 ok "seen with passing CI clears ci_reported" 'grep -qx "ci_reported=" "$ST42" && grep -qx "ci=pass" "$ST42"'
@@ -190,8 +191,16 @@ jq -nc --arg l76 "$(run_link 76 9)" --arg l77a "$(run_link 77 1)" --arg l77b "$(
 : > "$SP/gh/gh.log"
 out=$(P rerun 42 2>/dev/null); rc=$?
 ok "rerun: runs 77 and 78 once each with --failed, exit 0, rerun_head set" '[ $rc -eq 0 ] && [ "$(grep -c "^run rerun 77 --failed -R o/app$" "$SP/gh/gh.log")" -eq 1 ] && [ "$(grep -c "^run rerun 78 --failed -R o/app$" "$SP/gh/gh.log")" -eq 1 ] && ! grep -q "^run rerun 76" "$SP/gh/gh.log" && grep -qx "rerun_head=$SHA_A" "$ST42" && [ "$(get "$out" rerun_head)" = "$SHA_A" ]'
-ok "rerun clears ci_reported" 'grep -qx "ci_reported=" "$ST42"'
+ok "rerun keeps the current failure reported (ci_reported=head)" 'grep -qx "ci_reported=$SHA_A" "$ST42"'
+# F1: GitHub still shows the old failed checks right after the re-run.
 P seen 42 >/dev/null
+out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "old failed checks still showing after rerun are not a repeat failure" '[ $rc -eq 3 ] && [ -z "$out" ] && grep -qx "ci_reported=$SHA_A" "$ST42"'
+CKFAIL=$(cat "$CK42")
+jq -nc --arg l "$(run_link 77 4)" '[{bucket:"pending",link:$l}]' > "$CK42"
+out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "wait sees the re-run pending: no event, ci_reported cleared" '[ $rc -eq 3 ] && grep -qx "ci_reported=" "$ST42"'
+printf '%s\n' "$CKFAIL" > "$CK42"
 out=$(P wait 42 --slice 5 --poll 1)
 ok "failure again after a re-run on the same head is reported" '[ "$out" = "event=ci-failed" ]'
 P seen 42 >/dev/null
@@ -212,6 +221,14 @@ touch "$SP/gh/rerun_fail"
 out=$(P rerun 42 2>&1); rc=$?
 ok "rerun when every gh run rerun fails: exit 1 with gh's error, rerun_head kept" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "HTTP 403" && grep -qx "rerun_head=$BBB" "$ST42"'
 rm -f "$SP/gh/rerun_fail"
+for CK in '[]' '[{"bucket":"pass","link":"https://github.com/o/app/actions/runs/79/job/1"}]'; do
+  setpr 42 ".headRefOid=\"$CCC\""
+  echo "$CK" > "$CK42"
+  : > "$SP/gh/gh.log"
+  out=$(P rerun 42 2>&1); rc=$?
+  ok "rerun with nothing failing ($CK): exit 7, says nothing is failing (F2)" '[ $rc -eq 7 ] && printf "%s" "$out" | grep -q "no check of o/app#42 is failing" && ! printf "%s" "$out" | grep -q "GitHub Actions" && ! grep -q "^run rerun" "$SP/gh/gh.log"'
+done
+setpr 42 ".headRefOid=\"$SHA_A\""
 ok "pr.sh --help lists rerun" '"$PRSH" --help | grep -qE "pr\.sh rerun "'
 rm -f "$SP/gh/checks/42.json"; P seen 42 >/dev/null
 setpr 42 '.state="MERGED"'

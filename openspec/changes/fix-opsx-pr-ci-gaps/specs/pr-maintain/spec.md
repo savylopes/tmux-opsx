@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Detect a failing CI on the current head
-`pr.sh wait` SHALL treat CI as failing when any check of the PR is in the `fail` or `cancel` bucket. It SHALL report `ci-failed` once per failing head: when it prints `event=ci-failed` it records that head as `ci_reported=`, and it reports again only for another head or after CI on that head stopped failing. `pr.sh seen` SHALL NOT mark a failure as reported, and `pr.sh rerun` SHALL clear `ci_reported`.
+`pr.sh wait` SHALL treat CI as failing when any check of the PR is in the `fail` or `cancel` bucket. It SHALL report `ci-failed` once per failing head: when it prints `event=ci-failed` it records that head as `ci_reported=`, and it reports again only for another head or once CI on that head left the fail state (pending or pass) and failed again. `pr.sh seen` SHALL NOT mark a failure as reported. `pr.sh rerun` SHALL record the current head as `ci_reported`, so the old failed checks GitHub still shows right after the re-run are not reported as a repeat.
 
 #### Scenario: Cancelled check
 - **WHEN** the fake `gh` reports checks in the buckets `pass` and `cancel` for PR 42
@@ -20,7 +20,7 @@
 - **THEN** `pr.sh wait 42` prints `event=ci-failed`
 
 #### Scenario: Failure again after a re-run
-- **WHEN** a failure on the current head was reported, `pr.sh rerun 42` ran, and CI on the same head fails again
+- **WHEN** a failure on the current head was reported, `pr.sh rerun 42` ran, CI on the same head went pending, and it fails again
 - **THEN** `pr.sh wait 42` prints `event=ci-failed`
 
 ### Requirement: Re-run a failed CI once per head
