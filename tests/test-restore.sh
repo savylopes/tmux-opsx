@@ -22,7 +22,8 @@ REAL_TMUX=$(command -v tmux)
 SP=$(cd -P -- "$(mktemp -d "${TMPDIR:-/tmp}/restore-test.XXXXXX")" && pwd)
 SOCK=restore-test-$$
 L="$REAL_TMUX -L $SOCK"
-trap '$L kill-server 2>/dev/null; rm -rf "$SP"' EXIT
+SOCKFILE=${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK
+trap '$L kill-server 2>/dev/null; rm -rf "$SP"; rm -f "$SOCKFILE"' EXIT
 pass=0; fail=0
 ok(){ if eval "$2"; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 # wait_for <seconds> <condition>
