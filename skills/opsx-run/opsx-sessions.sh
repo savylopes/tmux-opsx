@@ -25,8 +25,11 @@
 #          and when that pane sits at a shell types
 #            builtin cd -- <cwd> && claude --resume <id> [--permission-mode <m>] [--model <m>] [<prompt>]
 #          (`builtin`, so a shell function or alias named cd, such as
-#          zoxide's `--cmd cd`, cannot break it).
-#          through `opsx-window.sh type`. --permission-mode is left out for
+#          zoxide's `--cmd cd`, cannot break it; sh/dash/ksh/mksh get
+#          `command cd --`, fish gets `builtin cd <cwd>; and claude ...` with
+#          fish quoting) through `opsx-window.sh type`. An entry whose cwd has
+#          control characters (or DEL) is refused: typed text must not carry
+#          keystrokes such as Ctrl-U. --permission-mode is left out for
 #          `default`, --model comes from the window's @opsx_model. A pane that
 #          runs anything else is skipped and stays pending. The window's
 #          @opsx_* options are put back either way. Restored entries are marked
@@ -52,9 +55,12 @@
 #   restore.log                   output of every restore run
 # <server-key> is <cksum of the socket path>-<server start time>, so pane ids
 # reused by a new server never overwrite records still waiting for a restore.
+# The state dir is 0700 and its files 0600 (umask 077): they hold session ids
+# and paths.
 # Overrides (tests): OPSX_WINDOW (opsx-window.sh), OPSX_PR_SH (pr.sh).
 
 set -uo pipefail
+umask 077
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 STATE_DIR=${OPSX_SESSIONS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-opsx/sessions}
@@ -62,6 +68,13 @@ SNAP=$STATE_DIR/snapshot.tsv
 UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 SHELLS=" bash zsh sh fish dash ksh mksh "
 GOAL_MAX=4000
+
+# Create the state dir private (0700), tightening one made earlier.
+state_dir() {
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null
+  return 0
+}
 
 die() { printf 'opsx-sessions: %s\n' "$1" >&2; exit 1; }
 usage() { awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"; }
@@ -160,7 +173,7 @@ server_alive() {
 }
 
 with_lock() {
-  mkdir -p "$STATE_DIR" || return 1
+  state_dir || return 1
   if command -v flock >/dev/null 2>&1; then
     (
       flock -w 30 9 || exit 1
@@ -304,7 +317,7 @@ hook_main() {
 
 cmd_hook() {
   local log
-  mkdir -p "$STATE_DIR" 2>/dev/null
+  state_dir
   log=$STATE_DIR/hook.log
   [ -w "$STATE_DIR" ] || log=/dev/null
   # Claude Code adds hook stdout to the conversation: never print anything.
@@ -332,7 +345,7 @@ save_locked() {
   local info key panes line f pane sess widx wname pidx cmd win id cwd mode now tmp n=0 kept=0
   local -A cur_ids=()
   now=$(date +%s)
-  mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
+  state_dir || die "cannot create $STATE_DIR"
   tmp=$SNAP.tmp.$$
   printf '# opsx-sessions snapshot v1: state server pane session window_index window_name pane_index cwd session_id mode saved_at @opsx_*=value...\n' > "$tmp" \
     || die "cannot write $tmp"
@@ -453,16 +466,29 @@ pr_script() {
   printf '%s' "$p"
 }
 
-# POSIX single-quoting (works in bash, zsh, sh, dash, ksh and fish).
+# POSIX single-quoting (bash, zsh, sh, dash, ksh, mksh): ' becomes '\''.
 squote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 
-# One line, no control characters (newlines would submit early).
-one_line() { printf '%s' "$1" | tr '\n\r\t' '   ' | tr -d '\000-\037'; }
+# fish single-quoting: inside '...' fish reads \\ and \' as escapes.
+fquote() {
+  local s=${1//\\/\\\\}
+  printf "'%s'" "${s//\'/\\\'}"
+}
+
+# Quote $2 for shell $1 (a name from SHELLS).
+shquote() { if [ "$1" = fish ]; then fquote "$2"; else squote "$2"; fi; }
+
+# Has $1 a control character or DEL (typed, they act as keystrokes)?
+has_cntrl() { printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'; }
+
+# One line, no control characters or DEL (newlines would submit early, DEL
+# and Ctrl-U erase what was typed before).
+one_line() { printf '%s' "$1" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177'; }
 
 safe_name() {
   [ -n "$1" ] || return 1
   case "$1" in *[:.]*) return 1 ;; esac
-  ! printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'
+  ! has_cntrl "$1"
 }
 
 say() { printf '%s\n' "$1"; printf '%s %s\n' "$(date '+%F %T')" "$1" >> "$STATE_DIR/restore.log" 2>/dev/null; }
@@ -503,11 +529,11 @@ restore_one() {
   local label="$sess:$widx.$pidx"
 
   if ! safe_name "$sess" || ! [[ $widx =~ ^[0-9]+$ ]] || ! [[ $pidx =~ ^[0-9]+$ ]] \
-     || ! [[ $id =~ $UUID_RE ]] || [ -z "$cwd" ] || [ "${cwd#/}" = "$cwd" ]; then
-    say "invalid $label: bad session name, index, id or cwd in the snapshot; skipped"
+     || ! [[ $id =~ $UUID_RE ]] || [ -z "$cwd" ] || [ "${cwd#/}" = "$cwd" ] || has_cntrl "$cwd"; then
+    say "invalid $label: bad session name, index, id or cwd (relative or with control characters) in the snapshot; skipped"
     return 1
   fi
-  printf '%s' "$wname" | LC_ALL=C grep -q '[[:cntrl:]]' && wname=""
+  has_cntrl "$wname" && wname=""
   [[ $mode =~ ^[A-Za-z]{1,40}$ ]] || mode=""
   local wcwd=$cwd
   [ -d "$wcwd" ] || wcwd=$HOME
@@ -596,10 +622,19 @@ restore_one() {
       say "note $label: @opsx_model '$(one_line "$model")' has unsafe characters; resumed without --model"
     fi
   fi
-  [ -z "$prompt" ] || cli+=" $(squote "$prompt")"
-  # builtin: zoxide (--cmd cd) and similar replace cd with a function that
-  # does not take `--` and a path the same way.
-  typed="builtin cd -- $(squote "$cwd") && $cli"
+  [ -z "$prompt" ] || cli+=" $(shquote "$cmd" "$prompt")"
+  # builtin / command: zoxide (--cmd cd) and similar replace cd with a
+  # function that does not take `--` and a path the same way. dash has no
+  # `builtin` and zsh's `command` skips builtins, hence one form per shell.
+  case "$cmd" in
+    bash|zsh) typed="builtin cd -- $(squote "$cwd") && $cli" ;;
+    fish)     typed="builtin cd $(fquote "$cwd"); and $cli" ;;
+    *)        typed="command cd -- $(squote "$cwd") && $cli" ;;
+  esac
+  if has_cntrl "$typed"; then
+    say "invalid $label: the line to type has control characters; skipped"
+    return 1
+  fi
 
   tf=$(mktemp "$STATE_DIR/.type.XXXXXX") || { say "failed $label: cannot create a temp file"; return 1; }
   printf '%s\n' "$typed" > "$tf"
@@ -656,7 +691,7 @@ cmd_restore() {
     esac
   done
   command -v tmux >/dev/null 2>&1 || die "tmux is not installed."
-  mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
+  state_dir || die "cannot create $STATE_DIR"
   [ -f "$SNAP" ] || { say "no recorded sessions to restore"; return 0; }
   WINDOW_SH=$(window_script) || exit 1
   local key="" entries line k total=0 ok=0 skipped=0

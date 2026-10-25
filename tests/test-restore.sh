@@ -47,13 +47,14 @@ fi
 [ -n "\${STUB_EXIT:-}" ] && exit 0
 exec -a claude sleep 600
 EOF
-# pr.sh: restart-input 16 prints a goal, 17 is merged; every call is logged.
+# pr.sh: restart-input 16 prints a goal, 19 a goal led by DELs, 17 is merged; every call is logged.
 cat > "$SP/pr.sh" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$SP/log/pr"
 [ "\$1" = restart-input ] || exit 9
 case "\$2" in
   16) echo "/goal keep PR 16 mergeable" ;;
+  19) printf '\177\177\177\177\177\177\177\177\177;touch %s/pwned4 #\n' "$SP" ;;
   *)  echo "pr: PR o/app#\$2 is MERGED; only an OPEN PR can be maintained." >&2; exit 1 ;;
 esac
 EOF
@@ -342,6 +343,52 @@ out=$(bash "$S" restore 2>&1); rc=$?
 wait_for 10 'grep -qx -- "$X1" "$SP/log/claude"'; sleep 0.5
 ok "snapshot text is quoted: goal with \$(...) is passed literally" '[ ! -e "$SP/pwned" ] && last_arg "$X1" | grep -qF "/goal \$(touch"'
 ok "invalid session name or id refused" '[ ! -e "$SP/pwned2" ] && [ "$(printf "%s\n" "$out" | grep -c "^invalid")" -eq 2 ]'
+
+# ---- control characters and DEL are never typed (cwd refused, prompt stripped)
+C1=$(uuid 53); C2=$(uuid 54); C3=$(uuid 55); C4=$(uuid 56)
+{
+  printf 'pending\t999-1\t%%63\twork\t53\tw53\t0\t%s\025touch %s/pwned5 #\t%s\tdefault\t%s\n' "$SP/r" "$SP" "$C1" "$NOW"
+  printf 'pending\t999-1\t%%64\twork\t54\tw54\t0\t%s\177\177\177touch %s/pwned6 #\t%s\tdefault\t%s\n' "$SP/r" "$SP" "$C2" "$NOW"
+  printf 'pending\t999-1\t%%65\twork\t55\tw55\t0\t%s\t%s\tdefault\t%s\t@opsx_change=x55\t@opsx_status=busy\t@opsx_goal=\177\177\177\177\177\177\177\177\177;touch %s/pwned3 #\n' "$SP/r" "$C3" "$NOW" "$SP"
+  printf 'pending\t999-1\t%%66\twork\t56\tw56\t0\t%s\t%s\tdefault\t%s\t@opsx_change=pr-19\t@opsx_pr_repo=o/app\t@opsx_status=idle\n' "$SP/r" "$C4" "$NOW"
+} > "$ST/snapshot.tsv"
+out=$(bash "$S" restore 2>&1); rc=$?
+printf '%s\n' "$out" > "$SP/restore-cntrl.out"
+for u in "$C3" "$C4"; do wait_for 10 'grep -qx -- "$u" "$SP/log/claude"'; done; sleep 1
+ok "cwd with Ctrl-U or DEL refused: nothing typed, entry still pending" '[ ! -e "$SP/pwned5" ] && [ ! -e "$SP/pwned6" ] && ! grep -qx -- "$C1" "$SP/log/claude" && ! grep -qx -- "$C2" "$SP/log/claude" && grep -q "^invalid work:53.0" "$SP/restore-cntrl.out" && grep -q "^invalid work:54.0" "$SP/restore-cntrl.out" && bash "$S" list | grep "$C1" | grep -q "pending$"'
+ok "DEL in @opsx_goal stripped: goal stays inside the quoted prompt" '[ ! -e "$SP/pwned3" ] && [[ "$(last_arg "$C3")" == "/goal ;touch $SP/pwned3 # tmux restarted"* ]]'
+ok "DEL in pr.sh restart-input output stripped: prompt stays quoted" '[ ! -e "$SP/pwned4" ] && [ "$(last_arg "$C4")" = ";touch $SP/pwned4 #" ]'
+
+# ---- dash pane: no `builtin` there, `command cd` resumes
+D1=$(uuid 57)
+$L new-window -d -t work:57 -n w57 -c "$SP/r" dash
+wait_for 5 '[ "$($L display -p -t work:57 "#{pane_current_command}")" = dash ]'
+printf 'pending\t999-1\t%%67\twork\t57\tw57\t0\t%s\t%s\tdefault\t%s\n' "$SP/r2" "$D1" "$NOW" > "$ST/snapshot.tsv"
+out=$(bash "$S" restore 2>&1); rc=$?
+wait_for 10 'grep -qx -- "$D1" "$SP/log/claude"'
+ok "dash pane: resumed in the recorded cwd, entry restored" '[ $rc -eq 0 ] && [ "$(cwd_of "$D1")" = "$SP/r2" ] && [ "$(args_of "$D1" | tr "\n" " ")" = "--resume $D1 " ] && bash "$S" list | grep "$D1" | grep -q "restored$"'
+
+# ---- fish pane: fish quoting (\\ and \' are escapes inside '...'), `; and`
+# A sleep named fish stands in for fish; a stub opsx-window.sh records the line.
+mkdir -p "$SP/fishbin"; ln -sf "$(command -v sleep)" "$SP/fishbin/fish"
+printf '#!/usr/bin/env bash\n[ "$1" = type ] && cat "$4" > %q\nexit 0\n' "$SP/typed-fish" > "$SP/win-stub.sh"
+$L new-window -d -t work:58 -n w58 -c "$SP/r" "$SP/fishbin/fish 600"
+wait_for 5 '[ "$($L display -p -t work:58 "#{pane_current_command}")" = fish ]'
+F1=$(uuid 58)
+# cwd /tmp/x\';echo INJECTED #   goal it's a \ test   (\ escaped as \\ in the TSV)
+printf 'pending\t999-1\t%%68\twork\t58\tw58\t0\t%s\t%s\tbypassPermissions\t%s\t@opsx_change=x58\t@opsx_status=busy\t%s\n' \
+  "/tmp/x\\\\';echo INJECTED #" "$F1" "$NOW" "@opsx_goal=it's a \\\\ test" > "$ST/snapshot.tsv"
+out=$(OPSX_WINDOW=$SP/win-stub.sh bash "$S" restore 2>&1); rc=$?
+FT=$(cat "$SP/typed-fish" 2>/dev/null)
+FWANT="builtin cd '/tmp/x\\\\\\';echo INJECTED #'; and claude --resume $F1 --permission-mode bypassPermissions '/goal it\\'s a \\\\ test tmux restarted"
+ok "fish pane: cwd fish-quoted, then ; and claude" '[ $rc -eq 0 ] && [[ "$FT" == "$FWANT"* ]]'
+FAPOS="window\\'s last task"; FPOSIX="'\\''"
+ok "fish pane: apostrophes escaped as backslash-quote, no POSIX quote-backslash-quote form" '[[ "$FT" == *"$FAPOS"* ]] && [[ "$FT" != *"$FPOSIX"* ]]'
+
+# ---- state dir private
+chmod 755 "$ST"
+bash "$S" save >/dev/null 2>&1
+ok "state dir 0700, nothing in it readable by others" '[ "$(stat -c %a "$ST")" = 700 ] && [ -z "$(find "$ST" -perm /077 ! -type l)" ]'
 
 # ================================================================ 5. install
 mkdir -p "$SP/ibin"
