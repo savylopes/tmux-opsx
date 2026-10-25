@@ -80,6 +80,9 @@ case "\$1 \$2" in
     [ -e "\$D/api_fail" ] && { echo "HTTP 502" >&2; exit 1; }
     f="\$D/api/\$(printf '%s' "\$3" | tr '/' '_')"; [ -f "\$f" ] || { echo '[]' | jq -r '.[].id'; exit 0; }
     jq -r '.[].id' "\$f" ;;
+  "run rerun")
+    [ -e "\$D/rerun_fail" ] && { echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; }
+    exit 0 ;;
   *) echo "unexpected gh \$*" >&2; exit 9 ;;
 esac
 EOF
@@ -149,6 +152,67 @@ ok "failing check -> event=ci-failed" '[ "$out" = "event=ci-failed" ]'
 P seen 42 >/dev/null
 out=$(P wait 42 --slice 1 --poll 1 2>/dev/null); rc=$?
 ok "a CI failure already seen is not reported again" '[ $rc -eq 3 ]'
+# fix-opsx-pr-ci-gaps 1.1-1.3: cancelled checks fail, ci-failed once per head.
+CK42=$SP/gh/checks/42.json
+BBB=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ok "wait records the reported head as ci_reported" 'grep -qx "ci_reported=$SHA_A" "$ST42"'
+echo '[{"bucket":"pass"}]' > "$CK42"; P seen 42 >/dev/null
+ok "seen with passing CI clears ci_reported" 'grep -qx "ci_reported=" "$ST42" && grep -qx "ci=pass" "$ST42"'
+echo '[{"bucket":"pass"},{"bucket":"cancel"}]' > "$CK42"
+out=$(P wait 42 --slice 5 --poll 1); rc=$?
+ok "cancelled check -> event=ci-failed, exit 0" '[ $rc -eq 0 ] && [ "$out" = "event=ci-failed" ]'
+P seen 42 >/dev/null
+out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "reported failure stays quiet after seen (exit 3, no event)" '[ $rc -eq 3 ] && ! printf "%s" "$out" | grep -q "^event="'
+echo '[{"bucket":"pass"}]' > "$CK42"; P seen 42 >/dev/null
+echo '[{"bucket":"fail"}]' > "$CK42"; P seen 42 >/dev/null
+ok "seen records ci=fail but never ci_reported" 'grep -qx "ci=fail" "$ST42" && grep -qx "ci_reported=" "$ST42"'
+out=$(P wait 42 --slice 5 --poll 1)
+ok "failure absorbed by seen is still reported" '[ "$out" = "event=ci-failed" ]'
+P seen 42 >/dev/null
+setpr 42 ".headRefOid=\"$BBB\""
+out=$(P wait 42 --slice 5 --poll 1)
+ok "new head with failing CI -> head-moved first" '[ "$out" = "event=head-moved" ]'
+P seen 42 >/dev/null
+out=$(P wait 42 --slice 5 --poll 1)
+ok "failure on a new head is reported again" '[ "$out" = "event=ci-failed" ] && grep -qx "ci_reported=$BBB" "$ST42"'
+setpr 42 ".headRefOid=\"$SHA_A\""; P seen 42 >/dev/null
+sed -i '/^ci_reported=/d' "$ST42"
+out=$(P wait 42 --slice 5 --poll 1)
+ok "state without ci_reported reports a red PR once" '[ "$out" = "event=ci-failed" ]'
+P seen 42 >/dev/null
+out=$(P wait 42 --slice 1 --poll 1 2>/dev/null); rc=$?
+ok "... and only once" '[ $rc -eq 3 ]'
+# fix-opsx-pr-ci-gaps 2.1-2.3: pr.sh rerun, once per head.
+run_link() { printf 'https://github.com/o/app/actions/runs/%s/job/%s' "$1" "$2"; }
+jq -nc --arg l76 "$(run_link 76 9)" --arg l77a "$(run_link 77 1)" --arg l77b "$(run_link 77 2)" --arg l78 "$(run_link 78 3)" \
+  '[{bucket:"pass",link:$l76},{bucket:"fail",link:$l77a},{bucket:"fail",link:$l77b},{bucket:"cancel",link:$l78}]' > "$CK42"
+: > "$SP/gh/gh.log"
+out=$(P rerun 42 2>/dev/null); rc=$?
+ok "rerun: runs 77 and 78 once each with --failed, exit 0, rerun_head set" '[ $rc -eq 0 ] && [ "$(grep -c "^run rerun 77 --failed -R o/app$" "$SP/gh/gh.log")" -eq 1 ] && [ "$(grep -c "^run rerun 78 --failed -R o/app$" "$SP/gh/gh.log")" -eq 1 ] && ! grep -q "^run rerun 76" "$SP/gh/gh.log" && grep -qx "rerun_head=$SHA_A" "$ST42" && [ "$(get "$out" rerun_head)" = "$SHA_A" ]'
+ok "rerun clears ci_reported" 'grep -qx "ci_reported=" "$ST42"'
+P seen 42 >/dev/null
+out=$(P wait 42 --slice 5 --poll 1)
+ok "failure again after a re-run on the same head is reported" '[ "$out" = "event=ci-failed" ]'
+P seen 42 >/dev/null
+: > "$SP/gh/gh.log"
+out=$(P rerun 42 2>&1); rc=$?
+ok "second rerun on the same head: exit 6, no gh run rerun" '[ $rc -eq 6 ] && printf "%s" "$out" | grep -q "already re-ran CI for $SHA_A" && ! grep -q "^run rerun" "$SP/gh/gh.log"'
+setpr 42 ".headRefOid=\"$BBB\""
+: > "$SP/gh/gh.log"
+out=$(P rerun 42 2>/dev/null); rc=$?
+ok "rerun on a new head re-runs again" '[ $rc -eq 0 ] && grep -q "^run rerun 77 --failed" "$SP/gh/gh.log" && grep -qx "rerun_head=$BBB" "$ST42"'
+setpr 42 ".headRefOid=\"$SHA_A\""
+echo '[{"bucket":"fail","link":"https://ci.example.com/o/app/builds/5"},{"bucket":"pass","link":"https://github.com/o/app/actions/runs/79/job/1"}]' > "$CK42"
+: > "$SP/gh/gh.log"
+out=$(P rerun 42 2>&1); rc=$?
+ok "rerun with only an external CI failure: exit 7, no gh run rerun" '[ $rc -eq 7 ] && ! grep -q "^run rerun" "$SP/gh/gh.log" && grep -qx "rerun_head=$BBB" "$ST42"'
+jq -nc --arg l "$(run_link 77 1)" '[{bucket:"fail",link:$l}]' > "$CK42"
+touch "$SP/gh/rerun_fail"
+out=$(P rerun 42 2>&1); rc=$?
+ok "rerun when every gh run rerun fails: exit 1 with gh's error, rerun_head kept" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "HTTP 403" && grep -qx "rerun_head=$BBB" "$ST42"'
+rm -f "$SP/gh/rerun_fail"
+ok "pr.sh --help lists rerun" '"$PRSH" --help | grep -qE "pr\.sh rerun "'
 rm -f "$SP/gh/checks/42.json"; P seen 42 >/dev/null
 setpr 42 '.state="MERGED"'
 echo '[{"id":5},{"id":7},{"id":12},{"id":99}]' > "$api42c"
@@ -296,6 +360,8 @@ ok "security F2: only requested reviewers, a submitted review does not count, [b
 ok "security F3: prompt pushes only through pr.sh push with an explicit lease" 'grep -q "push 42 --repo" "$PROMPT" && grep -q -- "--force-with-lease=<head>:<head_sha>" "$PROMPT" && ! grep -q "force-if-includes" "$PROMPT"'
 ok "security F4: every GitHub-sourced text is untrusted" 'for t in "review comments and reviews" "PR (issue) comments" "PR title and body" "commit messages" "CI logs" "bot comments"; do grep -q "$t" "$PROMPT" || { echo "missing: $t"; exit 1; }; done'
 ok "prompt: gates (tests, ops-reviewer for comment and CI fixes)" 'grep -q "tests must pass before every push" "$PROMPT" && grep -q "ops-reviewer pass" "$PROMPT" && grep -q "P0/P1" "$PROMPT" && grep -q "review comment or for CI" "$PROMPT"'
+ok "prompt: ci-failed step triages before a re-run (rerun 42, not caused by the PR, repeat failure is real)" 'sed -n "/^- ci-failed:/,/^- comments:/p" "$PROMPT" > "$SP/cistep" && grep -q "rerun 42" "$SP/cistep" && grep -q "not clearly caused by this PR" "$SP/cistep" && grep -q "fails again on the same head" "$SP/cistep" && grep -q "exits 6" "$SP/cistep" && grep -q "untrusted input" "$SP/cistep" && grep -q "Never re-run it again on the same head" "$SP/cistep"'
+ok "prompt: on its own list includes one CI re-run per head with rerun 42" 'sed -n "/^## You may do on your own/,/^## Gates/p" "$PROMPT" | grep -q "re-run a failed CI once per head with .*rerun 42"'
 ok "prompt: resolveReviewThread, retarget, repo PR skill" 'grep -q resolveReviewThread "$PROMPT" && grep -q "gh pr edit 42 --base" "$PROMPT" && grep -q "own PR skill" "$PROMPT"'
 out=$(P start 42 --agent-cli claude 2>/dev/null); rc=$?
 ok "second start reuses the window" '[ $rc -eq 0 ] && [ "${out%% *}" = reused ] && [ "$(winof pr-42 | wc -l)" -eq 1 ]'
@@ -356,6 +422,7 @@ run_install(){
 }
 out=$(run_install); rc=$?
 ok "install: opsx-pr in all six skill folders, pr.sh executable" '[ $rc -eq 0 ] && [ "$(n_pr_dirs)" -eq 6 ] && [ -f "$IH/.claude/skills/opsx-pr/SKILL.md" ] && [ -x "$IH/.claude/skills/opsx-pr/pr.sh" ]'
+ok "install: installed pr.sh has the rerun command" '"$IH/.claude/skills/opsx-pr/pr.sh" --help | grep -qE "pr\.sh rerun "'
 ok "install: verify step checks opsx-pr" 'printf "%s" "$out" | grep -q "opsx-pr/{SKILL.md,pr.sh}" && printf "%s" "$out" | grep -q "pr.sh parses"'
 ok "installed pr.sh finds the installed opsx-window.sh" '[ -f "$IH/.claude/skills/opsx-pr/../opsx-run/opsx-window.sh" ]'
 out=$(run_install --uninstall); rc=$?
