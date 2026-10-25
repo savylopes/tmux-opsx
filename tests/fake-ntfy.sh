@@ -18,6 +18,16 @@ while [ $# -gt 0 ]; do
 done
 set -- "${args[@]+"${args[@]}"}"
 touch "$D/users" "$D/access" "$D/tokens"
+# Like ntfy 2.34 (cmd/user.go): NTFY_PASSWORD, else the password and its
+# confirmation as two lines on stdin. Logs where the password came from.
+read_pw() {
+  local p c
+  if [ -n "${NTFY_PASSWORD:-}" ]; then printf 'pw-from env\n' >> "$D/calls.log"; PW=$NTFY_PASSWORD; return 0; fi
+  IFS= read -r p || true; IFS= read -r c || true
+  [ -n "$p" ] || { echo "password cannot be empty" >&2; exit 1; }
+  [ "$p" = "$c" ] || { echo "passwords do not match" >&2; exit 1; }
+  printf 'pw-from stdin\n' >> "$D/calls.log"; PW=$p
+}
 case "${1:-} ${2:-}" in
   "--version "*) echo "ntfy version 2.34.0 (fake)" ;;
   "user list")
@@ -30,12 +40,12 @@ case "${1:-} ${2:-}" in
   "user add")
     u=${3:?}
     if grep -qx "$u" "$D/users"; then echo "user $u already exists" >&2; exit 1; fi
-    [ -n "${NTFY_PASSWORD:-}" ] || { echo "no password" >&2; exit 1; }
-    printf '%s\n' "$u" >> "$D/users"; printf '%s\n' "$NTFY_PASSWORD" > "$D/pw-$u"
+    read_pw
+    printf '%s\n' "$u" >> "$D/users"; printf '%s\n' "$PW" > "$D/pw-$u"
     echo "user $u added with role user" ;;
   "user change-pass")
     u=${3:?}; grep -qx "$u" "$D/users" || { echo "user $u does not exist" >&2; exit 1; }
-    printf '%s\n' "${NTFY_PASSWORD:?}" > "$D/pw-$u"; echo "changed password for user $u" ;;
+    read_pw; printf '%s\n' "$PW" > "$D/pw-$u"; echo "changed password for user $u" ;;
   "access "*)
     u=${2:?} t=${3:?}
     grep -qx "$u" "$D/users" || { echo "user $u does not exist" >&2; exit 1; }

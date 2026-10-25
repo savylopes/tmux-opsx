@@ -85,7 +85,7 @@
 #                                      (.bak first; replaced on a rerun, never duplicated)
 #      and, with --expose-domain, a self-hosted ntfy server:
 #                                   -> ~/.local/share/tmux-opsx/bin/ntfy (pinned release,
-#                                      sha256 checked against its checksums.txt; or $OPSX_NTFY_BIN)
+#                                      sha256 checked against a hash pinned here; or $OPSX_NTFY_BIN)
 #                                   -> ~/.config/tmux-opsx/ntfy-server.yml (127.0.0.1:2586,
 #                                      base https://ntfy.<domain>, deny-all)
 #                                   -> ~/.config/tmux-opsx/tmux-opsx-ntfy.service (Linux)
@@ -1309,9 +1309,13 @@ sha256_of() {
 }
 
 # $OPSX_NTFY_BIN, or the pinned release already installed, or a download of
-# the pinned release tarball verified against the release's checksums.txt.
-# A failed download skips the server for this run (warning); a checksum
-# mismatch aborts the install and leaves no binary.
+# the pinned release tarball verified against the sha256 pinned below for its
+# arch (never against a checksum file from the download origin). A failed
+# download skips the server for this run (warning); a hash mismatch aborts the
+# install and leaves no binary. $OPSX_NTFY_RELEASE_BASE only changes where the
+# tarball comes from; it must still match the pinned hash. Tests only:
+# $OPSX_NTFY_SHA256 replaces the pinned hash, honoured only together with
+# $OPSX_NTFY_RELEASE_BASE (never for the default GitHub download).
 notify_get_ntfy() {
   local arch name base tmpd want got src
   if [ -n "${OPSX_NTFY_BIN:-}" ]; then
@@ -1330,30 +1334,34 @@ notify_get_ntfy() {
     ok "ntfy $NTFY_VERSION $(tilde "$NTFY_BIN") (already installed)"
     return 0
   fi
+  # sha256 of ntfy_<NTFY_VERSION>_linux_<arch>.tar.gz, copied from
+  # https://github.com/binwiederhier/ntfy/releases/download/v2.34.0/checksums.txt
+  # Bump NTFY_VERSION and these hashes together.
   case "$(uname -m)" in
-    x86_64|amd64)  arch=amd64 ;;
-    aarch64|arm64) arch=arm64 ;;
-    armv7*)        arch=armv7 ;;
-    armv6*)        arch=armv6 ;;
-    *) warn "no ntfy build for CPU $(uname -m); notifications server skipped (set OPSX_NTFY_BIN to an ntfy binary)"; NTFY_BIN=""; return 0 ;;
+    x86_64|amd64)  arch=amd64; want=f78e2645c6457363f37d5d1c4f7cddb7e9658abd197824a7387a1a38d92bb895 ;;
+    aarch64|arm64) arch=arm64; want=d585fe48d1b2e80b1b1719977bb651cc7d9259bacb817aa8a8d5b4c8f0c9e946 ;;
+    armv7*)        arch=armv7; want=c8c3a58301db93a9f5de32c0b028ce09485e9dcb0fa1433b9171e073c23e8342 ;;
+    armv6*)        arch=armv6; want=4eaad91bf08f6c959449203de009cfb065b564bd37ba32a2e1f95d75bcb9adb9 ;;
+    *) warn "no pinned ntfy $NTFY_VERSION build for CPU $(uname -m); notifications server skipped (set OPSX_NTFY_BIN to an ntfy binary)"; NTFY_BIN=""; return 0 ;;
   esac
+  if [ -n "${OPSX_NTFY_RELEASE_BASE:-}" ] && [ -n "${OPSX_NTFY_SHA256:-}" ]; then
+    want=$OPSX_NTFY_SHA256
+  fi
   name=ntfy_${NTFY_VERSION}_linux_$arch.tar.gz
   base=${OPSX_NTFY_RELEASE_BASE:-https://github.com/binwiederhier/ntfy/releases/download/v$NTFY_VERSION}
   mkdir -p "$EXPOSE_BIN_DIR" || die "cannot create $EXPOSE_BIN_DIR"
   tmpd=$(mktemp -d "$EXPOSE_BIN_DIR/.ntfy.XXXXXX") || die "cannot create a temp dir in $EXPOSE_BIN_DIR"
-  note "downloading ntfy $NTFY_VERSION (linux/$arch) and its checksums.txt"
-  if ! curl -fsSL --max-time 60 -o "$tmpd/checksums.txt" "$base/checksums.txt" \
-     || ! curl -fsSL --max-time 600 -o "$tmpd/$name" "$base/$name"; then
+  note "downloading ntfy $NTFY_VERSION (linux/$arch)"
+  if ! curl -fsSL --max-time 600 -o "$tmpd/$name" "$base/$name"; then
     rm -rf "$tmpd"; NTFY_BIN=""
     warn "could not download ntfy from $base — the notification server is skipped this run"
     note "re-run online, set OPSX_NTFY_BIN to an ntfy binary, or pass --skip-notify"
     return 0
   fi
-  want=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$tmpd/checksums.txt")
   got=$(sha256_of "$tmpd/$name") || { rm -rf "$tmpd"; die "no sha256sum or shasum to verify the ntfy download"; }
-  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+  if [ "$want" != "$got" ]; then
     rm -rf "$tmpd"
-    die "the ntfy download $name does not match its checksums.txt (expected ${want:-no entry}, got $got) — removed it, no ntfy binary was installed"
+    die "the ntfy download $name does not match its pinned sha256 (expected $want, got $got) — removed it, no ntfy binary was installed"
   fi
   if ! tar -xzf "$tmpd/$name" -C "$tmpd" 2>/dev/null; then
     rm -rf "$tmpd"; die "cannot unpack $name"
@@ -1365,7 +1373,7 @@ notify_get_ntfy() {
   fi
   rm -rf "$tmpd"
   NOTIFY_SERVER=1
-  ok "ntfy $NTFY_VERSION $(tilde "$NTFY_BIN") (downloaded, sha256 verified)"
+  ok "ntfy $NTFY_VERSION $(tilde "$NTFY_BIN") (downloaded, sha256 verified against the pinned hash)"
 }
 
 # The static Caddy route for https://ntfy.<domain> (streaming, no buffering).
@@ -1375,6 +1383,14 @@ notify_route_json() {
 }
 
 ntfy_cmd() { run_as_owner "$NTFY_BIN" "$@"; }
+# ntfy_pw_cmd <password> <ntfy args...>: `ntfy user add|change-pass` with the
+# password on stdin (ntfy reads it and its confirmation as two lines when
+# stdin is not a TTY). Never in argv or the environment: under sudo, env_reset
+# would drop NTFY_PASSWORD, and `env NTFY_PASSWORD=...` would show it in ps.
+ntfy_pw_cmd() {
+  local pw=$1; shift
+  printf '%s\n%s\n' "$pw" "$pw" | ( unset NTFY_PASSWORD NTFY_PASSWORD_HASH; ntfy_cmd "$@" )
+}
 
 notify_write_server_config() {
   mkdir -p "$NTFY_STATE_DIR" || die "cannot create $NTFY_STATE_DIR"
@@ -1398,6 +1414,10 @@ YML
   if [ ! -e "$NTFY_STATE_DIR/auth.db" ]; then
     ( umask 077; : > "$NTFY_STATE_DIR/auth.db" ) || die "cannot create $NTFY_STATE_DIR/auth.db"
   fi
+  # Under sudo the ntfy user/token commands run as $SUDO_USER: hand the config
+  # dir (server.yml), the state dir (auth.db, later cache.db) and the bin dir
+  # over first, or ntfy cannot read its config or open its database.
+  expose_chown
 }
 
 random_alnum() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"; }
@@ -1416,7 +1436,7 @@ notify_credentials() {
   if ! printf '%s\n' "$users" | grep -q "^user $NTFY_USER "; then
     pw=$(random_alnum 24)
     [ "${#pw}" -eq 24 ] || { warn "could not generate a password (tr, head, /dev/urandom)"; return 0; }
-    if ! out=$(NTFY_PASSWORD=$pw ntfy_cmd user --config "$NTFY_SERVER_YML" add "$NTFY_USER" 2>&1); then
+    if ! out=$(ntfy_pw_cmd "$pw" user --config "$NTFY_SERVER_YML" add "$NTFY_USER" 2>&1); then
       warn "could not create the ntfy user $NTFY_USER: $out"; return 0
     fi
     token=""; changed="${changed:+$changed, }user"
@@ -1424,7 +1444,7 @@ notify_credentials() {
   elif [ -z "$pw" ]; then
     # The user exists but notify.env lost its password: set a new one.
     pw=$(random_alnum 24)
-    if ! out=$(NTFY_PASSWORD=$pw ntfy_cmd user --config "$NTFY_SERVER_YML" change-pass "$NTFY_USER" 2>&1); then
+    if ! out=$(ntfy_pw_cmd "$pw" user --config "$NTFY_SERVER_YML" change-pass "$NTFY_USER" 2>&1); then
       warn "could not reset the password of ntfy user $NTFY_USER: $out"; return 0
     fi
     changed="${changed:+$changed, }password"

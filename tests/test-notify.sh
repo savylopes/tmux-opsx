@@ -402,6 +402,7 @@ ok "5.4: user opsx created once, granted rw on the topic, one token" '[ "$(grep 
 ok "5.4: the token matches the one ntfy created" 'grep -q " $(sed -n "s/^NTFY_TOKEN=//p" "$NE")$" "$IH.ntfy/tokens"'
 PW=$(sed -n 's/^NTFY_PASSWORD=//p' "$NE"); TK=$(sed -n 's/^NTFY_TOKEN=//p' "$NE"); TP=$(sed -n 's/^NTFY_TOPIC=//p' "$NE")
 ok "5.4: the password is 24 characters and set in ntfy" '[ "${#PW}" -eq 24 ] && [ "$(cat "$IH.ntfy/pw-opsx")" = "$PW" ]'
+ok "F3: the password reaches ntfy on stdin, never in argv or the environment" 'grep -qx "pw-from stdin" "$IH.ntfy/calls.log" && ! grep -q "pw-from env" "$IH.ntfy/calls.log" && ! grep -qF "$PW" "$IH.ntfy/calls.log"'
 ok "5.4: install output has the Android setup lines but neither password nor token" 'grep -q "Android: install ntfy, add server https://ntfy.dev.example.com, log in as opsx, subscribe to $TP" "$IH.out" && grep -q "opsx notify info --show-password" "$IH.out" && ! grep -qF "$PW" "$IH.out" && ! grep -qF "$TK" "$IH.out"'
 ok "5.6: opsx-notify.sh executable in all six opsx-run dirs; verify parses it" 'for d in "${SKILL_DIRS[@]}"; do [ -x "$IH/$d/opsx-run/opsx-notify.sh" ] || exit 1; done; grep -q "opsx-notify.sh parses" "$IH.out"'
 ok "5.5: settings.json has the three notify hooks" '[ "$(notify_hook_count)" -eq 3 ] && [ "$(jq -r ".hooks.PreToolUse[-1].matcher" "$IH/.claude/settings.json")" = AskUserQuestion ] && [ "$(jq -r ".hooks.Notification[-1].matcher" "$IH/.claude/settings.json")" = permission_prompt ] && [ "$(jq -r ".hooks.Stop[-1].hooks[0].command" "$IH/.claude/settings.json")" = "$IH/.claude/skills/opsx-run/opsx-notify.sh hook claude-stop" ]'
@@ -507,21 +508,79 @@ if command -v python3 >/dev/null 2>&1; then
   ok "5.5: python3 fallback merges the hooks (no jq)" '[ $rc -eq 0 ] && [ "$(notify_hook_count)" -eq 3 ] && [ "$(jq -c ".hooks.PreToolUse[0]" "$S")" = "$mine" ]'
 fi
 
-# 5.1 checksum mismatch / match / failed download (pinned release from file://)
+# 5.1 pinned sha256 / match / failed download (release tarball from file://).
+# The fake tarball can never match the real pinned hash, so the test-only
+# OPSX_NTFY_SHA256 (honoured only with OPSX_NTFY_RELEASE_BASE) stands in for it.
 case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; armv7*) ARCH=armv7 ;; *) ARCH=armv6 ;; esac
 REL=$SP/rel; TB=ntfy_2.34.0_linux_$ARCH; mkdir -p "$REL/$TB"
 cp "$FNTFY" "$REL/$TB/ntfy"; chmod +x "$REL/$TB/ntfy"
 tar -czf "$REL/$TB.tar.gz" -C "$REL" "$TB"
-printf '%s  %s\n' 0000000000000000000000000000000000000000000000000000000000000000 "$TB.tar.gz" > "$REL/checksums.txt"
+TBSUM=$(sha256sum "$REL/$TB.tar.gz" | awk '{print $1}')
+# a checksums.txt beside the tarball that vouches for it must not matter
+printf '%s  %s\n' "$TBSUM" "$TB.tar.gz" > "$REL/checksums.txt"
+ok "F1: install.sh pins the sha256 of all four linux tarballs of ntfy 2.34.0" 'for h in f78e2645c6457363f37d5d1c4f7cddb7e9658abd197824a7387a1a38d92bb895 d585fe48d1b2e80b1b1719977bb651cc7d9259bacb817aa8a8d5b4c8f0c9e946 c8c3a58301db93a9f5de32c0b028ce09485e9dcb0fa1433b9171e073c23e8342 4eaad91bf08f6c959449203de009cfb065b564bd37ba32a2e1f95d75bcb9adb9; do grep -q "want=$h ;;" "$REPO/install.sh" || exit 1; done'
 new_home; run_install "${DOM[@]}" OPSX_NTFY_RELEASE_BASE="file://$REL" -- --expose-domain dev.example.com; rc=$?
-ok "5.1: checksum mismatch aborts, leaves no binary and no temp dir" '[ $rc -ne 0 ] && grep -q "does not match its checksums.txt" "$IH.out" && [ ! -e "$IH/.local/share/tmux-opsx/bin/ntfy" ] && [ -z "$(ls -A "$IH/.local/share/tmux-opsx/bin" 2>/dev/null | grep ntfy)" ]'
-printf '%s  %s\n' "$(sha256sum "$REL/$TB.tar.gz" | awk '{print $1}')" "$TB.tar.gz" > "$REL/checksums.txt"
-new_home; run_install "${DOM[@]}" OPSX_NTFY_RELEASE_BASE="file://$REL" -- --expose-domain dev.example.com; rc=$?
-ok "5.1: matching checksum installs the binary in the Caddy bin dir" '[ $rc -eq 0 ] && [ -x "$IH/.local/share/tmux-opsx/bin/ntfy" ] && grep -q "sha256 verified" "$IH.out" && grep -q "ExecStart=\"$IH/.local/share/tmux-opsx/bin/ntfy\" serve" "$(CFG)/tmux-opsx-ntfy.service"'
+ok "F1: another origin must still match the pinned hash (its checksums.txt is ignored): abort, no binary, no temp dir" '[ $rc -ne 0 ] && grep -q "does not match its pinned sha256 (expected f78e2645\|does not match its pinned sha256 (expected d585fe48\|does not match its pinned sha256 (expected c8c3a583\|does not match its pinned sha256 (expected 4eaad91b" "$IH.out" && [ ! -e "$IH/.local/share/tmux-opsx/bin/ntfy" ] && [ -z "$(ls -A "$IH/.local/share/tmux-opsx/bin" 2>/dev/null | grep ntfy)" ] && ! grep -q "checksums.txt" "$SP/icurl.log"'
+new_home; run_install "${DOM[@]}" OPSX_NTFY_SHA256="$TBSUM" -- --expose-domain dev.example.com; rc=$?
+ok "F1: OPSX_NTFY_SHA256 is ignored for the default GitHub download (pinned hash kept)" '[ $rc -eq 0 ] && grep -q "could not download ntfy from https://github.com/binwiederhier/ntfy/releases/download/v2.34.0" "$IH.out" && grep -q "releases/download/v2.34.0/$TB.tar.gz" "$SP/icurl.log" && [ ! -e "$IH/.local/share/tmux-opsx/bin/ntfy" ]'
+new_home; run_install "${DOM[@]}" OPSX_NTFY_RELEASE_BASE="file://$REL" OPSX_NTFY_SHA256=0000000000000000000000000000000000000000000000000000000000000000 -- --expose-domain dev.example.com; rc=$?
+ok "5.1: checksum mismatch aborts, leaves no binary and no temp dir" '[ $rc -ne 0 ] && grep -q "does not match its pinned sha256" "$IH.out" && [ ! -e "$IH/.local/share/tmux-opsx/bin/ntfy" ] && [ -z "$(ls -A "$IH/.local/share/tmux-opsx/bin" 2>/dev/null | grep ntfy)" ]'
+new_home; run_install "${DOM[@]}" OPSX_NTFY_RELEASE_BASE="file://$REL" OPSX_NTFY_SHA256="$TBSUM" -- --expose-domain dev.example.com; rc=$?
+ok "5.1: matching checksum installs the binary in the Caddy bin dir" '[ $rc -eq 0 ] && [ -x "$IH/.local/share/tmux-opsx/bin/ntfy" ] && grep -q "sha256 verified against the pinned hash" "$IH.out" && grep -q "ExecStart=\"$IH/.local/share/tmux-opsx/bin/ntfy\" serve" "$(CFG)/tmux-opsx-ntfy.service"'
 run_install "${DOM[@]}" OPSX_NTFY_RELEASE_BASE="file:///nonexistent" -- --expose-domain dev.example.com; rc=$?
 ok "5.1: an installed pinned binary is reused (no download)" '[ $rc -eq 0 ] && grep -q "already installed" "$IH.out"'
 new_home; run_install "${DOM[@]}" OPSX_NTFY_RELEASE_BASE="file:///nonexistent" -- --expose-domain dev.example.com; rc=$?
 ok "5.1: failed download: install still ok, server skipped (no route, no notify.env)" '[ $rc -eq 0 ] && grep -q "could not download ntfy" "$IH.out" && [ "$(route_ids)" = "" ] && [ ! -e "$(CFG)/notify.env" ]'
+# a CPU with no pinned hash: clear warning, no download, server skipped
+UN=$SP/uname-riscv; mkdir -p "$UN"
+REAL_UNAME=$(command -v uname)
+cat > "$UN/uname" <<EOF
+#!/bin/sh
+[ "\$1" = -m ] && { echo riscv64; exit 0; }
+exec "$REAL_UNAME" "\$@"
+EOF
+chmod +x "$UN/uname"
+new_home; run_install "${DOM[@]}" PATH="$UN:$SH:${PATH#"$SP/bin:"}" OPSX_NTFY_RELEASE_BASE="file://$REL" OPSX_NTFY_SHA256="$TBSUM" -- --expose-domain dev.example.com; rc=$?
+ok "F1: a CPU without a pinned hash: warning, no download, no binary, server skipped" '[ $rc -eq 0 ] && grep -q "no pinned ntfy 2.34.0 build for CPU riscv64" "$IH.out" && ! grep -q "$TB" "$SP/icurl.log" 2>/dev/null && [ ! -e "$IH/.local/share/tmux-opsx/bin/ntfy" ] && [ ! -e "$(CFG)/notify.env" ]'
+
+# F3 sudo ./install.sh: root with SUDO_USER. Shims: id -u says 0; getent maps
+# the fake user to the scratch HOME (never a real home); chown and sudo log to
+# one ordered file; sudo -u runs the command with env_reset semantics (only
+# HOME, PATH, USER, LOGNAME and FAKE_NTFY_DIR, the test's stand-in for the
+# fake ntfy's state, survive; NTFY_PASSWORD would not).
+RS=$SP/rootshims; mkdir -p "$RS"
+REAL_ID=$(command -v id); REAL_GETENT=$(command -v getent || echo false)
+cat > "$RS/id" <<EOF
+#!/bin/sh
+[ "\$*" = -u ] && { echo 0; exit 0; }
+exec "$REAL_ID" "\$@"
+EOF
+cat > "$RS/chown" <<EOF
+#!/bin/sh
+echo "chown \$*" >> "$SP/seq.log"
+exit 0
+EOF
+cat > "$RS/sudo" <<EOF
+#!/usr/bin/env bash
+echo "sudo \$*" >> "$SP/seq.log"
+[ "\$1" = -u ] || { echo "privileged \$*" >> "$SP/privileged.log"; exit 0; }
+u=\$2; shift 2; [ "\${1:-}" = -H ] && shift
+exec env -i HOME="\$HOME" PATH="\$PATH" USER="\$u" LOGNAME="\$u" FAKE_NTFY_DIR="\$FAKE_NTFY_DIR" "\$@"
+EOF
+new_home; rm -f "$SP/seq.log"
+cat > "$RS/getent" <<EOF
+#!/bin/sh
+[ "\$1 \$2" = "passwd opsxtest" ] && { echo "opsxtest:x:1234:1234::$IH:/bin/sh"; exit 0; }
+exec "$REAL_GETENT" "\$@"
+EOF
+chmod +x "$RS"/*
+run_install "${DOM[@]}" PATH="$RS:$SH:${PATH#"$SP/bin:"}" SUDO_USER=opsxtest OPSX_NTFY_BIN="$FNTFY" NTFY_PASSWORD=leaked-from-env -- --expose-domain dev.example.com; rc=$?
+NE=$(CFG)/notify.env; PW=$(sed -n 's/^NTFY_PASSWORD=//p' "$NE" 2>/dev/null)
+ST=$IH/.local/state/tmux-opsx/ntfy
+ok "F3: sudo: install exits 0 into the scratch HOME, ntfy runs as SUDO_USER" '[ $rc -eq 0 ] && grep -q "installing into opsxtest.s home ($IH)" "$IH.out" && grep -q "^sudo -u opsxtest -H $FNTFY user --config $(CFG)/ntfy-server.yml add opsx$" "$SP/seq.log"'
+ok "F3: sudo: user opsx created with the stored password (stdin survives env_reset)" '[ "${#PW}" -eq 24 ] && [ "$(cat "$IH.ntfy/pw-opsx")" = "$PW" ] && grep -qx "pw-from stdin" "$IH.ntfy/calls.log" && ! grep -q "pw-from env" "$IH.ntfy/calls.log" && grep -qE "^NTFY_TOKEN=tk_" "$NE"'
+ok "F3: sudo: the password is in no sudo/ntfy argv" '[ -n "$PW" ] && ! grep -qF "$PW" "$SP/seq.log" && ! grep -qF "$PW" "$IH.ntfy/calls.log"'
+ok "F3: sudo: the state dir and config dir are chowned to SUDO_USER before the first ntfy call" 'first_ntfy=$(grep -n "^sudo -u opsxtest .*$FNTFY " "$SP/seq.log" | head -n1 | cut -d: -f1); c_st=$(grep -n "^chown -R opsxtest $ST$" "$SP/seq.log" | head -n1 | cut -d: -f1); c_cfg=$(grep -n "^chown -R opsxtest $(CFG) " "$SP/seq.log" | head -n1 | cut -d: -f1); [ -n "$first_ntfy" ] && [ -n "$c_st" ] && [ -n "$c_cfg" ] && [ "$c_st" -lt "$first_ntfy" ] && [ "$c_cfg" -lt "$first_ntfy" ] && [ -e "$ST/auth.db" ] && [ -e "$(CFG)/ntfy-server.yml" ]'
 
 # ---------------------------------------------------------------- 2.3 prompts
 SK=$REPO/skills/opsx-run/SKILL.md

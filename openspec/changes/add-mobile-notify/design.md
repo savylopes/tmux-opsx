@@ -20,7 +20,7 @@
 
 ## Decisions
 
-1. **ntfy as a downloaded binary plus a systemd unit, not Docker.** This mirrors Caddy: a pinned release tarball from GitHub, verified against the release's `checksums.txt`, put in the same bin dir, with an `$OPSX_NTFY_BIN` override for tests and air-gapped hosts. The unit `tmux-opsx-ntfy` is installed through the same sudo-or-print path as `tmux-opsx-caddy`. Docker was rejected because the tmux server isn't in the `docker` group, and a system service shouldn't depend on the Docker daemon.
+1. **ntfy as a downloaded binary plus a systemd unit, not Docker.** This mirrors Caddy: a pinned release tarball from GitHub, verified against a sha256 per arch pinned in `install.sh` (copied from the release's `checksums.txt`, never fetched at install time, so the download origin cannot vouch for itself), put in the same bin dir, with an `$OPSX_NTFY_BIN` override for tests and air-gapped hosts. A CPU with no pinned hash gets no server (warning). Under `sudo ./install.sh` the ntfy CLI runs as `$SUDO_USER`: the config and state dirs are handed to that user first, and the generated password goes to `ntfy user add` on stdin, never in argv or the environment (sudo's env_reset would drop `NTFY_PASSWORD`, and `env NTFY_PASSWORD=…` would show it in `ps`). The unit `tmux-opsx-ntfy` is installed through the same sudo-or-print path as `tmux-opsx-caddy`. Docker was rejected because the tmux server isn't in the `docker` group, and a system service shouldn't depend on the Docker daemon.
 
 2. **Static route `opsx-ntfy` in `caddy.json`.** It matches host `ntfy.<d>` and reverse-proxies to `127.0.0.1:2586` with streaming (`flush_interval: -1`), so the app's long-lived JSON or WebSocket stream works. It sits before the expose routes, though host matching keeps the two apart either way. `expose_write_caddy_config` writes it only when notify isn't skipped. A changed config reaches a running proxy through the existing `/load` path. Using `expose.sh up --public` was rejected because the URL would carry the project name and depend on the skill.
 
@@ -45,7 +45,7 @@
 - [A pending `done` push is lost if the machine sleeps or tmux dies during the 60 seconds] → Accepted. The window title still shows the state.
 - [`last_assistant_message` may not exist in every Claude Code version] → Fall back to reading the transcript, and when that fails, send without a body.
 - [Hooks are global in `settings.json`] → They return within milliseconds outside opsx panes (one tmux query), and nothing is sent.
-- [Pinned ntfy version goes stale] → Bump the version and checksum together in `install.sh`. `$OPSX_NTFY_BIN` lets the user use their own build.
+- [Pinned ntfy version goes stale] → Bump `NTFY_VERSION` and the pinned per-arch sha256 values together in `install.sh`. `$OPSX_NTFY_BIN` lets the user use their own build.
 
 ## Migration Plan
 
