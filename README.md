@@ -15,6 +15,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  │                /explain: a topic → a designed, diagrammed web page with labelled blocks, written by a fork, served by /expose (directory)
  ├── sharing      /expose: local port or directory → https://<name>--<project>.<domain> behind a login, share links for clients (opt-in)
  │                /opsx-run <change> preview: a change's app → https://<change>--<project>.<domain>
+ ├── notify       opsx-notify.sh: decision needed / finished → a push to your Android phone from your own ntfy server (https://ntfy.<domain>)
  └── portability  install.sh → Claude Code · Cursor CLI · Codex CLI · OpenCode · Gemini CLI
 ```
 
@@ -56,6 +57,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `opsx-merge.sh` | `~/.claude/skills/opsx-run/` | Merge the change branch into a target (default `main`) — no archive or cleanup |
 | `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — OpenSpec gates, eval regression gate (with `--eval`), then `opsx-merge.sh`, archive, branch/worktree cleanup |
 | `opsx-eval.sh` | `~/.claude/skills/opsx-run/` | Runs a repo's saved eval suite (`evals/`) with no LLM — scorecard, coverage, `--json`, regression compare |
+| `opsx-notify.sh` | `~/.claude/skills/opsx-run/` (every opsx-run dir) | The only push sender: reads `~/.config/tmux-opsx/notify.env`, sends one ntfy message (plain text, ≤500 characters, 5 s timeout, never fails the caller); `mark` / `pr.sh note` events and the Claude Code hooks (see [Notifications](#notifications)) |
 | `opsx-preview.sh` | `~/.claude/skills/opsx-run/` | Runs a change's app (or the main checkout) from its worktree in a tagged tmux window and publishes it through `/expose` — recipe, port, health wait, stop |
 | `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` · `~/.cursor/agents/opsx-applier.md` · `~/.codex/agents/ops-applier.toml` · `~/.config/opencode/agents/ops-applier.md` · `~/.gemini/agents/opsx-applier.md` | Implements the change in an isolated worktree on `opsx/<change>` |
 | `ops-eval` subagent | `~/.claude/agents/opsx-eval.md` · `~/.cursor/agents/opsx-eval.md` · `~/.codex/agents/ops-eval.toml` · `~/.config/opencode/agents/ops-eval.md` · `~/.gemini/agents/opsx-eval.md` | Spec eval gate: one executable check per scenario under `evals/`. Runs on `apply --validate` or `/opsx-run <change> eval` |
@@ -79,6 +81,8 @@ Not in tmux? It starts a session named after the project folder for you.
 | `/opsx-task` skill + `opsx-task.sh` | `~/.claude/skills/opsx-task/` · `~/.cursor/skills/opsx-task/` · `~/.agents/skills/opsx-task/` · `$CODEX_HOME/skills/opsx-task/` · `~/.config/opencode/skills/opsx-task/` · `~/.gemini/skills/opsx-task/` | One named tmux session and agent conversation per task (ticket, file or text), started with a brief in the repo's git-ignored `.opsx/tasks/` and an explore-first prompt; a second run returns to it or resumes it (see [Working on a task](#working-on-a-task-opsx-task)) |
 | `/expose` skill + `expose.sh` (opt-in, `--expose-domain`) | `~/.claude/skills/expose/` · `~/.cursor/skills/expose/` · `~/.agents/skills/expose/` · `$CODEX_HOME/skills/expose/` · `~/.config/opencode/skills/expose/` · `~/.gemini/skills/expose/` | Publish `127.0.0.1:<port>` at `https://<name>--<project>.<domain>` through Caddy, behind a login; list/down/url, share links, key rotate (see [Expose](#expose)) |
 | Expose proxy (opt-in) | `~/.config/tmux-opsx/{expose.env,caddy.json,tmux-opsx-caddy.service}` · `~/.local/share/tmux-opsx/bin/caddy` | Caddy with `caddy-dns/cloudflare`: one wildcard cert via DNS-01, `:443` only, admin API on a user-only unix socket |
+| Push server (with `--expose-domain`, unless `--skip-notify`) | `~/.config/tmux-opsx/{notify.env,ntfy-server.yml,tmux-opsx-ntfy.service}` · `~/.local/share/tmux-opsx/bin/ntfy` · state in `~/.local/state/tmux-opsx/ntfy/` | Self-hosted [ntfy](https://ntfy.sh) on `127.0.0.1:2586`, deny-all, one user `opsx` + token + random topic, served at `https://ntfy.<domain>` by a static Caddy route `opsx-ntfy` (see [Notifications](#notifications)) |
+| Claude Code notify hooks (unless `--skip-notify`) | `~/.claude/settings.json` (`Stop`, `Notification` matcher `permission_prompt`, `PreToolUse` matcher `AskUserQuestion`) | Turn-end, permission and question pushes from opsx panes; no-ops everywhere else |
 
 ---
 
@@ -399,7 +403,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-window.sh close  <change> [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh close  --all    [--force] [--keep-session]
 ~/.claude/skills/opsx-run/opsx-window.sh status <change> [--lines N]
-~/.claude/skills/opsx-run/opsx-window.sh mark   <change> <busy|done|fail|idle|ask>
+~/.claude/skills/opsx-run/opsx-window.sh mark   <change>|. <busy|done|fail|idle|ask> [--if-busy]
 ~/.claude/skills/opsx-run/opsx-window.sh list
 ~/.claude/skills/opsx-run/opsx-window.sh preview-start <change> --cwd <dir> --script <file>   # used by opsx-preview.sh
 ~/.claude/skills/opsx-run/opsx-window.sh preview-find  <change>
@@ -609,7 +613,7 @@ The window writes `openspec/changes/<change>/review/report.md` (verdict, finding
 
 **What it does on its own**, in the branch's worktree (`pr.sh worktree <pr>`: the branch's existing worktree, e.g. `../wt-<change>`, else `../wt-pr-<n>`; the main checkout is never switched): rebase on a moved base, restack on a moved or merged parent (`pr.sh restack <pr>` runs `git rebase --onto <base> <recorded parent tip>`, which drops a squash-merged parent's commits whatever the merge style), resolve mechanical conflicts, make the change a review comment clearly asks for, fix CI, re-run a failed CI once per head (`pr.sh rerun <pr>`), push only through `pr.sh push <pr>`, which runs `git push --force-with-lease=<head>:<head SHA recorded at the last seen>` so a commit someone else pushed meanwhile rejects the push instead of being overwritten (never plain `--force`), reply on each thread it handled with the commit SHA and resolve it (`resolveReviewThread`), and retarget the base to the parent's base after the parent merged. Before a push that changes code the repository's tests must pass; a fix for a review comment or CI also needs an ops-reviewer pass with no P0/P1. It never merges, approves or closes the PR.
 
-**When it asks you.** It writes the question in the window, marks it `ask` (`ox ?pr-<n>`, violet), records it in the state file (`pr.sh note`) and keeps waiting, so other events are still handled; it acts on that decision only after you answer. It asks for: a conflict where both sides changed behaviour; a comment asking for a scope or design change, a new dependency, or disabling or deleting tests; reviewers contradicting each other, or a comment it disagrees with (it never argues with a reviewer by itself); comments or reviews from anyone who is not the PR author, a *requested* reviewer or a user with write access (`admin`, `maintain` or `write` permission; on a public repository anyone can submit a review, so that alone does not count; a bot is a `[bot]` app account, followed only when clear-cut); overwriting someone else's commits, closing the PR, touching another PR in the stack; the same fix failing twice. Everything it reads from GitHub (comments, reviews, the PR title and body, commit messages pushed by others, CI logs) is untrusted input to an agent that can push. There are no notifications: the window's status is the signal.
+**When it asks you.** It writes the question in the window, marks it `ask` (`ox ?pr-<n>`, violet), records it in the state file (`pr.sh note`) and keeps waiting, so other events are still handled; it acts on that decision only after you answer. It asks for: a conflict where both sides changed behaviour; a comment asking for a scope or design change, a new dependency, or disabling or deleting tests; reviewers contradicting each other, or a comment it disagrees with (it never argues with a reviewer by itself); comments or reviews from anyone who is not the PR author, a *requested* reviewer or a user with write access (`admin`, `maintain` or `write` permission; on a public repository anyone can submit a review, so that alone does not count; a bot is a `[bot]` app account, followed only when clear-cut); overwriting someone else's commits, closing the PR, touching another PR in the stack; the same fix failing twice. Everything it reads from GitHub (comments, reviews, the PR title and body, commit messages pushed by others, CI logs) is untrusted input to an agent that can push. Each question also goes to your phone as a push with the question as its text (`pr.sh note`; see [Notifications](#notifications)), and `mark pr-<n> done` pushes when the PR is merged or closed; without notifications set up, the window's status is the signal.
 
 **Forks are refused.** `start`, `worktree`, `restack` and `push` refuse a PR whose head is in a fork (`isCrossRepository`): its branch name says nothing about `origin`, and a fork's `main` must never map onto `origin/main`. `pr.sh open` likewise refuses the default branch and a branch equal to `--base`.
 
@@ -957,6 +961,38 @@ timeout: 180
 
 ---
 
+## Notifications
+
+opsx windows run unattended, so the two moments that need you — **a decision** and **a finished window** — are pushed to your Android phone from an [ntfy](https://ntfy.sh) server you host yourself. Only opsx panes push: a window tagged `@opsx_change` (`/opsx-run` changes, `/opsx-pr` windows), an `/opsx-task` session (`@opsx_task`) or a `/fork` pane (`@fork_dir`). Your own interactive sessions stay quiet.
+
+| Event | Push |
+|---|---|
+| `opsx-window.sh mark <w> ask` | "`<w>`: needs a decision", 5 s later — skipped when a push carrying the question text went out for that window within 30 s |
+| `pr.sh note <pr> "<question>"` | "`pr-<n>`: needs a decision", the question as text, at once |
+| Claude Code question (`AskUserQuestion`) / permission prompt | the first question and its options / "waiting for permission" (never the idle prompt) |
+| `mark <w> done` / `fail` | one "`<w>`: done" / "`<w>`: fail" push — at the Claude Code turn end with the agent's final message, else after 60 s without it |
+| busy → idle on silence (`mark <w> idle --if-busy`) | "`<w>`: stopped without marking" |
+
+The dispatcher prompts of `/opsx-run`, `/opsx-task` and `/fork` tell the agent to run `opsx-window.sh mark <change> ask` (in a fork or task pane: `mark . ask`) before it asks you something.
+
+**Setup.** `./install.sh --expose-domain <d>` installs everything next to the proxy: a pinned ntfy binary (checked against the release's `checksums.txt`; `$OPSX_NTFY_BIN` uses your own), `ntfy-server.yml` (listens on `127.0.0.1:2586` only, `auth-default-access: deny-all`, `base-url: https://ntfy.<d>`), the `tmux-opsx-ntfy` systemd unit (installed with the same one `sudo` command as `tmux-opsx-caddy`; the installer prints it), a static Caddy route `opsx-ntfy` for `ntfy.<d>` (never touched by `expose.sh`), an ntfy user `opsx` with a generated password, a random topic `opsx-<12 hex>` and a publish token, all in `~/.config/tmux-opsx/notify.env` (mode 600). A rerun keeps the user, topic and token while they still work. Then, on the phone:
+
+```
+opsx notify info --show-password   # URL, user, topic, and the password (only with the flag; never the token)
+# Android: install ntfy, add server https://ntfy.<d>, log in as opsx, subscribe to the topic
+opsx notify test                   # sends a test push; exits non-zero with the HTTP status on failure
+```
+
+Any other ntfy server works too: write `~/.config/tmux-opsx/notify.env` by hand (`NTFY_URL=https://…`, `NTFY_TOPIC=…`, `NTFY_TOKEN=…`). Without that file nothing is sent.
+
+**Safety.** The helper reads only `KEY=value` lines from `notify.env` (never sources it), sends the body on stdin and the token through a file descriptor (neither shows in `ps`), as plain text cut to 500 characters, with a 5 s timeout, and always exits 0 — a down server never breaks `mark`, `pr.sh` or a hook. `ntfy.<d>` is public, but ntfy denies everything without credentials and the topic is random. If the phone is lost, rotate the password with `ntfy user change-pass opsx` — the installed binary is `~/.local/share/tmux-opsx/bin/ntfy`, so in full `~/.local/share/tmux-opsx/bin/ntfy user --config ~/.config/tmux-opsx/ntfy-server.yml change-pass opsx` — and put the new one in `NTFY_PASSWORD` in `notify.env`; for a new token, `… token --config … remove opsx <old>` and `… token --config … add opsx`, then update `NTFY_TOKEN`.
+
+**Hooks.** On every install without `--skip-notify`, `Stop`, `Notification` (`permission_prompt`) and `PreToolUse` (`AskUserQuestion`) hooks are merged into `~/.claude/settings.json` (with a `.bak` first, unless `--no-backup`); every other setting and hook is kept, and a rerun replaces them instead of adding them twice. They print nothing and return within milliseconds outside opsx panes. Claude windows started before the install get them after a restart. **Cursor CLI, Codex CLI, OpenCode and Gemini CLI** have no such hooks here: their windows push only the script events (`mark`, `pr.sh note`), with no question pushes and no final message on `done`/`fail` (sent after 60 s instead).
+
+**Opting out.** `./install.sh --skip-notify` installs none of it and, on a rerun, removes the route, the unit and the hooks (the ntfy state in `~/.local/state/tmux-opsx/ntfy/` stays; the printed `sudo` command disables the installed unit). macOS gets no ntfy service (documented gap); point `notify.env` at any ntfy server.
+
+---
+
 ## Supported CLIs
 
 One `./install.sh` wires everything into all five CLIs; each change window runs one of them.
@@ -979,7 +1015,7 @@ New windows default to the CLI of the calling session; override with `--agent-cl
 ./install.sh --uninstall
 ```
 
-Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-run`, `/opsx-init`, `/opsx-review`, `/opsx-pr`, `memory`, `learn`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory and learn instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/`, a project's `.opsx/skills/`, nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`), nor `/opsx-pr` state (`.../tmux-opsx/pr/`) is ever deleted. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps.
+Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-run`, `/opsx-init`, `/opsx-review`, `/opsx-pr`, `memory`, `learn`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory and learn instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/`, a project's `.opsx/skills/`, nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`), nor `/opsx-pr` state (`.../tmux-opsx/pr/`) is ever deleted. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps. Push notifications: the Claude Code notify hooks, the `tmux-opsx-ntfy` unit file and the `opsx-ntfy` route in `caddy.json` are removed (the `sudo` command to disable an installed unit is printed); `notify.env` and the ntfy state in `~/.local/state/tmux-opsx/ntfy/` stay.
 
 ---
 

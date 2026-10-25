@@ -9,7 +9,10 @@ context: |
 
   Product surface (what a change actually ships):
   - install.sh: installs/uninstalls everything, with --skip-* flags and .bak backups
-  - skills/*/: SKILL.md plus helper scripts (e.g. skills/opsx-run/opsx-window.sh, opsx-merge.sh, opsx-land.sh, opsx-eval.sh)
+  - skills/*/: SKILL.md plus helper scripts (e.g. skills/opsx-run/opsx-window.sh, opsx-merge.sh, opsx-land.sh, opsx-eval.sh,
+    opsx-notify.sh: the only push sender, ntfy via ~/.config/tmux-opsx/notify.env, never fails its caller)
+  - push notifications: install.sh --expose-domain also runs a self-hosted ntfy (tmux-opsx-ntfy unit, static Caddy route
+    opsx-ntfy), and merges Claude Code Stop/Notification/PreToolUse hooks into ~/.claude/settings.json (--skip-notify)
   - agents/*.md: subagent definitions (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa),
     converted by install.sh for each CLI
   - tmux behaviour: one window per change, `ox` window prefix, @opsx_change tags, status colours
@@ -28,7 +31,8 @@ context: |
   - do not rename the repo, install paths, skill names or the `ox` window prefix without a change
   - a change that adds a component updates the README overview tree and, if relevant, this file
 
-  Tests: tests/test-fork.sh (bash, private tmux server) and tests/test-eval.sh (runner fixtures + land gate in scratch repos).
+  Tests: tests/test-fork.sh (bash, private tmux server), tests/test-eval.sh (runner fixtures + land gate in scratch repos)
+  and tests/test-notify.sh (fake curl/ntfy/systemctl, scratch HOME, private tmux server; never sends a real push).
   Otherwise verify by running install.sh and scripts in a scratch HOME and against a private tmux socket (tmux -L <name>),
   never the user's live session.
 
