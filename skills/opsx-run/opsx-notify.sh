@@ -6,7 +6,7 @@
 #   opsx-notify.sh <kind> <title> [body|-]       # same, without a window label
 #   opsx-notify.sh mark <window-id> <label> <status> [--silence]
 #   opsx-notify.sh flush <window-id> <stamp> [--after <secs>]
-#   opsx-notify.sh ask-later <window-id> <label>
+#   opsx-notify.sh ask-later <window-id> <label> [--pane <pane-id>]
 #   opsx-notify.sh pane-ask [<pane-id>]
 #   opsx-notify.sh hook claude-stop|claude-pretool|claude-notification   (hook JSON on stdin)
 #   opsx-notify.sh test
