@@ -86,7 +86,7 @@ A `decision` push naming the window SHALL be sent when `opsx-window.sh mark <w> 
 - **THEN** no push is sent
 
 ### Requirement: One decision push per question
-When `mark ask` and a push carrying the question text happen for the same window within 30 seconds, in either order, only the push with the text SHALL be sent.
+When a push carrying the question text is sent for a window up to 30 seconds before `mark ask`, or up to 5 seconds after it, only the push with the text SHALL be sent.
 
 #### Scenario: Mark ask and note collapse
 - **WHEN** `opsx-window.sh mark pr-42 ask` runs and `pr.sh note 42 "rebase onto main or develop?"` runs two seconds later

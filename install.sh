@@ -1527,7 +1527,7 @@ notify_service_step() {
   info "    $cmd"
 }
 
-# --skip-notify rerun / --uninstall: drop the ntfy unit (the state dir stays).
+# --skip-notify / --uninstall: drop the ntfy unit (the state dir stays).
 notify_remove_unit() {
   local installed=$EXPOSE_SYSTEMD_DIR/$NTFY_UNIT_NAME.service
   if [ -f "$NTFY_UNIT" ]; then
@@ -1547,7 +1547,7 @@ notify_remove_unit() {
   fi
 }
 
-# --uninstall: drop the opsx-ntfy route from caddy.json and from a running proxy.
+# --skip-notify / --uninstall: drop the opsx-ntfy route from caddy.json and from a running proxy.
 notify_remove_route() {
   local tmp
   [ -f "$EXPOSE_CADDY_JSON" ] && grep -q "\"$NTFY_ROUTE_ID\"" "$EXPOSE_CADDY_JSON" 2>/dev/null || return 0
@@ -2713,8 +2713,6 @@ if [ -n "$EXPOSE_DOMAIN" ]; then
     notify_write_server_config
     notify_credentials
     notify_service_step
-  elif [ "$SKIP_NOTIFY" -eq 1 ]; then
-    notify_remove_unit
   fi
   expose_dns_check
   expose_chown
@@ -2736,6 +2734,9 @@ fi
 if [ "$SKIP_NOTIFY" -eq 1 ]; then
   step "Skipping push notifications (--skip-notify)"
   notify_settings_hooks remove
+  # A rerun takes out what an earlier install added, with or without --expose-domain.
+  notify_remove_unit
+  notify_remove_route
 else
   step "Installing push notification hooks (Claude Code)"
   notify_settings_hooks add

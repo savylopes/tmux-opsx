@@ -331,16 +331,24 @@ notify_flush() {
   exit 0
 }
 
-# ask-later <win> <label>: the bare "needs a decision" push, unless a decision
-# push with text was sent for the window within the collapse window.
+# ask-later <win> <label> [--pane <pane>]: the bare "needs a decision" push,
+# unless a decision push with text was sent for the window within the collapse
+# window. With --pane (a /fork pane or a task session, whose window may carry
+# no tag) the pane must still be an opsx pane instead of the window being tagged.
 notify_ask_later() {
-  local win=${1:-} label=${2:-} last delay span
+  local win=${1:-} label=${2:-} pane="" last delay span
+  [ "${3:-}" = --pane ] && pane=${4:-}
   [ -n "$win" ] || exit 0
   delay=$(int_or "${OPSX_NOTIFY_ASK_DELAY:-}" 5)
   span=$(int_or "${OPSX_NOTIFY_DECISION_WINDOW:-}" 30)
   sleep "$delay"
   load_config || exit 0
-  window_ok "$win" || exit 0
+  if [ -n "$pane" ]; then
+    pane_scope "$pane" || exit 0
+    win=$P_WIN
+  else
+    window_ok "$win" || exit 0
+  fi
   last=$(tmux show-options -wqv -t "$win" @opsx_notify_last_decision 2>/dev/null)
   last=$(int_or "$last" 0)
   [ $(( $(now) - last )) -ge "$span" ] || exit 0
@@ -355,7 +363,7 @@ notify_pane_ask() {
   load_config || exit 0
   if [ -z "$pane" ]; then resolve_pane || exit 0; pane=$TMUX_PANE; fi
   pane_scope "$pane" || exit 0
-  detach ask-later "$P_WIN" "$P_LABEL"
+  detach ask-later "$P_WIN" "$P_LABEL" --pane "$pane"
   exit 0
 }
 

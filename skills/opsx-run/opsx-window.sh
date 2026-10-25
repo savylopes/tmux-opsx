@@ -1581,16 +1581,16 @@ cmd_mark() {
   printf 'marked %s %s:%s status=%s\n' "$win" "$sess" "$change" \
     "$(tmux show-options -wv -t "$win" @opsx_status 2>/dev/null || echo "$status")"
   if [ "$if_busy" -eq 1 ]; then
-    notify_mark "$win" "$change" "$status" --silence
+    mark_push "$win" "$change" "$status" --silence
   else
-    notify_mark "$win" "$change" "$status"
+    mark_push "$win" "$change" "$status"
   fi
 }
 
 # Push notifications (opsx-notify.sh next to this script, when installed):
 # ask, done and fail push; a busy window falling back to idle on silence
 # (--if-busy) pushes "stopped without marking". Never fails the mark.
-notify_mark() {
+mark_push() {
   local n
   n=$(cd -- "$(dirname -- "$0")" && pwd)/opsx-notify.sh
   [ -f "$n" ] || return 0

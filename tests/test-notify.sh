@@ -244,6 +244,33 @@ o=$(TMUX_PANE=$P_FORK OPSX_NOTIFY_ASK_DELAY=1 bash "$W" mark . ask); rc=$?
 wait_calls 1 5
 ok "mark . ask in a fork pane: one decision push, window title unchanged" '[ $rc -eq 0 ] && [ "$(ncalls)" -eq 1 ] && [[ "$(hdr Title)" == *fork-7* ]] && [ "$($L display -p -t "$W_CHG" "#{window_name}")" = "$name_before" ]'
 
+# `mark . ask` in a fork pane of an untagged window (fork.sh's default split or
+# its fork-<id> window): the window carries no @opsx_change / @opsx_task.
+$L new-window -d -t nt -n forkwin 'exec sleep 3000'
+W_FW=$($L display -p -t nt:forkwin '#{window_id}')
+P_FW=$($L split-window -d -P -F '#{pane_id}' -t "$W_FW" 'exec sleep 3000')
+$L set-option -p -t "$P_FW" @fork_dir "$SP/forks/9"
+reset_calls
+o=$(TMUX_PANE=$P_FW OPSX_NOTIFY_ASK_DELAY=1 bash "$W" mark . ask); rc=$?
+wait_calls 1 5; sleep 1
+ok "F1: mark . ask in a fork pane of an untagged window: one decision push" '[ $rc -eq 0 ] && [ -z "$($L show-options -wqv -t "$W_FW" @opsx_change)$($L show-options -qv -t nt @opsx_task)" ] && [ "$(ncalls)" -eq 1 ] && [[ "$(hdr Title)" == *fork-9* ]] && [ "$(hdr Tags)" = question ]'
+# the fork pane closes before the delay ends: no push
+reset_calls
+P_FW2=$($L split-window -d -P -F '#{pane_id}' -t "$W_FW" 'exec sleep 3000')
+$L set-option -p -t "$P_FW2" @fork_dir "$SP/forks/10"
+TMUX_PANE=$P_FW2 OPSX_NOTIFY_ASK_DELAY=2 bash "$W" mark . ask >/dev/null; rc=$?
+$L kill-pane -t "$P_FW2"
+sleep 3.5
+ok "F1: fork pane closed before the ask delay: no push" '[ $rc -eq 0 ] && [ "$(ncalls)" -eq 0 ]'
+# a question hook in the same pane right after: the bare ask collapses
+reset_calls
+$L set-option -wu -t "$W_FW" @opsx_notify_last_decision
+TMUX_PANE=$P_FW OPSX_NOTIFY_ASK_DELAY=2 bash "$W" mark . ask >/dev/null
+hook "$P_FW" "$ASK" claude-pretool >/dev/null
+sleep 3.5
+ok "F1: mark . ask then a question hook in an untagged-window fork pane: one push, with the text" '[ "$(ncalls)" -eq 1 ] && body_of | grep -q "Keep theirs or ours"'
+$L kill-window -t "$W_FW"
+
 # ---------------------------------------------------------------- 3.1 / 3.2 finished
 reset_calls
 OPSX_NOTIFY_FLUSH_AFTER=2 TMUX_PANE=$P_PLAIN bash "$W" mark fix-x fail >/dev/null
@@ -426,6 +453,15 @@ run_install "${DOM[@]}" OPSX_NTFY_BIN="$FNTFY" -- --expose-domain dev.example.co
 ok "rerun without --skip-notify adds route, unit, notify.env, hooks" '[ "$(route_ids)" = opsx-ntfy ] && [ -f "$(CFG)/tmux-opsx-ntfy.service" ] && [ -f "$(CFG)/notify.env" ] && [ "$(notify_hook_count)" -eq 3 ]'
 run_install "${DOM[@]}" OPSX_NTFY_BIN="$FNTFY" -- --expose-domain dev.example.com --skip-notify
 ok "--skip-notify rerun removes route, unit and hooks, keeps the state dir" '[ "$(route_ids)" = "" ] && [ ! -e "$(CFG)/tmux-opsx-ntfy.service" ] && [ "$(notify_hook_count)" -eq 0 ] && [ -d "$IH/.local/state/tmux-opsx/ntfy" ]'
+# F2: --skip-notify without --expose-domain also takes out the unit and the route
+run_install "${DOM[@]}" OPSX_NTFY_BIN="$FNTFY" -- --expose-domain dev.example.com
+ok "F2: reinstall with the domain adds route and unit again" '[ "$(route_ids)" = opsx-ntfy ] && [ -f "$(CFG)/tmux-opsx-ntfy.service" ] && [ "$(notify_hook_count)" -eq 3 ]'
+cp "$(CFG)/tmux-opsx-ntfy.service" "$SYSD/"
+rm -f "$SP/privileged.log"
+run_install -- --skip-notify; rc=$?
+ok "F2: --skip-notify without --expose-domain removes route, unit and hooks, keeps the state dir" '[ $rc -eq 0 ] && [ "$(route_ids)" = "" ] && [ ! -e "$(CFG)/tmux-opsx-ntfy.service" ] && [ "$(notify_hook_count)" -eq 0 ] && [ -d "$IH/.local/state/tmux-opsx/ntfy" ]'
+ok "F2: no sudo run; prints the systemctl disable command for the installed unit once" '[ ! -e "$SP/privileged.log" ] && [ "$(grep -c "sudo systemctl disable --now tmux-opsx-ntfy" "$IH.out")" -eq 1 ]'
+rm -f "$SYSD/tmux-opsx-ntfy.service"
 
 # 5.5 existing settings.json hooks are kept; two runs, one Stop hook
 new_home; mkdir -p "$IH/.claude"
