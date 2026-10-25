@@ -1314,8 +1314,9 @@ sha256_of() {
 # download skips the server for this run (warning); a hash mismatch aborts the
 # install and leaves no binary. $OPSX_NTFY_RELEASE_BASE only changes where the
 # tarball comes from; it must still match the pinned hash. Tests only:
-# $OPSX_NTFY_SHA256 replaces the pinned hash, honoured only together with
-# $OPSX_NTFY_RELEASE_BASE (never for the default GitHub download).
+# $OPSX_NTFY_SHA256 replaces the pinned hash, honoured only when
+# $OPSX_NTFY_RELEASE_BASE is a local file:// fixture (never for a download
+# over the network, which always has to match the pinned hash).
 notify_get_ntfy() {
   local arch name base tmpd want got src
   if [ -n "${OPSX_NTFY_BIN:-}" ]; then
@@ -1344,9 +1345,9 @@ notify_get_ntfy() {
     armv6*)        arch=armv6; want=4eaad91bf08f6c959449203de009cfb065b564bd37ba32a2e1f95d75bcb9adb9 ;;
     *) warn "no pinned ntfy $NTFY_VERSION build for CPU $(uname -m); notifications server skipped (set OPSX_NTFY_BIN to an ntfy binary)"; NTFY_BIN=""; return 0 ;;
   esac
-  if [ -n "${OPSX_NTFY_RELEASE_BASE:-}" ] && [ -n "${OPSX_NTFY_SHA256:-}" ]; then
-    want=$OPSX_NTFY_SHA256
-  fi
+  case "${OPSX_NTFY_RELEASE_BASE:-}" in
+    file://*) [ -n "${OPSX_NTFY_SHA256:-}" ] && want=$OPSX_NTFY_SHA256 ;;
+  esac
   name=ntfy_${NTFY_VERSION}_linux_$arch.tar.gz
   base=${OPSX_NTFY_RELEASE_BASE:-https://github.com/binwiederhier/ntfy/releases/download/v$NTFY_VERSION}
   mkdir -p "$EXPOSE_BIN_DIR" || die "cannot create $EXPOSE_BIN_DIR"

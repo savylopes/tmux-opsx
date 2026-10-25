@@ -510,7 +510,7 @@ fi
 
 # 5.1 pinned sha256 / match / failed download (release tarball from file://).
 # The fake tarball can never match the real pinned hash, so the test-only
-# OPSX_NTFY_SHA256 (honoured only with OPSX_NTFY_RELEASE_BASE) stands in for it.
+# OPSX_NTFY_SHA256 (honoured only with a file:// OPSX_NTFY_RELEASE_BASE) stands in for it.
 case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; armv7*) ARCH=armv7 ;; *) ARCH=armv6 ;; esac
 REL=$SP/rel; TB=ntfy_2.34.0_linux_$ARCH; mkdir -p "$REL/$TB"
 cp "$FNTFY" "$REL/$TB/ntfy"; chmod +x "$REL/$TB/ntfy"
