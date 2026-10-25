@@ -60,6 +60,9 @@
 # Overrides (tests): OPSX_WINDOW (opsx-window.sh), OPSX_PR_SH (pr.sh).
 
 set -uo pipefail
+# Private state files; ORIG_UMASK for what outlives this script (a tmux
+# server started by restore, pr.sh).
+ORIG_UMASK=$(umask)
 umask 077
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -540,7 +543,7 @@ restore_one() {
 
   # Session and window, created when missing.
   if ! tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF -- "$sess"; then
-    out=$(tmux new-session -d -s "$sess" ${wname:+-n "$wname"} -c "$wcwd" -P -F '#{window_index}' 2>&1) \
+    out=$(umask "$ORIG_UMASK"; tmux new-session -d -s "$sess" ${wname:+-n "$wname"} -c "$wcwd" -P -F '#{window_index}' 2>&1) \
       || { say "failed $label: cannot create session: $out"; return 1; }
     if [ "$out" != "$widx" ]; then
       tmux move-window -s "=$sess:$out" -t "=$sess:$widx" >/dev/null 2>&1 \
@@ -593,7 +596,7 @@ restore_one() {
       elif ! out=$(pr_script); then
         say "note $label: $change not continued: pr.sh not found"
       else
-        out=$(cd "$wcwd" && timeout 120 bash "$out" restart-input "$n" --repo "$cwd" 2>&1); rc=$?
+        out=$(umask "$ORIG_UMASK"; cd "$wcwd" && timeout 120 bash "$out" restart-input "$n" --repo "$cwd" 2>&1); rc=$?
         if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
           prompt=$(one_line "$out")
         else

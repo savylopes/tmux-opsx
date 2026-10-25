@@ -23,7 +23,7 @@ SP=$(cd -P -- "$(mktemp -d "${TMPDIR:-/tmp}/restore-test.XXXXXX")" && pwd)
 SOCK=restore-test-$$
 L="$REAL_TMUX -L $SOCK"
 SOCKFILE=${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK
-trap '$L kill-server 2>/dev/null; rm -rf "$SP"; rm -f "$SOCKFILE"' EXIT
+trap '$L kill-server 2>/dev/null; $REAL_TMUX -L $SOCK-b kill-server 2>/dev/null; rm -rf "$SP"; rm -f "$SOCKFILE" "$SOCKFILE-b"' EXIT
 pass=0; fail=0
 ok(){ if eval "$2"; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 # wait_for <seconds> <condition>
@@ -384,6 +384,15 @@ FWANT="builtin cd '/tmp/x\\\\\\';echo INJECTED #'; and claude --resume $F1 --per
 ok "fish pane: cwd fish-quoted, then ; and claude" '[ $rc -eq 0 ] && [[ "$FT" == "$FWANT"* ]]'
 FAPOS="window\\'s last task"; FPOSIX="'\\''"
 ok "fish pane: apostrophes escaped as backslash-quote, no POSIX quote-backslash-quote form" '[[ "$FT" == *"$FAPOS"* ]] && [[ "$FT" != *"$FPOSIX"* ]]'
+
+# ---- restore with no server running: the server it starts keeps the user's umask
+FB2=$SP/fakebin2; mkdir -p "$FB2"
+printf '#!/bin/sh\nexec %q -L %q "$@"\n' "$REAL_TMUX" "$SOCK-b" > "$FB2/tmux"; chmod +x "$FB2/tmux"
+printf 'pending\t999-1\t%%69\tfresh\t0\tw0\t0\t%s\t%s\tdefault\t%s\n' "$SP/r" "$(uuid 59)" "$NOW" > "$ST/snapshot.tsv"
+out=$(umask 022; PATH="$FB2:$PATH" bash "$S" restore 2>&1); rc=$?
+PP=$("$REAL_TMUX" -L "$SOCK-b" display -p -t "=fresh:0.0" '#{pane_pid}' 2>/dev/null)
+ok "restore starting a server: panes keep umask 022, not the state dir's 077" '[ $rc -eq 0 ] && [ -n "$PP" ] && grep -q "^Umask:[[:space:]]*0022$" "/proc/$PP/status"'
+"$REAL_TMUX" -L "$SOCK-b" kill-server 2>/dev/null; rm -f "${SOCKFILE}-b"
 
 # ---- state dir private
 chmod 755 "$ST"
