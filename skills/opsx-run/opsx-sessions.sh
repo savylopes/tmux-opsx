@@ -360,7 +360,9 @@ save_locked() {
   fi
   mv -f "$tmp" "$SNAP" || die "cannot write $SNAP"
   prune_live "$key"
-  SAVE_SUMMARY="saved $n session(s) of this server, kept $kept pending from earlier servers -> $SNAP"
+  # Quiet unless run by hand: resurrect hooks run without a terminal.
+  [ -t 1 ] && printf 'saved %s session(s) of this server, kept %s pending from earlier servers -> %s\n' "$n" "$kept" "$SNAP"
+  return 0
 }
 
 # Remove live dirs of servers that are gone and have nothing pending.
@@ -380,10 +382,7 @@ prune_live() {
 
 cmd_save() {
   [ $# -eq 0 ] || die "save takes no arguments"
-  SAVE_SUMMARY=""
   with_lock save_locked || exit 1
-  # Quiet unless run by hand: resurrect hooks run without a terminal.
-  [ -t 1 ] && printf '%s\n' "${SAVE_SUMMARY:-saved}"
   return 0
 }
 
