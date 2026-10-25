@@ -18,6 +18,10 @@ ck "$PASS"; seen
 ck "$FAILC"
 wt; echo "$out" | grep -qx "event=ci-failed" || fail "first failure not reported"
 "$PRSH" rerun 42 --repo "$R" >/dev/null 2>&1 || fail "rerun failed"
+ck '[{"bucket":"pending","link":""}]'
+wt 2
+[ $rc -eq 3 ] || fail "pending after rerun: expected exit 3, got $rc"
+ck "$FAILC"
 wt
 [ $rc -eq 0 ] || fail "expected exit 0, got $rc"
 echo "$out" | grep -qx "event=ci-failed" || fail "failure after rerun not reported"
