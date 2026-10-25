@@ -17,6 +17,10 @@ On Claude Code `SessionStart` (startup, resume, clear), `opsx-sessions.sh hook` 
 - **WHEN** the same pane already has a record and the hook runs again with `source` `clear` and a new session id
 - **THEN** the pane has one record, holding the new id
 
+#### Scenario: Mode from the command line
+- **WHEN** the hook runs with stdin that has no `permission_mode`, started by `claude --permission-mode bypassPermissions` in pane `work:2.0`
+- **THEN** `opsx-sessions.sh list --live` shows `work:2.0` with mode `bypassPermissions`
+
 #### Scenario: Stripped TMUX_PANE
 - **WHEN** the hook runs inside a tmux pane with `TMUX_PANE` unset
 - **THEN** it still records that pane, which it finds through its process ancestry
