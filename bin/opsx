@@ -7,6 +7,8 @@
 #   dev      run a command in the checkout's dev container from
 #            .opsx/dev.yaml: opsx dev <cmd> | --shell | --status | --rm [--all]
 #            (see: opsx dev help)
+#   notify   phone push notifications (ntfy): opsx notify test | info [--show-password]
+#            (see: opsx notify --help)
 #   help     show this help
 #
 # Each command runs a script from an installed tmux-opsx skill, found in the
@@ -50,11 +52,34 @@ run_skill_script() {
   exec bash "$script" "$@"
 }
 
+notify_usage() {
+  cat <<'EOF'
+Usage: opsx notify <command>
+  test                   send a test push; exits non-zero with the HTTP status on failure
+  info [--show-password] print the ntfy URL, user and topic (the password only with
+                         --show-password; never the token) and the Android setup line
+
+Settings: ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/notify.env (NTFY_URL, NTFY_TOPIC,
+NTFY_TOKEN), written by ./install.sh --expose-domain <d> or by hand for any ntfy server.
+EOF
+}
+
+notify_cmd() {
+  case "${1:-}" in
+    test) shift; [ $# -eq 0 ] || { notify_usage >&2; exit 2; }
+          run_skill_script opsx-run/opsx-notify.sh test ;;
+    info) shift; run_skill_script opsx-run/opsx-notify.sh info "$@" ;;
+    ""|help|-h|--help) notify_usage ;;
+    *) printf 'opsx notify: unknown command %s\n\n' "'$1'" >&2; notify_usage >&2; exit 2 ;;
+  esac
+}
+
 [ $# -gt 0 ] || { usage >&2; exit 2; }
 cmd=$1; shift
 case "$cmd" in
   init)           run_skill_script opsx-init/opsx-init.sh "$@" ;;
   dev)            run_skill_script opsx-run/opsx-dev.sh "$@" ;;
+  notify)         notify_cmd "$@" ;;
   help|-h|--help) usage ;;
   *) printf 'opsx: unknown command %s\n\n' "'$cmd'" >&2; usage >&2; exit 2 ;;
 esac

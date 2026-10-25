@@ -408,6 +408,38 @@ P seen 42 >/dev/null
 ok "seen keeps ask= lines" 'grep -qx "ask=rename the flag?" "$ST42"'
 P note 42 --clear >/dev/null
 ok "note --clear removes them" '! grep -q "^ask=" "$ST42"'
+
+# note -> decision push (add-mobile-notify 2.2): fake curl logs each call; the
+# notify config lives in the scratch HOME.
+export XDG_CONFIG_HOME=$SP/home/.config
+NENV=$XDG_CONFIG_HOME/tmux-opsx/notify.env; mkdir -p "${NENV%/*}"
+NC=$SP/ncalls; mkdir -p "$NC"
+cat > "$SP/fakebin/curl" <<EOF
+#!/usr/bin/env bash
+f=$NC/call-\$(date +%s%N)-\$\$
+{ printf 'ARGV: %s\n' "\$*"; printf 'BODY:\n'; cat; } > "\$f.tmp"; mv "\$f.tmp" "\$f.call"
+printf ' %s ' "\$@" | grep -q ' -w ' && printf 200
+exit 0
+EOF
+chmod +x "$SP/fakebin/curl"
+ncalls() { find "$NC" -name '*.call' | wc -l | tr -d ' '; }
+nbody() { sed -n '/^BODY:$/,$p' "$(find "$NC" -name '*.call' | sort | tail -n1)" | sed 1d; }
+out=$(P note 42 "keep theirs or ours in api.ts?"); rc=$?
+ok "note without notify.env: exit 0, ask= written, no push" '[ $rc -eq 0 ] && grep -qx "ask=keep theirs or ours in api.ts?" "$ST42" && [ "$(ncalls)" -eq 0 ]'
+P note 42 --clear >/dev/null
+printf 'NTFY_URL=https://ntfy.dev.example.com\nNTFY_TOPIC=opsx-0123456789ab\nNTFY_TOKEN=tk_t\n' > "$NENV"; chmod 600 "$NENV"
+out=$(P note 42 "keep theirs or ours in api.ts?"); rc=$?
+ok "note: one decision push whose body is the question" '[ $rc -eq 0 ] && [ "$(ncalls)" -eq 1 ] && nbody | grep -qF "keep theirs or ours in api.ts?"'
+ok "note: records @opsx_notify_last_decision on the PR window" '[ -n "$(opt "$WIN" @opsx_notify_last_decision)" ]'
+P note 42 --clear >/dev/null
+rm -f "$NC"/*; $L set-option -wu -t "$WIN" @opsx_notify_last_decision
+"$W" mark pr-42 ask >/dev/null
+sleep 2
+P note 42 "rebase onto main or develop?" >/dev/null
+sleep 5
+ok "mark ask, then note 2 s later: exactly one push, with the question" '[ "$(ncalls)" -eq 1 ] && nbody | grep -qF "rebase onto main or develop?"'
+P note 42 --clear >/dev/null
+rm -f "$NENV" "$SP/fakebin/curl"
 out=$("$PRSH" list)
 ok "list shows the running PR with its window status" 'printf "%s\n" "$out" | grep -P "^o/app\t42\task\t" >/dev/null'
 ok "list shows a PR without a window as none" 'printf "%s\n" "$out" | grep -P "^o/app\t43\tnone\t" >/dev/null'

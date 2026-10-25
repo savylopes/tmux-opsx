@@ -227,6 +227,7 @@ ok "prompt: names the brief, /opsx:explore, data not instructions, no implementa
 ok "prompt: describe first, then explore" '[ "$(grep -n "describe" "$P" | head -n1 | cut -d: -f1)" -lt "$(grep -n "/opsx:explore" "$P" | head -n1 | cut -d: -f1)" ]'
 ok "prompt: delivered as the claude argument" 'printf "%s" "$args" | grep -q "Read the task brief .opsx/tasks/MED-43.md"'
 ok "prompt: non-gemini prompt has no /chat save" '! grep -q "/chat save" "$P"'
+ok "prompt: says to run opsx-window.sh mark . ask before asking the user" 'grep -q "Before you ask the user a question, run .*opsx-run/opsx-window.sh mark \. ask" "$P"'
 ok "start: outside tmux hint omitted with --no-switch" '! printf "%s" "$out" | grep -q "tmux attach"'
 n=$(calls claude)
 out=$(T start MED-43 --agent-cli claude --no-switch 2>&1); rc=$?

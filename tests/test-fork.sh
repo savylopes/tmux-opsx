@@ -63,6 +63,7 @@ ok "claude plan mode" 'grep -qx "ARG=--permission-mode" $SD/1/fake-claude.log &&
 ok "no bypass flags" '! grep -Eq "bypass|--force|--yolo|--auto|dangerously|--trust|skip-trust" $SD/1/fake-claude.log $SD/1/launch.sh'
 ok "env FORK_ID/DIR/PARENT" 'grep -qx "FORK_ID=1" $SD/1/fake-claude.log && grep -qx "FORK_DIR=$SD/1" $SD/1/fake-claude.log && grep -qx "FORK_PARENT=$P" $SD/1/fake-claude.log'
 ok "brief has question + protocol" 'grep -q "where are retries" $SD/1/brief.md && grep -q "Fork protocol" $SD/1/brief.md && grep -q "$F return" $SD/1/brief.md'
+ok "fork protocol says to mark ask before asking the user" 'sed -n "/^## Fork protocol/,\$p" $SD/1/brief.md | tr "\n" " " | grep -q "Before you ask the user a question, run *.*opsx-run/opsx-window.sh mark \. ask"'
 ok "meta fields" 'for k in parent_pane child_pane cli cwd created status; do grep -q "^$k=" $SD/1/meta || exit 1; done'
 ok "status open" 'grep -qx status=open $SD/1/meta'
 ok "question in meta" 'grep -qx "question=where are retries handled?" $SD/1/meta'
