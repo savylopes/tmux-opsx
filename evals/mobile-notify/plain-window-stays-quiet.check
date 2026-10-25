@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Plain window stays quiet
+# level: L2
+# requirement: Pushes only from opsx windows
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env; start_tmux
+read -r w p < <(new_win plain)
+out=$(printf '{"hook_event_name":"Stop","last_assistant_message":"hi"}' | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-stop 2>&1); rc=$?
+echo "rc=$rc out=[$out]"; [ "$rc" -eq 0 ] || fail "hook exit $rc"
+sleep 1
+[ "$(curl_calls)" -eq 0 ] || fail "curl was called from an untagged window"
+echo OK

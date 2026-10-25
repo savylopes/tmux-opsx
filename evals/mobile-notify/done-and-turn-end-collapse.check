@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Done and turn end collapse
+# level: L2
+# requirement: One push when a window finishes
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env; start_tmux
+read -r w p < <(new_win fix-x change)
+TMUX_PANE=$p bash "$WINSH" mark fix-x done >/dev/null 2>&1 || fail "mark done failed"
+sleep 1
+printf '{"hook_event_name":"Stop","last_assistant_message":"all gates passed"}' | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-stop >/dev/null 2>&1
+wait_calls 1 10 || fail "no push after the Stop hook"
+echo "waiting past the 60 s flusher to prove no second message..."
+sleep 68
+n=$(curl_calls); echo "messages: $n"; [ "$n" -eq 1 ] || fail "expected exactly one message, got $n"
+t=$(curl_all_headers | grep -i '^Title:'); echo "$t"
+echo "$t" | grep -q 'fix-x' || fail "title lacks fix-x"
+echo "$t" | grep -qi 'done' || fail "title lacks done"
+curl_all_bodies | grep -qF "all gates passed" || fail "body lacks the final message"
+echo OK

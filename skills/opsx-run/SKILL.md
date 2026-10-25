@@ -73,7 +73,7 @@ opsx-window.sh send   <change> --prompt-file <f> [--<agent>-model <m>]...  # sen
 opsx-window.sh close  <change> [--force] [--keep-session]        # close one window
 opsx-window.sh close  --all    [--force] [--keep-session]        # close every tagged opsx window
 opsx-window.sh status <change> [--lines N]                       # capture-pane snapshot (default 60 lines)
-opsx-window.sh mark   <change> <busy|done|fail|idle> # title badge + status-bar color
+opsx-window.sh mark   <change>|. <busy|done|fail|idle|ask> [--if-busy] # title badge + status-bar color (+ phone push, see Notifications)
 opsx-window.sh list                                              # windows in the current session (+ remembered <agent>=<model>)
 opsx-window.sh preview-start <change> --cwd <dir> --script <f>   # opsx-preview.sh only: tagged @opsx_preview window
 opsx-window.sh preview-find  <change>                            # opsx-preview.sh only
@@ -116,6 +116,8 @@ done
 ```
 
 (Use `fail` instead of `done` when the work failed.)
+
+**Notifications.** When `~/.config/tmux-opsx/notify.env` exists (written by `install.sh --expose-domain <d>`, or by hand for any ntfy server), `mark` also pushes to the user's phone through `opsx-notify.sh` next to `opsx-window.sh`: `ask` sends a decision push after 5 s unless a push with the question text went out for that window within 30 s (`pr.sh note`, a Claude Code question prompt); `done` / `fail` send one finished push — at the Claude Code turn end with the agent's final message, else after 60 s without it; a busy window falling back to idle on silence pushes "stopped without marking". `mark . ask` works from any opsx pane: in a change window it marks that window, in a `/fork` pane or an `/opsx-task` session it only sends the decision push. A push never fails or delays `mark`.
 
 **Agent CLI selection** (new windows only — reused windows keep their existing session):
 
@@ -216,6 +218,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **validate** (`apply --validate` — dispatcher owns `/goal`)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`. Stay in this window. Do NOT implement product code yourself (Claude/Cursor/OpenCode).
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Goal (Claude Code: already set with `/goal` before this prompt — do not look for `CreateGoal`; Cursor/Codex/OpenCode/Gemini: call `CreateGoal` **once in this window** (not the parent) if your host has goal tools): Apply OpenSpec change `<change>` on `opsx/<change>`, then ops-eval, ops-reviewer, ops-security, and ops-qa each `VERDICT: PASS` or `SKIP` with no leftover P0/P1 FINDINGS. Ops-applier implements; eval/reviewer/security/qa only verify (ops-eval writes only `evals/`). Without goal tools, keep that as this window's objective.
 > Then loop in this window (never `/loop` timer):
 > <MODELS block — for all five agents>
@@ -235,6 +238,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **apply** (no eval, review, security, or QA)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement in this window yourself (Claude/Cursor/OpenCode). Delegate ALL implementation to **ops-applier**. Do **not** run ops-eval, ops-reviewer, ops-security, or ops-qa.
 > <MODELS block — ops-applier only>
 > Claude Code: Agent `subagent_type: "ops-applier"`, `run_in_background: false` (model only as the models block says).
@@ -247,6 +251,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **eval** (ops-eval once — the caller may send eval-fix next)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
 > <MODELS block — ops-eval only>
 > Delegate to **ops-eval** only (`subagent_type: "ops-eval"` / `@ops-eval`). Codex/Gemini: run the eval yourself per the ops-eval agent file (`~/.codex/agents/ops-eval.toml` / `~/.gemini/agents/opsx-eval.md`), deriving expected behaviour from the spec scenarios only.
@@ -259,6 +264,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **eval-fix** (caller sends this after eval FAIL)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement in this window yourself. Delegate to **ops-applier** only.
 > <MODELS block — ops-applier only>
 > Fix these ops-eval FINDINGS **verbatim** (keep F1, F2, …) in the same `opsx/<change>` worktree. Fix product code only: **do not create, edit or delete anything under `evals/`**. If a finding comes from a broken check, change nothing for it and report `DISPUTE F<n>: <reason>` instead. Do not reopen unrelated tasks.
@@ -269,6 +275,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **review** (ops-reviewer once — the caller may send review-fix next)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
 > <MODELS block — ops-reviewer only>
 > Delegate to **ops-reviewer** only (`subagent_type: "ops-reviewer"` / `@ops-reviewer`). Codex/Gemini: run the implementation review yourself.
@@ -281,6 +288,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **security** (ops-security once — the caller may send security-fix next)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
 > <MODELS block — ops-security only>
 > Delegate to **ops-security** only (`subagent_type: "ops-security"` / `@ops-security`). Codex/Gemini: run the security review yourself.
@@ -293,6 +301,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **review-fix** (caller sends this after review FAIL)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement in this window yourself. Delegate to **ops-applier** only.
 > <MODELS block — ops-applier only>
 > Fix these ops-reviewer FINDINGS **verbatim** (keep F1, F2, …) in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.
@@ -302,6 +311,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **security-fix** (caller sends this after security FAIL)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement in this window yourself. Delegate to **ops-applier** only.
 > <MODELS block — ops-applier only>
 > Fix these ops-security FINDINGS **verbatim** (keep F1, F2, …) in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.
@@ -311,6 +321,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **qa** (ops-qa once — the caller may send qa-fix next)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement product code. Do not re-apply the whole change unless the worktree is missing.
 > First run `<skills>/opsx-run/opsx-preview.sh up <change>` from `<cwd>`, then on exit 0 `<skills>/opsx-run/opsx-preview.sh share <change> --for ops-qa --ttl 1d`. On exit 0 of both pass the share command's last stdout line (a share link) to ops-qa as `PREVIEW_URL` (open it first and keep the same browser context so its login cookie applies; do not start a server). Otherwise pass `PREVIEW_URL: none — <reason from its output>` and let ops-qa start the app as before. Leave the preview running.
 > <MODELS block — ops-qa only>
@@ -325,6 +336,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **qa-fix** (caller sends this after QA FAIL)
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > Do NOT implement in this window yourself. Delegate to **ops-applier** only.
 > <MODELS block — ops-applier only>
 > Fix these ops-qa FINDINGS **verbatim** (keep F1, F2, …) in the same `opsx/<change>` worktree. Do not reopen unrelated tasks.
@@ -334,6 +346,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **archive**
 
 > You are the dispatcher for OpenSpec change `<change>` in `<cwd>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > <MODELS block — ops-applier only>
 > Delegate to the ops-applier subagent. Claude Code: Agent `subagent_type: "ops-applier"`. Cursor CLI: Task `subagent_type: "ops-applier"` (project `.cursor/agents/opsx-applier.md` must exist). OpenCode: Task/`@ops-applier`. Codex CLI / Gemini CLI: do it yourself in this window. Do NOT delegate to anything else.
 > Task: archive OpenSpec change `<change>`. Confirm every task in `openspec/changes/<change>/tasks.md` is checked and `openspec validate "<change>" --strict` passes, then run `openspec archive "<change>" -y` and report what moved and any spec updates.
@@ -342,6 +355,7 @@ Add any extra completion step the change requires (e.g. "PR #13 is updated from 
 **verify-fix** (only sent when the inline gate fails)
 
 > Verification of OpenSpec change `<change>` failed. `openspec validate "<change>" --strict` reported: `<errors verbatim>`.
+> Before you ask the user a question, run `opsx-window.sh mark <change> ask` (title `ox ?change`, plus a decision push to the user's phone when notifications are set up), then ask.
 > <MODELS block — ops-applier only>
 > Delegate the fix to the ops-applier subagent (Claude: Agent / Cursor: Task / OpenCode: Task or `@ops-applier`). Codex CLI / Gemini CLI: fix it yourself in this window. After it is fixed, re-run `openspec validate "<change>" --strict` and `openspec status --change "<change>" --json` and report the result. Then `opsx-window.sh mark <change> done` (or `fail`).
 

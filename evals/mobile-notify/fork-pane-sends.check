@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Fork pane sends
+# level: L2
+# requirement: Pushes only from opsx windows
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env; start_tmux
+read -r w p < <(new_win forkwin fork)
+in='{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which database should we use?","options":[{"label":"sqlite"},{"label":"postgres"}]}]}}'
+out=$(printf '%s' "$in" | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-pretool 2>&1); rc=$?
+echo "rc=$rc out=[$out]"; [ "$rc" -eq 0 ] || fail "hook exit $rc"
+wait_calls 1 10 || fail "no push from the fork pane"
+sleep 1; n=$(curl_calls); echo "calls: $n"; [ "$n" -eq 1 ] || fail "expected exactly one push, got $n"
+curl_all_headers; curl_all_bodies; echo
+curl_all_headers | grep -Eqi '^(Priority: 4|Tags: .*question)' || fail "push is not of kind decision (priority 4 / tag question)"
+echo OK

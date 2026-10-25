@@ -745,7 +745,9 @@ new_home() { H_N=$((H_N+1)); IH=$SP/ih$H_N; mkdir -p "$IH"; rm -f "$SP/privilege
 run_install() {
   local envs=()
   while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
-  env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u TMUX HOME="$IH" PATH="$SH:$PATH" NO_COLOR=1 "${envs[@]}" \
+  # The ntfy push server (add-mobile-notify) uses the fake ntfy, never a download.
+  env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u TMUX HOME="$IH" PATH="$SH:$PATH" NO_COLOR=1 \
+    OPSX_NTFY_BIN="$REPO/tests/fake-ntfy.sh" FAKE_NTFY_DIR="$IH.ntfy" "${envs[@]}" \
     bash "$REPO/install.sh" "${INSTALL_FLAGS[@]}" "$@" </dev/null > "$IH.out" 2>&1
 }
 SKILL_DIRS=(.claude/skills .cursor/skills .agents/skills .codex/skills .config/opencode/skills .gemini/skills)

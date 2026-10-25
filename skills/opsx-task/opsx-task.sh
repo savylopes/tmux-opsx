@@ -49,6 +49,8 @@ SUPPORTED_CLIS="claude agent codex opencode gemini"
 # Prefixes of common technical names that look like keys (UTF-8, SHA-256, ISO-8601).
 NOT_KEYS="UTF UCS SHA MD AES RSA DES ECDSA ISO RFC CVE CWE HTTP TLS SSL IPV PEP ES ECMA IEEE GPT UTC GMT X86 BASE LATIN WINDOWS COVID ANSI"
 
+# opsx-window.sh of the sibling opsx-run skill (for the `mark . ask` line).
+window_script_path() { printf '%s/opsx-run/opsx-window.sh' "$(dirname -- "$(dirname -- "$(this_script)")")"; }
 this_script() { (cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && printf '%s/%s' "$(pwd -P)" "$(basename -- "${BASH_SOURCE[0]}")"); }
 
 repo_root() {
@@ -372,6 +374,7 @@ write_prompt() {
     printf 'First describe in a few sentences what the task does (goal, scope, acceptance criteria, unknowns).\n'
     printf 'Then explore it with /opsx:explore (on a CLI without that slash command, use the openspec-explore skill).\n'
     printf 'Do not implement anything and do not change files; this session is for understanding the task. The user runs /opsx:propose when ready.\n'
+    printf 'Before you ask the user a question, run %s mark . ask (it pushes a decision notification to the user'"'"'s phone when notifications are set up; skip it if that file is missing).\n' "$(window_script_path)"
     if [ "$cli" = gemini ]; then
       printf 'Finally, run /chat save %s so this conversation can be found again by name.\n' "$name"
     fi

@@ -15,7 +15,9 @@
 #   opsx-window.sh status <change> [--lines N]
 #   opsx-window.sh detect-cli [--agent-cli <cmd>]
 #   opsx-window.sh detect-model [--model <id>]
-#   opsx-window.sh mark   <change> <busy|done|fail|idle|ask>   # title badge + status color
+#   opsx-window.sh mark   <change>|. <busy|done|fail|idle|ask> [--if-busy]   # title badge + status color
+#                         (+ a push via opsx-notify.sh when notify is configured;
+#                         `.` = the calling pane's window, see mark_self)
 #   opsx-window.sh list                                # last column: remembered <agent>=<model> pairs
 #   opsx-window.sh preview-start <change> --cwd <dir> --script <file>
 #   opsx-window.sh preview-find  <change>
@@ -1559,6 +1561,10 @@ cmd_mark() {
 
   require_tmux
   local sess win
+  if [ "$change" = . ]; then
+    mark_self "$status" "$if_busy"
+    return $?
+  fi
   sess=$(lookup_session) || exit 1
   win=$(find_window "$sess" "$change")
   [ -n "$win" ] || die "no window for change '$change' in session '$sess'."
@@ -1574,6 +1580,49 @@ cmd_mark() {
   apply_window_status "$win" "$change" "$status"
   printf 'marked %s %s:%s status=%s\n' "$win" "$sess" "$change" \
     "$(tmux show-options -wv -t "$win" @opsx_status 2>/dev/null || echo "$status")"
+  if [ "$if_busy" -eq 1 ]; then
+    mark_push "$win" "$change" "$status" --silence
+  else
+    mark_push "$win" "$change" "$status"
+  fi
+}
+
+# Push notifications (opsx-notify.sh next to this script, when installed):
+# ask, done and fail push; a busy window falling back to idle on silence
+# (--if-busy) pushes "stopped without marking". Never fails the mark.
+mark_push() {
+  local n
+  n=$(cd -- "$(dirname -- "$0")" && pwd)/opsx-notify.sh
+  [ -f "$n" ] || return 0
+  bash "$n" mark "$@" </dev/null >/dev/null 2>&1 || true
+}
+
+# `mark . <status>`: the window of the calling pane. A change window is marked
+# as usual; a /fork pane or an /opsx-task session (no change window to badge)
+# only gets the decision push of `ask`.
+mark_self() {
+  local status=$1 if_busy=$2 win pane info n
+  recover_tmux_env || true
+  pane=${TMUX_PANE:-}
+  [ -n "$pane" ] || die "mark .: not running inside a tmux pane."
+  info=$(tmux display-message -p -t "$pane" '#{window_id}|#{@fork_dir}|#{@opsx_change}' 2>/dev/null) \
+    || die "mark .: cannot read pane $pane."
+  win=${info%%|*}
+  local rest=${info#*|}
+  local fork=${rest%%|*} change=${rest#*|}
+  if [ -z "$fork" ] && [ -n "$change" ]; then
+    local args=("$change" "$status")
+    [ "$if_busy" -eq 0 ] || args+=(--if-busy)
+    cmd_mark "${args[@]}"
+    return $?
+  fi
+  case "$status" in
+    ask|asking|question)
+      n=$(cd -- "$(dirname -- "$0")" && pwd)/opsx-notify.sh
+      [ ! -f "$n" ] || bash "$n" pane-ask "$pane" </dev/null >/dev/null 2>&1 || true
+      printf 'asked %s %s (no change window; decision push only)\n' "$win" "$pane" ;;
+    *) printf 'skipped %s %s status=%s (not a change window)\n' "$win" "$pane" "$status" ;;
+  esac
 }
 
 cmd_list() {
@@ -1711,6 +1760,9 @@ cmd_preview_kill() {
   [ "$n" -gt 0 ] || [ "$failed" -eq 1 ] || printf 'no preview window for %s\n' "$change"
   [ "$failed" -eq 0 ]
 }
+
+# Sourced (opsx-notify.sh uses recover_tmux_env): define functions only.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 
 case "${1:-}" in
   ensure)     shift; cmd_ensure "$@" ;;

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Not configured
+# level: L1
+# requirement: Push failures never break the caller
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+[ ! -e "$NOTIFY_ENV" ] || fail "setup: notify.env exists"
+out=$(bash "$NOTIFY_SH" finished "t" "b" 2>&1); rc=$?; echo "rc=$rc out=[$out]"
+[ "$rc" -eq 0 ] || fail "expected exit 0, got $rc"
+[ "$(curl_calls)" -eq 0 ] || fail "curl was called"
+echo OK
