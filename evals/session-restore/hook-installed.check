@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Hook installed
+# level: L2
+# requirement: Install the hook and the tmux wiring
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+out=$(run_install); rc=$?; echo "$out" | tail -15; [ $rc -eq 0 ] || fail "install exit $rc"
+[ -f "$SETTINGS" ] || fail "no settings.json"
+[ "$(count_hooks)" = 1 ] || fail "SessionStart hooks naming opsx-sessions.sh hook: $(count_hooks)"
+echo OK

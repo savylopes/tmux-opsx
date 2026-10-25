@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Unrestored entries survive a save on a new server
+# level: L2
+# requirement: Snapshot in step with the layout
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R1"
+sess_run save; [ $RC -eq 0 ] || fail "save on the new server exit $RC"
+sess_run list
+line=$(echo "$OUT" | grep -F "$UUID1") || fail "entry lost by the save on the new server"
+echo "$line" | grep -qi 'pending' || fail "entry no longer pending: $line"
+echo "$line" | grep -qi 'restored' && fail "entry marked restored"
+echo OK

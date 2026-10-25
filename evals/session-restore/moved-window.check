@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Moved window
+# level: L2
+# requirement: Snapshot in step with the layout
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+T move-window -s work:2 -t work:5 || fail move
+T rename-window -t work:5 'ox ·add-auth'
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+sess_run list
+line=$(echo "$OUT" | grep -F "$UUID1") || fail "no entry for the conversation"
+echo "$line" | grep -qF 'work:5.0' || fail "entry not at work:5.0: $line"
+echo "$line" | grep -qF 'ox ·add-auth' || fail "entry lacks the new window name: $line"
+echo "$OUT" | grep -qF 'work:2.0' && fail "old position still listed"
+echo OK

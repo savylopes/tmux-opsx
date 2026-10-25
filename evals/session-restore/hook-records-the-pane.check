@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Hook records the pane
+# level: L2
+# requirement: Record the conversation running in a pane
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 /r bypassPermissions)"
+[ "$(cat $RUNS/$LASTRUN.rc)" = 0 ] || fail "hook exit $(cat $RUNS/$LASTRUN.rc)"
+[ ! -s "$RUNS/$LASTRUN.out" ] || fail "hook printed to stdout: $(cat $RUNS/$LASTRUN.out)"
+sess_run list --live
+[ $RC -eq 0 ] || fail "list --live exit $RC"
+line=$(echo "$OUT" | grep -F 'work:2.0') || fail "no work:2.0 in list --live"
+for t in "$UUID1" "/r" bypassPermissions; do echo "$line" | grep -qF -- "$t" || fail "line lacks $t: $line"; done
+echo OK

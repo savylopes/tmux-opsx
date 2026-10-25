@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Open PR continued
+# level: L2
+# requirement: Continue an open PR window
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+pr_stub ok
+server a work "$R1"
+claude_win work:2 pr-16 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change pr-16; wopt work:2 @opsx_pr_repo o/app; wopt work:2 @opsx_status idle
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 pr-16 "$R2"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+stub_args $UUID1; show_args
+[ "${ARGS[0]}" = --resume ] && [ "${ARGS[1]}" = $UUID1 ] || fail "not resumed"
+[ "${ARGS[$((${#ARGS[@]}-1))]}" = '/goal keep PR 16 mergeable' ] || fail "last argument is not the pr.sh output"
+grep -q '^restart-input 16' "$FAKE_LOG/pr.log" || fail "pr.sh not called with restart-input 16: $(cat $FAKE_LOG/pr.log 2>&1)"
+grep -q -- "--repo $(cd "$R1" && pwd)" "$FAKE_LOG/pr.log" || fail "--repo is not the recorded cwd: $(cat $FAKE_LOG/pr.log)"
+echo OK

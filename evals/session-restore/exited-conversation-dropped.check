@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Exited conversation dropped
+# level: L2
+# requirement: Snapshot in step with the layout
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+claude_win work:3 w3 "$R1" "$(hook_json $UUID2 "$R1" bypassPermissions)"
+# Claude exits in work:2.0: the pane falls back to a shell
+T respawn-pane -k -t work:2.0 'exec bash --norc --noprofile -i'
+wait_cmd work:2.0 bash || fail "pane did not become a shell"
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+sess_run list
+echo "$OUT" | grep -qF "$UUID1" && fail "entry for the exited pane kept"
+echo "$OUT" | grep -qF "$UUID2" || fail "entry for the live conversation missing"
+echo OK

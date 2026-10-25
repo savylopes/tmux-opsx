@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Pane resumed
+# level: L2
+# requirement: Resume each conversation in its pane
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 w2 "$R2"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+stub_args $UUID1; show_args
+[ "${#ARGS[@]}" -eq 4 ] && [ "${ARGS[0]}" = --resume ] && [ "${ARGS[1]}" = $UUID1 ] && [ "${ARGS[2]}" = --permission-mode ] && [ "${ARGS[3]}" = bypassPermissions ] || fail "unexpected arguments"
+[ "$(cat $FAKE_LOG/$UUID1.cwd)" = "$(cd "$R1" && pwd -P)" ] || fail "stub ran in $(cat $FAKE_LOG/$UUID1.cwd), expected $R1"
+echo OK

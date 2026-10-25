@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Boot line added
+# level: L2
+# requirement: Restore at system start
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+mk_conf "set -g @plugin 'tmux-plugins/tmux-continuum'"
+mk_loginctl no
+out=$(run_install --restore-at-boot); rc=$?; echo "$out" | tail -20; [ $rc -eq 0 ] || fail "install exit $rc"
+sed -n "/>>> $MARK/,/<<< $MARK/p" "$TMUXCONF" | grep -q "@continuum-boot 'on'" || fail "block lacks @continuum-boot 'on'"
+echo "$out" | grep -q 'sudo loginctl enable-linger' || fail "output lacks the enable-linger command"
+[ ! -e "$EVAL_TMP/sudo.log" ] || fail "sudo was invoked"
+# uninstall removes the line with the block
+run_install --uninstall >/dev/null
+! grep -q 'continuum-boot' "$TMUXCONF" || fail "@continuum-boot remains after uninstall"
+echo OK

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Goal re-armed
+# level: L2
+# requirement: Continue an unfinished change window
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change add-auth; wopt work:2 @opsx_status busy
+wopt work:2 @opsx_goal 'all gates PASS'
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 w2 "$R2"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+stub_args $UUID1; show_args
+last="${ARGS[$((${#ARGS[@]}-1))]}"
+case "$last" in "/goal all gates PASS"*) ;; *) fail "prompt does not start with /goal all gates PASS";; esac
+echo OK

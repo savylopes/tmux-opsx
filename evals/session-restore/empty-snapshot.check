@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Empty snapshot
+# level: L1
+# requirement: Show the snapshot
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+[ ! -e "$OPSX_SESSIONS_DIR/snapshot.tsv" ] || fail "snapshot exists"
+sess_run list
+[ $RC -eq 0 ] || fail "exit $RC"
+echo "$OUT" | grep -qi 'no recorded sessions' || fail "does not say there are no recorded sessions"
+echo OK

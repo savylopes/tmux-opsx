@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Open PR prints the first input
+# level: L2
+# requirement: Restart input after a restore
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "pr_start 42 failed (precondition)"
+sf=$(state_file 42)
+sed -i 's/^last_comment_id=.*/last_comment_id=777/' "$sf"
+grep -q '^last_comment_id=777' "$sf" || fail "could not seed last_comment_id"
+# no tmux server: an empty TMUX_TMPDIR and no inherited client
+export TMUX_TMPDIR="$EVAL_TMP/notmux"; mkdir -p "$TMUX_TMPDIR"; unset TMUX TMUX_PANE
+out=$("$PRSH" restart-input 42 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+first=$(echo "$out" | grep -m1 '^/goal') || fail "no line starting with /goal"
+echo "$first" | grep -q '42' || fail "/goal line does not name PR 42"
+grep -q '^last_comment_id=777' "$sf" || fail "state file lost its earlier last_comment_id="
+echo OK

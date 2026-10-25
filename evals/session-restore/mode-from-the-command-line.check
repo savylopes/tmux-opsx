@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Mode from the command line
+# level: L2
+# requirement: Record the conversation running in a pane
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1")" --permission-mode bypassPermissions
+[ "$(cat $RUNS/$LASTRUN.rc)" = 0 ] || fail "hook exit"
+sess_run list --live
+echo "$OUT" | grep -F 'work:2.0' | grep -qF bypassPermissions || fail "mode not taken from the claude command line"
+echo OK

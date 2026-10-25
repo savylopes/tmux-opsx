@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Clear replaces the id
+# level: L2
+# requirement: Record the conversation running in a pane
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions startup)"
+# second SessionStart (source clear) in the same pane, new id
+pane=$(T display -p -t work:2.0 '#{pane_pid}')
+printf '%s' "$(hook_json $UUID2 "$R1" bypassPermissions clear)" > "$RUNS/clear.json"
+# run the hook as a child of the claude-named pane process
+cat > "$RUNS/clear.sh" <<SH
+#!/usr/bin/env bash
+bash "$SESSH" hook < "$RUNS/clear.json" > "$RUNS/clear.out" 2>&1; echo \$? > "$RUNS/clear.rc"
+exec -a claude sleep 86400
+SH
+cat > "$RUNS/clearrun.sh" <<SH
+#!/usr/bin/env bash
+exec -a claude bash "$RUNS/clear.sh"
+SH
+chmod +x "$RUNS/clearrun.sh"
+# replace the process in the same pane (same pane id)
+T respawn-pane -k -t work:2.0 "$RUNS/clearrun.sh"
+wait_file "$RUNS/clear.rc" || fail "second hook never ran"
+[ "$(cat $RUNS/clear.rc)" = 0 ] || fail "hook exit $(cat $RUNS/clear.rc)"
+sess_run list --live
+n=$(echo "$OUT" | grep -cF 'work:2.0')
+[ "$n" -eq 1 ] || fail "expected one record for work:2.0, got $n"
+echo "$OUT" | grep -F 'work:2.0' | grep -qF "$UUID2" || fail "record does not hold the new id"
+echo "$OUT" | grep -qF "$UUID1" && fail "old id still listed"
+echo OK

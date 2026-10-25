@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Dispatch
+# level: L2
+# requirement: opsx command entry point
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+export OPSX_SESSIONS_DIR="$EVAL_TMP/sessions"
+out=$(run_install); rc=$?
+[ $rc -eq 0 ] || { echo "$out" | tail -15; fail "install exit $rc"; }
+opsx="$HOME/.local/bin/opsx"; [ -x "$opsx" ] || opsx="$HOME/bin/opsx"
+[ -x "$opsx" ] || fail "opsx not installed"
+inst=$(find "$HOME" -name opsx-sessions.sh -path '*opsx-run*' | head -1)
+[ -n "$inst" ] || fail "opsx-sessions.sh not installed"
+a=$(env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$EVAL_TMP/none" "$opsx" sessions list 2>&1); ra=$?
+b=$(env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$EVAL_TMP/none" bash "$inst" list 2>&1); rb=$?
+echo "opsx: [$a] rc=$ra"; echo "script: [$b] rc=$rb"
+[ "$a" = "$b" ] && [ $ra -eq $rb ] || fail "outputs differ"
+[ -n "$a" ] || fail "empty output"
+echo OK

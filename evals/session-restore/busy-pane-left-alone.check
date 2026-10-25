@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Busy pane left alone
+# level: L2
+# requirement: Resume each conversation in its pane
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+T new-window -d -t work:2 -n w2 -c "$R2" 'exec -a nvim sleep 86400'
+wait_cmd work:2.0 nvim || fail "pane command is $(T display -p -t work:2.0 '#{pane_current_command}')"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+sleep 1
+[ ! -e "$FAKE_LOG/$UUID1.args" ] || fail "stub claude ran in a busy pane"
+[ "$(T display -p -t work:2.0 '#{pane_current_command}')" = nvim ] || fail "pane changed"
+echo "$OUT" | grep -i 'skip' | grep -qF 'work:2.0' || fail "output does not name work:2.0 as skipped"
+sess_run list
+echo "$OUT" | grep -F "$UUID1" | grep -qi pending || fail "entry not pending"
+echo OK

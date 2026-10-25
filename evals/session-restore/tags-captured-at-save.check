@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Tags captured at save
+# level: L2
+# requirement: Snapshot in step with the layout
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change add-auth
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+f="$OPSX_SESSIONS_DIR/snapshot.tsv"
+[ -s "$f" ] || fail "no snapshot.tsv"
+line=$(grep -F "$UUID1" "$f") || fail "no snapshot entry"
+echo "$line" | grep -Eq '@opsx_change[= ]add-auth|@opsx_change.add-auth' || { echo "$line"; fail "entry lacks @opsx_change=add-auth"; }
+echo OK

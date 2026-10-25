@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Print mode
+# level: L2
+# requirement: Record only interactive tmux sessions
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)" -p
+[ "$(cat $RUNS/$LASTRUN.rc)" = 0 ] || fail "hook exit"
+sess_run list --live
+echo "$OUT" | grep -qF "$UUID1" && fail "print-mode session was recorded"
+[ -z "$(find "$OPSX_SESSIONS_DIR/live" -type f 2>/dev/null)" ] || fail "files under live/"
+echo OK

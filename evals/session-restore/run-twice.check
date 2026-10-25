@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Run twice
+# level: L2
+# requirement: Resume each conversation in its pane
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 w2 "$R2"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+stub_args $UUID1
+wait_cmd work:2.0 claude || fail "pane never ran claude"
+# even with the pane back at a shell, a restored entry must not be typed twice
+T respawn-pane -k -t work:2.0 'exec bash --norc --noprofile -i'; wait_cmd work:2.0 bash || fail "no shell"
+sleep 0.5; before=$(T capture-pane -p -t work:2.0 | md5sum)
+sess_run restore; [ $RC -eq 0 ] || fail "second restore exit $RC"
+sleep 1
+[ "$(wc -l < $FAKE_LOG/calls)" -eq 1 ] || fail "stub ran $(wc -l < $FAKE_LOG/calls) times"
+[ "$(T display -p -t work:2.0 '#{pane_current_command}')" = bash ] || fail "pane got input"
+[ "$(T capture-pane -p -t work:2.0 | md5sum)" = "$before" ] || fail "pane content changed"
+echo OK

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Malformed id
+# level: L2
+# requirement: Record only interactive tmux sessions
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" '{"session_id":"../x","cwd":"'"$R1"'","permission_mode":"bypassPermissions","hook_event_name":"SessionStart","source":"startup"}'
+[ "$(cat $RUNS/$LASTRUN.rc)" = 0 ] || fail "hook exit"
+[ ! -s "$RUNS/$LASTRUN.out" ] || fail "hook printed to stdout"
+[ -z "$(find "$OPSX_SESSIONS_DIR/live" -type f 2>/dev/null)" ] || fail "record written: $(find "$OPSX_SESSIONS_DIR/live" -type f)"
+sess_run list --live
+echo "$OUT" | grep -qF 'work:2.0' && fail "malformed id recorded"
+echo OK
