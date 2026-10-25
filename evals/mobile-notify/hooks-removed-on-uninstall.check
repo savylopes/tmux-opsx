@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Hooks removed on uninstall
+# level: L2
+# requirement: Claude Code hooks installed safely
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+mkdir -p "$HOME/.claude"
+echo '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo keep"}]}]}}' > "$HOME/.claude/settings.json"
+notify_install_ok dev.example.com
+s="$HOME/.claude/settings.json"
+grep -q 'opsx-notify' "$s" || fail "setup: hooks not installed"
+out=$(install_nt --uninstall 2>&1); rc=$?; echo "rc=$rc"; echo "$out" | tail -5
+[ "$rc" -eq 0 ] || fail "uninstall exit $rc"
+jq . "$s" >/dev/null || fail "settings.json invalid after uninstall"
+grep -q 'opsx-notify' "$s" && fail "a hook command pointing at opsx-notify is still in settings.json"
+grep -q 'echo keep' "$s" || fail "the user's own hook was removed"
+echo OK

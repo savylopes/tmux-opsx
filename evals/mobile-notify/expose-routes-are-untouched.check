@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Expose routes are untouched
+# level: L2
+# requirement: Self-hosted ntfy installed by install.sh
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+notify_install_ok dev.example.com
+cfg=$(caddy_json); start_admin "$cfg"
+mkdir -p "$EVAL_TMP/app"; git init -q "$EVAL_TMP/app" || fail "git init"
+cd "$EVAL_TMP/app" || exit 1
+out=$(x up 3000 --name web --project shop 2>&1); rc=$?; echo "up: rc=$rc"; echo "$out" | tail -3
+[ "$rc" -eq 0 ] || fail "expose up failed"
+n=$(routes_to ntfy.dev.example.com); echo "after up: $n"; echo "$n" | grep -q 127.0.0.1:2586 || fail "opsx-ntfy route missing from the proxy config after expose up"
+out=$(x down web --project shop 2>&1); rc=$?; echo "down: rc=$rc"; echo "$out" | tail -3
+[ "$rc" -eq 0 ] || fail "expose down failed"
+n=$(routes_to ntfy.dev.example.com); echo "after down: $n"; echo "$n" | grep -q 127.0.0.1:2586 || fail "opsx-ntfy route gone from the proxy config after expose down"
+admin_get /config/ | jq -e '[.. | objects | select(."@id"? == "opsx-ntfy")] | length == 1' >/dev/null || fail "opsx-ntfy route not present exactly once"
+echo OK

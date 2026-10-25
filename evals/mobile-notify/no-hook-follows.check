@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / No hook follows
+# level: L2
+# requirement: One push when a window finishes
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env; start_tmux
+read -r w p < <(new_win fix-x change)
+TMUX_PANE=$p bash "$WINSH" mark fix-x fail >/dev/null 2>&1 || fail "mark fail failed"
+sleep 5; [ "$(curl_calls)" -eq 0 ] || echo "note: pushed before the 60 s wait"
+wait_calls 1 80 || fail "no push within 80 s"
+sleep 3; n=$(curl_calls); [ "$n" -eq 1 ] || fail "expected one message, got $n"
+t=$(curl_all_headers | grep -i '^Title:'); echo "$t"
+echo "$t" | grep -q 'fix-x' || fail "title lacks fix-x"
+echo "$t" | grep -qi 'fail' || fail "title lacks fail"
+echo OK
