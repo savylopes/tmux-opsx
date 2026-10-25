@@ -13,6 +13,7 @@ My personal development harness for agent CLIs. It runs [OpenSpec](https://githu
  ├── gates        ops-eval · ops-reviewer · ops-security · ops-qa
  ├── context      memory · fork · learn: procedures an agent worked out → project skills in .opsx/skills/, seen by every CLI
  │                /explain: a topic → a designed, diagrammed web page with labelled blocks, written by a fork, served by /expose (directory)
+ │                opsx sessions: after a reboot, each Claude Code pane resumes its conversation, harness windows get their tags back and continue
  ├── sharing      /expose: local port or directory → https://<name>--<project>.<domain> behind a login, share links for clients (opt-in)
  │                /opsx-run <change> preview: a change's app → https://<change>--<project>.<domain>
  └── portability  install.sh → Claude Code · Cursor CLI · Codex CLI · OpenCode · Gemini CLI
@@ -56,6 +57,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `opsx-merge.sh` | `~/.claude/skills/opsx-run/` | Merge the change branch into a target (default `main`) — no archive or cleanup |
 | `opsx-land.sh` | `~/.claude/skills/opsx-run/` | Landing a change — OpenSpec gates, eval regression gate (with `--eval`), then `opsx-merge.sh`, archive, branch/worktree cleanup |
 | `opsx-eval.sh` | `~/.claude/skills/opsx-run/` | Runs a repo's saved eval suite (`evals/`) with no LLM — scorecard, coverage, `--json`, regression compare |
+| `opsx-sessions.sh` + session restore wiring | `~/.claude/skills/opsx-run/` · `SessionStart` hook in `~/.claude/settings.json` · marked block in `~/.tmux.conf` (`# >>> tmux-opsx session restore >>>`) | Records which Claude Code conversation runs in which tmux pane, snapshots it on every tmux-resurrect save and resumes it after a restore (`opsx sessions`, see [Restoring sessions after a reboot](#restoring-sessions-after-a-reboot)) |
 | `opsx-preview.sh` | `~/.claude/skills/opsx-run/` | Runs a change's app (or the main checkout) from its worktree in a tagged tmux window and publishes it through `/expose` — recipe, port, health wait, stop |
 | `ops-applier` subagent | `~/.claude/agents/opsx-applier.md` · `~/.cursor/agents/opsx-applier.md` · `~/.codex/agents/ops-applier.toml` · `~/.config/opencode/agents/ops-applier.md` · `~/.gemini/agents/opsx-applier.md` | Implements the change in an isolated worktree on `opsx/<change>` |
 | `ops-eval` subagent | `~/.claude/agents/opsx-eval.md` · `~/.cursor/agents/opsx-eval.md` · `~/.codex/agents/ops-eval.toml` · `~/.config/opencode/agents/ops-eval.md` · `~/.gemini/agents/opsx-eval.md` | Spec eval gate: one executable check per scenario under `evals/`. Runs on `apply --validate` or `/opsx-run <change> eval` |
@@ -118,6 +120,8 @@ The installer checks prerequisites, installs the OpenSpec CLI, installs OpenSpec
 ./install.sh --skip-pr          # don't install the /opsx-pr skill
 ./install.sh --skip-task        # don't install the /opsx-task skill
 ./install.sh --skip-init        # don't install the opsx command or the /opsx-init skill
+./install.sh --skip-restore     # don't install the session restore hook or the ~/.tmux.conf block
+./install.sh --restore-at-boot  # also start tmux, and the restore, at system start (see Restoring sessions)
 ./install.sh --expose-domain dev.example.com  # also set up /expose (opt-in; see Expose)
 ./install.sh --no-backup        # overwrite without keeping .bak copies
 ./install.sh --uninstall        # remove everything except the OpenSpec and Graphify CLIs
@@ -393,7 +397,7 @@ Jump to a change's window with `tmux select-window -t <session>:<change>`, or yo
 Everything tmux-related goes through one script, which you can also drive by hand:
 
 ```bash
-~/.claude/skills/opsx-run/opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
+~/.claude/skills/opsx-run/opsx-window.sh ensure <change> --prompt-file <f> [--goal-file <f>] [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
 ~/.claude/skills/opsx-run/opsx-window.sh send   <change> --prompt-file <f> [--<agent>-model <m>]...
 ~/.claude/skills/opsx-run/opsx-window.sh models [<change>] [--agent-cli <cmd>] [--<agent>-model <m>]...
 ~/.claude/skills/opsx-run/opsx-window.sh close  <change> [--force] [--keep-session]
@@ -404,6 +408,7 @@ Everything tmux-related goes through one script, which you can also drive by han
 ~/.claude/skills/opsx-run/opsx-window.sh preview-start <change> --cwd <dir> --script <file>   # used by opsx-preview.sh
 ~/.claude/skills/opsx-run/opsx-window.sh preview-find  <change>
 ~/.claude/skills/opsx-run/opsx-window.sh preview-kill  <change>|--all
+~/.claude/skills/opsx-run/opsx-window.sh type   <pane-target> --text-file <f>   # used by opsx-sessions.sh restore
 
 ~/.claude/skills/opsx-run/opsx-preview.sh up   <change>|--main
 ~/.claude/skills/opsx-run/opsx-preview.sh stop <change>|--all
@@ -957,6 +962,53 @@ timeout: 180
 
 ---
 
+## Restoring sessions after a reboot
+
+tmux-resurrect and tmux-continuum bring back sessions, windows, panes and their working directories, but an agent pane comes back as a bare shell: resurrect never saw a conversation id it could resume, and the harness's `@opsx_*` window tags died with the old tmux server. Session restore fills that gap for **Claude Code**.
+
+**What comes back.** Every interactive Claude Code session that ran in tmux (harness windows from `/opsx-run`, `/opsx-pr`, `/opsx-review`, `/opsx-task`, `/fork`, and sessions you started by hand) is resumed in the same `session:window.pane` with `cd <cwd> && claude --resume <id>`, with its permission mode (`bypassPermissions` for harness windows) and the window's `@opsx_model`. The window's `@opsx_*` tags (`@opsx_change`, `@opsx_status`, `@opsx_goal`, `@opsx_pr_repo`, …) and its status colours are put back, so `/opsx-run <change> …` finds the restored window instead of opening a duplicate. A missing session or window is created with its recorded name and cwd; a missing pane inside an existing window is skipped (layout is resurrect's job). A pane that is already running something (an editor, or a `claude` someone started) is never typed into.
+
+**Unfinished work continues.** A change window that was `busy` at the last save gets a resume message as the first prompt (`claude --resume <id> "<message>"`): tmux restarted, check where you stopped, continue the same steps, mark the window as before. When `ensure` was given a goal (`@opsx_goal`), the prompt starts with `/goal <goal>` so the goal is active again. An `/opsx-pr` window whose PR is still open gets the output of `pr.sh restart-input <pr>` (its `/goal …` maintain input); a merged or closed PR is only resumed, and the restore output says why. Idle, done, failed and asking windows, `/opsx-task` sessions and hand-started sessions are only resumed.
+
+**How it works.**
+
+- `install.sh` adds a Claude Code `SessionStart` hook (`startup|resume|clear`) running `opsx-sessions.sh hook`. It records the tmux pane, session, window, cwd, conversation id and permission mode under `~/.local/state/tmux-opsx/sessions/live/<server>/<pane>`. `/clear` mints a new id and the hook follows it. Print-mode (`claude -p`) sessions and sessions outside tmux are not recorded. The hook prints nothing and always exits 0.
+- **tmux-resurrect is required.** When `~/.tmux.conf` loads tmux-resurrect, the installer adds a marked block above the tpm `run` line:
+
+  ```
+  # >>> tmux-opsx session restore >>>
+  set -g @resurrect-hook-post-save-all '/home/you/.local/bin/opsx sessions save'
+  set -g @resurrect-hook-post-restore-all '/home/you/.local/bin/opsx sessions restore'
+  # <<< tmux-opsx session restore <<<
+  ```
+
+  Every resurrect save (continuum's every few minutes, or `prefix C-s`) also writes `snapshot.tsv` with the panes that still run Claude, where they are now and their window tags. Every resurrect restore, including continuum's automatic one when tmux starts, then runs `opsx sessions restore`. If you already set either hook option yourself, or tmux-resurrect is not loaded, the file is left alone and the lines are printed for you to add. Run `tmux source ~/.tmux.conf` after installing.
+- **Keep `claude` out of `@resurrect-processes`.** If resurrect starts `claude` in a pane itself, restore sees a busy pane and skips it.
+
+```
+opsx sessions list            # the snapshot: session:window.pane, window name, cwd, id, pending|restored
+opsx sessions list --live     # what the hook recorded on the running tmux server
+opsx sessions save            # snapshot now (also run by the resurrect post-save hook)
+opsx sessions restore         # resume pending entries now (also run by the post-restore hook)
+opsx sessions restore --no-nudge   # resume everything with no prompt and no PR lookup
+```
+
+Running `restore` twice resumes nothing twice: entries are marked restored, and a pane that runs `claude` is never a shell. The output of each run is also appended to `~/.local/state/tmux-opsx/sessions/restore.log`.
+
+**Look first instead of continuing.** To resume everything bare after a reboot, add `--no-nudge` to the hook line in the block: `set -g @resurrect-hook-post-restore-all '/home/you/.local/bin/opsx sessions restore --no-nudge'`. Later installs keep it.
+
+**Start at boot.** By default the restore runs when the tmux server starts, i.e. at your first `tmux` after login. `./install.sh --restore-at-boot` adds `set -g @continuum-boot 'on'` to the block, so tmux-continuum starts a tmux server (and with it the restore) with your systemd user instance. Without a login, that instance only runs when lingering is on; the installer checks `loginctl show-user <you> -p Linger` and, when it is off, prints `sudo loginctl enable-linger <you>` for you to run (it never runs sudo). Continuum writes its unit the next time tmux loads the config, so run `tmux source ~/.tmux.conf` once. At boot every busy window resumes and continues by itself. Later installs keep the boot line; delete it from the block to stop, and `--uninstall` removes it with the block.
+
+**Limits.**
+
+- Claude Code only: other CLIs are not restored. Cursor CLI, Codex CLI, OpenCode and Gemini CLI panes still come back as shells; `/opsx-task` keeps resuming those by id (`/opsx-task <name>`).
+- Only change windows marked busy at the last save and PR windows with an open PR are told to continue. A change window that had fallen back to idle (after ~40 s of silence) is only resumed; `/opsx-run <change> …` sets it going again.
+- The snapshot is as fresh as the last resurrect save (≤ 5 minutes with continuum). A window opened after it is not restored; the conversation itself is still in Claude's transcript.
+- The first reboot after installing only restores sessions that started, resumed or cleared since the install. Resume today's sessions once by hand to record them.
+- A resumed conversation whose transcript was deleted shows Claude's error in its pane; the entry is still marked restored and not retried.
+
+---
+
 ## Supported CLIs
 
 One `./install.sh` wires everything into all five CLIs; each change window runs one of them.
@@ -979,7 +1031,7 @@ New windows default to the CLI of the calling session; override with `--agent-cl
 ./install.sh --uninstall
 ```
 
-Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-run`, `/opsx-init`, `/opsx-review`, `/opsx-pr`, `memory`, `learn`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory and learn instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/`, a project's `.opsx/skills/`, nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`), nor `/opsx-pr` state (`.../tmux-opsx/pr/`) is ever deleted. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps.
+Removes the `opsx` command (only if it is the tmux-opsx launcher), the `/opsx-run`, `/opsx-init`, `/opsx-review`, `/opsx-pr`, `memory`, `learn`, `/fork` and `/graphify` skills (including `opsx-eval.sh`), the subagents (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa), the global OpenSpec skills and `/opsx:*` commands, the memory and learn instruction blocks from every CLI, and graphify's global Gemini block/hook and OpenCode plugin. The OpenSpec and Graphify CLIs stay installed (the script prints how to remove them), browser-use MCP entries are left in place, and neither `~/.agents/memory/`, a project's `.opsx/skills/`, nor fork state (`${XDG_STATE_HOME:-~/.local/state}/agent-forks/`), nor `/opsx-pr` state (`.../tmux-opsx/pr/`), nor session restore state (`.../tmux-opsx/sessions/`) is ever deleted. The session restore `SessionStart` hook in `~/.claude/settings.json` and the marked block in `~/.tmux.conf` (with its `@continuum-boot` line) are removed; other hooks and lines stay. The opt-in `/expose` setup is not removed either; see [Expose](#expose) for the manual steps.
 
 ---
 

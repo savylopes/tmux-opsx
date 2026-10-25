@@ -323,6 +323,108 @@ wait_for 10 'grep -qx -- "$X1" "$SP/log/claude"'; sleep 0.5
 ok "snapshot text is quoted: goal with \$(...) is passed literally" '[ ! -e "$SP/pwned" ] && last_arg "$X1" | grep -qF "/goal \$(touch"'
 ok "invalid session name or id refused" '[ ! -e "$SP/pwned2" ] && [ "$(printf "%s\n" "$out" | grep -c "^invalid")" -eq 2 ]'
 
+# ================================================================ 5. install
+mkdir -p "$SP/ibin"
+for b in claude node npm; do printf '#!/bin/sh\necho 1.0.0\n' > "$SP/ibin/$b"; chmod +x "$SP/ibin/$b"; done
+cp "$FB/tmux" "$SP/ibin/tmux"
+echo no > "$SP/linger"
+printf '#!/bin/sh\necho "$*" >> "%s/log/loginctl"\nprintf "Linger=%%s\\n" "$(cat "%s/linger")"\n' "$SP" "$SP" > "$SP/ibin/loginctl"
+printf '#!/bin/sh\necho "$*" >> "%s/log/sudo"\nexit 1\n' "$SP" > "$SP/ibin/sudo"
+chmod +x "$SP/ibin"/*
+run_install(){ # home args...
+  local h=$1; shift
+  (cd "$REPO" && env -u CLAUDE_CONFIG_DIR -u CODEX_HOME -u GEMINI_HOME -u OPENCODE_CONFIG_DIR -u TMUX -u TMUX_PANE \
+     -u SUDO_USER -u REAL_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u OPSX_MODELS_CONF -u OPSX_SESSIONS_DIR \
+     HOME="$h" USER=tester PATH="$SP/ibin:/usr/bin:/bin" bash ./install.sh --skip-openspec --skip-graphify \
+     --skip-commands --skip-mcp --skip-memory --no-backup "$@" </dev/null 2>&1)
+}
+conf_with_resurrect(){ # file [extra line]
+  mkdir -p "$(dirname "$1")"
+  {
+    echo "set -g mouse on"
+    echo "set -g @plugin 'tmux-plugins/tpm'"
+    echo "set -g @plugin 'tmux-plugins/tmux-resurrect'"
+    echo "set -g @plugin 'tmux-plugins/tmux-continuum'"
+    echo "set -g @continuum-restore 'on'"
+    [ -z "${2:-}" ] || echo "$2"
+    echo "run '~/.tmux/plugins/tpm/tpm'"
+  } > "$1"
+}
+# Number of SessionStart hook commands naming opsx-sessions.sh hook.
+n_hooks(){ python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print(sum(1 for g in d.get("hooks",{}).get("SessionStart",[]) for h in g.get("hooks",[]) if "opsx-sessions.sh" in h.get("command","") and h["command"].endswith(" hook")))' "$1" 2>/dev/null || echo 0; }
+START='# >>> tmux-opsx session restore >>>'
+line_of(){ grep -nF -- "$2" "$1" | head -1 | cut -d: -f1; }
+
+IH=$SP/ih1; mkdir -p "$IH"; conf_with_resurrect "$IH/.tmux.conf"
+out=$(run_install "$IH"); rc=$?
+printf '%s\n' "$out" > "$SP/install1.out"
+TC=$IH/.tmux.conf
+ok "install: exit 0" '[ $rc -eq 0 ]'
+ok "install: one SessionStart hook naming opsx-sessions.sh hook (startup|resume|clear, timeout)" '[ "$(n_hooks "$IH/.claude/settings.json")" -eq 1 ] && grep -q "startup|resume|clear" "$IH/.claude/settings.json" && grep -q "\"timeout\": 10" "$IH/.claude/settings.json"'
+ok "install: opsx-sessions.sh installed executable in every opsx-run skill dir" 'for d in .claude/skills .cursor/skills .agents/skills .codex/skills .config/opencode/skills .gemini/skills; do [ -x "$IH/$d/opsx-run/opsx-sessions.sh" ] || exit 1; done'
+ok "install: marked block above the tpm run line with both hooks (absolute opsx path)" '[ -n "$(line_of "$TC" "$START")" ] && [ "$(line_of "$TC" "$START")" -lt "$(line_of "$TC" "run '\''~/.tmux/plugins/tpm/tpm'\''")" ] && grep -qxF "set -g @resurrect-hook-post-save-all '\''$IH/.local/bin/opsx sessions save'\''" "$TC" && grep -qxF "set -g @resurrect-hook-post-restore-all '\''$IH/.local/bin/opsx sessions restore'\''" "$TC"'
+ok "install: no @continuum-boot without --restore-at-boot, no linger check" '! grep -q "@continuum-boot" "$TC" && [ ! -e "$SP/log/loginctl" ] && ! grep -q enable-linger "$SP/install1.out"'
+ok "install: verify step reports the hook and the block" 'grep -q "session restore SessionStart hook in" "$SP/install1.out" && grep -q "session restore block in" "$SP/install1.out"'
+# 5.1 dispatch
+a=$(env -u OPSX_SESSIONS_DIR HOME="$IH" "$IH/.local/bin/opsx" sessions list 2>&1); b=$(env -u OPSX_SESSIONS_DIR HOME="$IH" bash "$IH/.claude/skills/opsx-run/opsx-sessions.sh" list 2>&1)
+ok "opsx sessions list matches opsx-sessions.sh list" '[ -n "$a" ] && [ "$a" = "$b" ] && printf "%s" "$a" | grep -q "no recorded sessions"'
+ok "opsx help lists sessions" '"$IH/.local/bin/opsx" help | grep -q "^  sessions"'
+cp "$TC" "$SP/tc.before"; cp "$IH/.claude/settings.json" "$SP/settings.before"
+out=$(run_install "$IH"); rc=$?
+ok "re-install is idempotent: one hook, one block, files unchanged" '[ $rc -eq 0 ] && [ "$(n_hooks "$IH/.claude/settings.json")" -eq 1 ] && [ "$(grep -cxF "$START" "$TC")" -eq 1 ] && cmp -s "$TC" "$SP/tc.before" && cmp -s "$IH/.claude/settings.json" "$SP/settings.before"'
+
+# user hook kept
+IH2=$SP/ih2; mkdir -p "$IH2"; conf_with_resurrect "$IH2/.tmux.conf" "set -g @resurrect-hook-post-restore-all 'echo mine'"
+cp "$IH2/.tmux.conf" "$SP/tc2.before"
+out=$(run_install "$IH2"); rc=$?
+ok "user's resurrect hook kept: file unchanged, lines printed" '[ $rc -eq 0 ] && cmp -s "$IH2/.tmux.conf" "$SP/tc2.before" && printf "%s" "$out" | grep -q "@resurrect-hook-post-restore-all '\''$IH2/.local/bin/opsx sessions restore'\''" && printf "%s" "$out" | grep -q "@resurrect-hook-post-save-all"'
+# no resurrect: print only
+IH3=$SP/ih3; mkdir -p "$IH3"; printf 'set -g mouse on\n' > "$IH3/.tmux.conf"
+out=$(run_install "$IH3"); rc=$?
+ok "without tmux-resurrect: file unchanged, lines printed, install succeeds" '[ $rc -eq 0 ] && [ "$(cat "$IH3/.tmux.conf")" = "set -g mouse on" ] && printf "%s" "$out" | grep -q "does not load tmux-resurrect" && printf "%s" "$out" | grep -q "@resurrect-hook-post-save-all"'
+# --skip-restore
+IH4=$SP/ih4; mkdir -p "$IH4"; conf_with_resurrect "$IH4/.tmux.conf"
+out=$(run_install "$IH4" --skip-restore); rc=$?
+ok "--skip-restore: no hook, no block" '[ $rc -eq 0 ] && ! grep -qs "opsx-sessions.sh" "$IH4/.claude/settings.json" && ! grep -qF "$START" "$IH4/.tmux.conf"'
+ok "install --help lists --skip-restore and --restore-at-boot" 'bash "$REPO/install.sh" --help | grep -q -- "--skip-restore" && bash "$REPO/install.sh" --help | grep -q -- "--restore-at-boot"'
+# --uninstall keeps an unrelated hook
+python3 - "$IH/.claude/settings.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["hooks"]["SessionStart"].append({"matcher": "startup", "hooks": [{"type": "command", "command": "echo other"}]})
+d["hooks"]["PreToolUse"] = [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo pre"}]}]
+json.dump(d, open(p, "w"), indent=2)
+PY
+out=$(run_install "$IH" --uninstall); rc=$?
+ok "--uninstall: unrelated hooks remain, ours and the block are gone" '[ $rc -eq 0 ] && grep -q "echo other" "$IH/.claude/settings.json" && grep -q "echo pre" "$IH/.claude/settings.json" && ! grep -q "opsx-sessions.sh" "$IH/.claude/settings.json" && ! grep -qF "$START" "$TC" && ! grep -q "@resurrect-hook" "$TC" && grep -q "tmux-resurrect" "$TC"'
+
+# 5.4 --restore-at-boot
+IH5=$SP/ih5; mkdir -p "$IH5"; conf_with_resurrect "$IH5/.tmux.conf"
+echo no > "$SP/linger"; rm -f "$SP/log/sudo" "$SP/log/loginctl"
+out=$(run_install "$IH5" --restore-at-boot); rc=$?
+ok "--restore-at-boot: @continuum-boot 'on' inside the block" '[ $rc -eq 0 ] && sed -n "/^# >>> tmux-opsx session restore >>>/,/^# <<< tmux-opsx session restore <<</p" "$IH5/.tmux.conf" | grep -qxF "set -g @continuum-boot '\''on'\''"'
+ok "--restore-at-boot, Linger=no: prints sudo loginctl enable-linger" 'printf "%s" "$out" | grep -q "sudo loginctl enable-linger tester" && grep -q "show-user tester -p Linger" "$SP/log/loginctl"'
+ok "--restore-at-boot: sudo never invoked" '[ ! -e "$SP/log/sudo" ]'
+ok "--restore-at-boot: reminds to tmux source the config" 'printf "%s" "$out" | grep -q "tmux source"'
+out=$(run_install "$IH5"); rc=$?
+ok "re-install without the flag keeps the boot line" '[ $rc -eq 0 ] && grep -c "@continuum-boot" "$IH5/.tmux.conf" | grep -qx 1'
+echo yes > "$SP/linger"
+out=$(run_install "$IH5" --restore-at-boot); rc=$?
+ok "--restore-at-boot, Linger=yes: no enable-linger hint" '[ $rc -eq 0 ] && ! printf "%s" "$out" | grep -q "enable-linger" && [ ! -e "$SP/log/sudo" ]'
+sed -i "s|\(@resurrect-hook-post-restore-all '[^']*sessions restore\)'|\1 --no-nudge'|" "$IH5/.tmux.conf"
+out=$(run_install "$IH5"); rc=$?
+ok "re-install keeps a --no-nudge added to the block" '[ $rc -eq 0 ] && grep -qxF "set -g @resurrect-hook-post-restore-all '\''$IH5/.local/bin/opsx sessions restore --no-nudge'\''" "$IH5/.tmux.conf"'
+out=$(run_install "$IH5" --uninstall); rc=$?
+ok "--uninstall removes the boot line with the block" '[ $rc -eq 0 ] && ! grep -q "@continuum-boot" "$IH5/.tmux.conf" && ! grep -qF "$START" "$IH5/.tmux.conf"'
+
+# ================================================================ 6. docs
+RD=$REPO/README.md
+ok "README documents restore (restore cmd, resurrect hook, --restore-at-boot, enable-linger, other CLIs)" 'grep -q "opsx sessions restore" "$RD" && grep -q "@resurrect-hook-post-restore-all" "$RD" && grep -q -- "--restore-at-boot" "$RD" && grep -q "enable-linger" "$RD" && grep -q "other CLIs are not restored" "$RD" && grep -q -- "--skip-restore" "$RD"'
+ok "README overview tree names opsx sessions" 'sed -n "/^ your dev harness/,/^\`\`\`/p" "$RD" | grep -q "opsx sessions"'
+ok "config.yaml product surface names opsx-sessions.sh" 'grep -q "opsx-sessions.sh" "$REPO/openspec/config.yaml"'
+
 # ================================================================ shellcheck
 ok "shellcheck opsx-sessions.sh and this test" '! command -v shellcheck >/dev/null || shellcheck "$S" "$SELF"'
 

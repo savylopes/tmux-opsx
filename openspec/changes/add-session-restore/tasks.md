@@ -27,14 +27,14 @@
 
 ## 5. Entry point and install
 
-- [ ] 5.1 Add `sessions` to `bin/opsx` (dispatch to `opsx-run/opsx-sessions.sh`, usage line); verify `opsx sessions list` matches `opsx-sessions.sh list` in a scratch HOME
-- [ ] 5.2 In `install.sh`: install `opsx-sessions.sh` with the opsx-run skill files, merge/unmerge the Claude `SessionStart` hook (matcher `startup|resume|clear`, short timeout, `.bak`), add/remove the marked `~/.tmux.conf` block above the tpm `run` line only when resurrect is loaded and neither hook option is set elsewhere (else print the lines), use the absolute installed `opsx` path, add `--skip-restore`, extend the verify step
-- [ ] 5.3 Add install cases to `tests/test-restore.sh` (scratch HOME): installed with resurrect, re-install idempotent, user hook kept, `--skip-restore`, `--uninstall` keeps an unrelated hook; verify the test passes and `shellcheck install.sh` is clean
-- [ ] 5.4 Add `--restore-at-boot` to `install.sh`: `@continuum-boot 'on'` in the marked block, Linger check through `loginctl` with the `sudo loginctl enable-linger` hint (never run sudo), `tmux source` reminder, removed on `--uninstall`; add boot-line, linger-on and not-requested cases (stub `loginctl`) to `tests/test-restore.sh` and verify it passes
+- [x] 5.1 Add `sessions` to `bin/opsx` (dispatch to `opsx-run/opsx-sessions.sh`, usage line); verify `opsx sessions list` matches `opsx-sessions.sh list` in a scratch HOME
+- [x] 5.2 In `install.sh`: install `opsx-sessions.sh` with the opsx-run skill files, merge/unmerge the Claude `SessionStart` hook (matcher `startup|resume|clear`, short timeout, `.bak`), add/remove the marked `~/.tmux.conf` block above the tpm `run` line only when resurrect is loaded and neither hook option is set elsewhere (else print the lines), use the absolute installed `opsx` path, add `--skip-restore`, extend the verify step
+- [x] 5.3 Add install cases to `tests/test-restore.sh` (scratch HOME): installed with resurrect, re-install idempotent, user hook kept, `--skip-restore`, `--uninstall` keeps an unrelated hook; verify the test passes and `shellcheck install.sh` is clean
+- [x] 5.4 Add `--restore-at-boot` to `install.sh`: `@continuum-boot 'on'` in the marked block, Linger check through `loginctl` with the `sudo loginctl enable-linger` hint (never run sudo), `tmux source` reminder, removed on `--uninstall`; add boot-line, linger-on and not-requested cases (stub `loginctl`) to `tests/test-restore.sh` and verify it passes
 
 ## 6. Documentation
 
-- [ ] 6.1 Add README section "Restoring sessions after a reboot" (what comes back, tmux-resurrect requirement, keep `claude` out of `@resurrect-processes`, `opsx sessions list|save|restore`, `--no-nudge` (and how to put it in the hook line), start at boot with `--restore-at-boot` + `enable-linger`, limits: Claude only, which windows are told to continue and `--no-nudge`, last-save window, first reboot after install), add `--skip-restore` and `--restore-at-boot` to the install flags, the components table and a line in the overview tree; update the `openspec/config.yaml` context product-surface list; verify `grep -n "opsx sessions restore\|@resurrect-hook-post-restore-all" README.md` finds both
+- [x] 6.1 Add README section "Restoring sessions after a reboot" (what comes back, tmux-resurrect requirement, keep `claude` out of `@resurrect-processes`, `opsx sessions list|save|restore`, `--no-nudge` (and how to put it in the hook line), start at boot with `--restore-at-boot` + `enable-linger`, limits: Claude only, which windows are told to continue and `--no-nudge`, last-save window, first reboot after install), add `--skip-restore` and `--restore-at-boot` to the install flags, the components table and a line in the overview tree; update the `openspec/config.yaml` context product-surface list; verify `grep -n "opsx sessions restore\|@resurrect-hook-post-restore-all" README.md` finds both
 
 ## 7. Integration check
 

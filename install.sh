@@ -29,7 +29,7 @@
 #                                   -> ~/.config/opencode/skills/opsx-run/  (OpenCode)
 #                                   -> ~/.gemini/skills/opsx-run/  (Gemini CLI)
 #      (opsx-window.sh + opsx-merge.sh + opsx-land.sh + opsx-eval.sh + opsx-preview.sh
-#       + models.conf)
+#       + opsx-dev.sh + opsx-sessions.sh + models.conf)
 #   6. browser-use MCP             -> ~/.gemini/settings.json
 #                                   -> ~/.codex/config.toml
 #                                   -> ~/.config/opencode/opencode.json{,c}
@@ -84,6 +84,20 @@
 #                                      skill dirs, like /fork; opsx-init.sh)
 #      `opsx init` sets up a repo (OpenSpec, config context skeleton, graphify
 #      ignore, .opsx/dev.yaml); it only ever writes inside the repo it runs in.
+#  11. session restore (Claude Code) unless --skip-restore:
+#                                   -> SessionStart hook in ~/.claude/settings.json
+#                                      (opsx-sessions.sh hook, matcher startup|resume|clear)
+#                                   -> marked block in ~/.tmux.conf above the tpm `run`
+#                                      line: @resurrect-hook-post-save-all /
+#                                      @resurrect-hook-post-restore-all running
+#                                      `<opsx> sessions save|restore` (absolute path; with
+#                                      --skip-init `bash <skill>/opsx-sessions.sh save|restore`)
+#      The block is only written when the file loads tmux-resurrect and sets
+#      neither hook option itself; otherwise the lines are printed. With
+#      --restore-at-boot the block also sets @continuum-boot 'on' (kept on later
+#      installs) and lingering is checked: the `sudo loginctl enable-linger`
+#      command is printed, never run. State: ~/.local/state/tmux-opsx/sessions/,
+#      never touched here.
 #
 # Window CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex),
 # OpenCode (opencode), and Gemini CLI (gemini). At least one must be on PATH.
@@ -102,6 +116,9 @@
 #   --skip-pr          Don't install the /opsx-pr skill
 #   --skip-task        Don't install the /opsx-task skill
 #   --skip-init        Don't install the opsx command or the /opsx-init skill
+#   --skip-restore     Don't install the session restore hook or the ~/.tmux.conf block
+#   --restore-at-boot  Also start tmux (and the restore) at system start through
+#                      tmux-continuum's @continuum-boot (see item 11)
 #   --expose-domain <d>  Set up /expose: publish local ports at https://<name>--<project>.<d>
 #                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9).
 #                      Use a domain that serves nothing else: the login cookie
@@ -131,6 +148,8 @@ SKIP_REVIEW=0
 SKIP_PR=0
 SKIP_TASK=0
 SKIP_INIT=0
+SKIP_RESTORE=0
+RESTORE_AT_BOOT=0
 EXPOSE_DOMAIN=""
 BACKUP=1
 UNINSTALL=0
@@ -166,6 +185,8 @@ while [ $# -gt 0 ]; do
     --skip-pr)       SKIP_PR=1; shift ;;
     --skip-task)     SKIP_TASK=1; shift ;;
     --skip-init)     SKIP_INIT=1; shift ;;
+    --skip-restore)  SKIP_RESTORE=1; shift ;;
+    --restore-at-boot) RESTORE_AT_BOOT=1; shift ;;
     --expose-domain) [ $# -ge 2 ] || die "--expose-domain needs a domain"
                      EXPOSE_DOMAIN=$2; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift 2 ;;
     --expose-domain=*) EXPOSE_DOMAIN=${1#--expose-domain=}; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift ;;
@@ -717,6 +738,7 @@ install_opsx_run_skill() {
   install_file "$SRC/skills/opsx-run/opsx-eval.sh"   "$dest/opsx-eval.sh"
   install_file "$SRC/skills/opsx-run/opsx-preview.sh" "$dest/opsx-preview.sh"
   install_file "$SRC/skills/opsx-run/opsx-dev.sh"    "$dest/opsx-dev.sh"
+  install_file "$SRC/skills/opsx-run/opsx-sessions.sh" "$dest/opsx-sessions.sh"
   install_file "$SRC/agents/models.conf"             "$dest/models.conf"
   chmod +x "$dest/opsx-window.sh" || die "cannot chmod +x $dest/opsx-window.sh"
   chmod +x "$dest/opsx-merge.sh"  || die "cannot chmod +x $dest/opsx-merge.sh"
@@ -724,6 +746,7 @@ install_opsx_run_skill() {
   chmod +x "$dest/opsx-eval.sh"   || die "cannot chmod +x $dest/opsx-eval.sh"
   chmod +x "$dest/opsx-preview.sh" || die "cannot chmod +x $dest/opsx-preview.sh"
   chmod +x "$dest/opsx-dev.sh"    || die "cannot chmod +x $dest/opsx-dev.sh"
+  chmod +x "$dest/opsx-sessions.sh" || die "cannot chmod +x $dest/opsx-sessions.sh"
   ok "/opsx-run -> $dest ($label)"
 }
 
@@ -841,6 +864,195 @@ EXPOSE_CONFIG_CHANGED=0
 EXPOSE_TOKEN_CHANGED=0
 
 tilde() { printf '%s' "$1" | sed "s|^$HOME|~|"; }
+
+# ---------- session restore (Claude SessionStart hook + ~/.tmux.conf block) ----------
+RESTORE_BLOCK_START='# >>> tmux-opsx session restore >>>'
+RESTORE_BLOCK_END='# <<< tmux-opsx session restore <<<'
+
+# The tmux config install.sh edits: ~/.tmux.conf, or the XDG one when only
+# that exists.
+tmux_conf_path() {
+  local xdg=${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf
+  if [ ! -f "$HOME/.tmux.conf" ] && [ -f "$xdg" ]; then
+    printf '%s' "$xdg"
+  else
+    printf '%s' "$HOME/.tmux.conf"
+  fi
+}
+
+# Lines of $1 outside our marked block, comments dropped.
+tmux_conf_active_lines() {
+  awk -v start="$RESTORE_BLOCK_START" -v end="$RESTORE_BLOCK_END" '
+    $0 == start { skip = 1; next }
+    $0 == end { skip = 0; next }
+    skip { next }
+    /^[[:space:]]*#/ { next }
+    { print }' "$1" 2>/dev/null
+}
+
+tmux_conf_loads() { tmux_conf_active_lines "$1" | grep -q -- "$2"; }
+
+# Merge the opsx-sessions.sh SessionStart hook into Claude Code's settings.json
+# (matcher startup|resume|clear), replacing an earlier copy of ours.
+upsert_claude_session_hook() {
+  local dest=$1 script=$2
+  have python3 || return 1
+  mkdir -p "$(dirname "$dest")" || return 1
+  HOOK_DEST=$dest HOOK_SCRIPT=$script python3 <<'PYHOOK' || return 1
+import json, os, shlex
+
+dest = os.environ["HOOK_DEST"]
+cmd = "bash " + shlex.quote(os.environ["HOOK_SCRIPT"]) + " hook"
+obj = {}
+if os.path.isfile(dest):
+    raw = open(dest, encoding="utf-8-sig").read()
+    obj = json.loads(raw) if raw.strip() else {}
+if not isinstance(obj, dict):
+    raise SystemExit(dest + " is not a JSON object")
+hooks = obj.get("hooks")
+if not isinstance(hooks, dict):
+    hooks = {}
+    obj["hooks"] = hooks
+lst = hooks.get("SessionStart")
+if not isinstance(lst, list):
+    lst = []
+lst = [h for h in lst if "opsx-sessions.sh" not in json.dumps(h)]
+lst.append({"matcher": "startup|resume|clear",
+            "hooks": [{"type": "command", "command": cmd, "timeout": 10}]})
+hooks["SessionStart"] = lst
+with open(dest + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PYHOOK
+  replace_if_changed "$dest"
+}
+
+remove_claude_session_hook() {
+  local dest=$1
+  [ -f "$dest" ] || return 0
+  grep -q 'opsx-sessions.sh' "$dest" 2>/dev/null || return 0
+  have python3 || { warn "python3 not found — remove the opsx-sessions.sh SessionStart hook from $dest by hand"; return 1; }
+  HOOK_DEST=$dest python3 <<'PYHOOK' || { warn "could not edit $dest — remove the opsx-sessions.sh hook by hand"; return 1; }
+import json, os
+
+dest = os.environ["HOOK_DEST"]
+raw = open(dest, encoding="utf-8-sig").read()
+obj = json.loads(raw) if raw.strip() else {}
+hooks = obj.get("hooks") if isinstance(obj, dict) else None
+if isinstance(hooks, dict) and isinstance(hooks.get("SessionStart"), list):
+    hooks["SessionStart"] = [h for h in hooks["SessionStart"] if "opsx-sessions.sh" not in json.dumps(h)]
+    if not hooks["SessionStart"]:
+        del hooks["SessionStart"]
+    if not hooks:
+        del obj["hooks"]
+with open(dest + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PYHOOK
+  replace_if_changed "$dest"
+  ok "removed the session restore hook from $(tilde "$dest")"
+}
+
+# Print the marked block: both resurrect hooks (and @continuum-boot when $3 is 1).
+restore_block_text() {
+  local save_cmd=$1 restore_cmd=$2 boot=$3
+  printf '%s\n' "$RESTORE_BLOCK_START"
+  printf "set -g @resurrect-hook-post-save-all '%s'\n" "$save_cmd"
+  printf "set -g @resurrect-hook-post-restore-all '%s'\n" "$restore_cmd"
+  [ "$boot" -eq 1 ] && printf "set -g @continuum-boot 'on'\n"
+  printf '%s\n' "$RESTORE_BLOCK_END"
+}
+
+print_restore_lines() {
+  note "add these lines to your tmux config above the tpm 'run' line:"
+  restore_block_text "$1" "$2" "$3" | sed -n '2,$p' | sed '$d' | while IFS= read -r l; do note "  $l"; done
+}
+
+# Add or refresh the marked block above the tpm run line, only when
+# tmux-resurrect is loaded and neither resurrect hook option is set elsewhere.
+# Sets RESTORE_BLOCK=installed|unchanged|printed.
+install_restore_tmux_block() {
+  local conf=$1 save_cmd=$2 restore_cmd=$3 boot=$4 blockfile tmp
+  RESTORE_BLOCK=printed
+  case "$save_cmd$restore_cmd" in
+    *"'"*) warn "the opsx path contains a quote — not editing $(tilde "$conf")"
+           print_restore_lines "$save_cmd" "$restore_cmd" "$boot"; return 0 ;;
+  esac
+  if [ ! -f "$conf" ]; then
+    warn "no $(tilde "$conf") — session restore needs tmux-resurrect (and tmux-continuum for automatic restores)"
+    print_restore_lines "$save_cmd" "$restore_cmd" "$boot"; return 0
+  fi
+  if ! tmux_conf_loads "$conf" 'tmux-resurrect'; then
+    warn "$(tilde "$conf") does not load tmux-resurrect — left unchanged"
+    note "install tmux-resurrect (set -g @plugin 'tmux-plugins/tmux-resurrect'), then re-run install.sh, or"
+    print_restore_lines "$save_cmd" "$restore_cmd" "$boot"; return 0
+  fi
+  if tmux_conf_active_lines "$conf" | grep -Eq '@resurrect-hook-post-(save|restore)-all'; then
+    warn "$(tilde "$conf") already sets a tmux-resurrect post-save/post-restore hook — left unchanged"
+    note "merge the session restore commands into your hook by hand:"
+    print_restore_lines "$save_cmd" "$restore_cmd" "$boot"; return 0
+  fi
+  # Keep the boot line of an earlier --restore-at-boot install.
+  if [ "$boot" -eq 0 ] && awk -v s="$RESTORE_BLOCK_START" -v e="$RESTORE_BLOCK_END" \
+       '$0 == s { b = 1; next } $0 == e { b = 0 } b && /@continuum-boot/ { f = 1 } END { exit !f }' "$conf"; then
+    boot=1
+    note "kept @continuum-boot from an earlier --restore-at-boot (delete that line from the block to stop starting at boot)"
+  fi
+  # Keep a --no-nudge the user added to the block's restore hook.
+  if awk -v s="$RESTORE_BLOCK_START" -v e="$RESTORE_BLOCK_END" \
+       '$0 == s { b = 1; next } $0 == e { b = 0 } b && /@resurrect-hook-post-restore-all/ && /--no-nudge/ { f = 1 } END { exit !f }' "$conf"; then
+    restore_cmd="$restore_cmd --no-nudge"
+    note "kept --no-nudge on the restore hook"
+  fi
+  if [ "$boot" -eq 1 ] && tmux_conf_active_lines "$conf" | grep -q '@continuum-boot'; then
+    note "@continuum-boot is already set outside the block — not adding it again"
+    boot=0
+  fi
+  if [ "$boot" -eq 1 ] && ! tmux_conf_loads "$conf" 'tmux-continuum'; then
+    warn "@continuum-boot needs tmux-continuum, which $(tilde "$conf") does not load"
+  fi
+  blockfile=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  restore_block_text "$save_cmd" "$restore_cmd" "$boot" > "$blockfile"
+  awk -v start="$RESTORE_BLOCK_START" -v end="$RESTORE_BLOCK_END" -v bf="$blockfile" '
+    function block() { while ((getline l < bf) > 0) print l; close(bf); done = 1 }
+    $0 == start { skip = 1; next }
+    $0 == end { skip = 0; next }
+    skip { next }
+    !done && /^[[:space:]]*run(-shell)?[[:space:]].*tpm/ { block() }
+    { print }
+    END { if (!done) block() }' "$conf" > "$tmp"
+  rm -f "$blockfile"
+  if cmp -s "$conf" "$tmp"; then
+    rm -f "$tmp"; RESTORE_BLOCK=unchanged; return 0
+  fi
+  if [ "$BACKUP" -eq 1 ]; then
+    cp "$conf" "$conf.bak.$(date +%Y%m%d%H%M%S)" || die "cannot back up $conf"
+  fi
+  cat "$tmp" > "$conf" || die "cannot write $conf"
+  rm -f "$tmp"
+  RESTORE_BLOCK=installed
+}
+
+# Start at boot needs a user systemd instance without a login: lingering.
+# Prints the sudo command; never runs it.
+restore_linger_check() {
+  local user out
+  user=${SUDO_USER:-${USER:-$(id -un 2>/dev/null)}}
+  if [ "$PLATFORM" != Linux ]; then
+    note "start at boot: tmux-continuum uses a launchd agent on macOS (no lingering needed)"
+    return 0
+  fi
+  if have loginctl && out=$(loginctl show-user "$user" -p Linger 2>/dev/null); then
+    case "$out" in
+      *Linger=yes*) ok "lingering is on for $user (tmux starts at boot without a login)"; return 0 ;;
+    esac
+    warn "lingering is off for $user — without it the tmux server only starts at your first login"
+  else
+    warn "could not check lingering (loginctl show-user $user -p Linger)"
+  fi
+  note "run once:  sudo loginctl enable-linger $user"
+}
 
 # Value of KEY in a KEY=VALUE file, without sourcing it.
 env_file_get() {
@@ -1799,6 +2011,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
   for f in "$PREFIX/CLAUDE.md" "$CODEX_AGENTS_MD" "$OPENCODE_AGENTS_MD" "$GEMINI_MD"; do
     remove_marked_block "$f" "$LEARN_BLOCK_START" "$LEARN_BLOCK_END" learn
   done
+  remove_claude_session_hook "$PREFIX/settings.json"
+  for f in "$HOME/.tmux.conf" "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf"; do
+    remove_marked_block "$f" "$RESTORE_BLOCK_START" "$RESTORE_BLOCK_END" "session restore"
+  done
   info ""
   info "The OpenSpec CLI was left installed. Remove it with:"
   info "  npm uninstall -g $NPM_PKG"
@@ -1808,6 +2024,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   info "$MEMORY_STORE_DIR was left in place — your memories are never deleted."
   info "Learned skills in each project's .opsx/skills/ (and their learned-* links) were left in place."
   info "Fork state and /explain pages in \${XDG_STATE_HOME:-~/.local/state}/agent-forks/ were left in place."
+  info "Session restore state in \${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/sessions/ was left in place."
   exit 0
 fi
 
@@ -2019,6 +2236,7 @@ step "Installing the ops-applier, ops-qa, ops-reviewer, ops-security, and ops-ev
 [ -f "$SRC/skills/opsx-run/opsx-eval.sh" ] || die "missing $SRC/skills/opsx-run/opsx-eval.sh — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-preview.sh" ] || die "missing $SRC/skills/opsx-run/opsx-preview.sh — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-dev.sh" ] || die "missing $SRC/skills/opsx-run/opsx-dev.sh — run this script from the repo checkout"
+[ -f "$SRC/skills/opsx-run/opsx-sessions.sh" ] || die "missing $SRC/skills/opsx-run/opsx-sessions.sh — run this script from the repo checkout"
 [ -f "$SRC/agents/models.conf" ] || die "missing $SRC/agents/models.conf — run this script from the repo checkout"
 load_agent_models claude
 load_agent_models agent
@@ -2288,6 +2506,41 @@ else
 fi
 info ""
 
+# ---------- 11. session restore ----------
+RESTORE_BLOCK=""
+if [ "$SKIP_RESTORE" -eq 1 ]; then
+  step "Skipping session restore (--skip-restore)"
+else
+  step "Installing session restore (Claude Code + tmux-resurrect)"
+  SESSIONS_SH=$PREFIX/skills/opsx-run/opsx-sessions.sh
+  if upsert_claude_session_hook "$PREFIX/settings.json" "$SESSIONS_SH"; then
+    ok "SessionStart hook -> $(tilde "$PREFIX/settings.json") (records each Claude session's tmux pane)"
+  else
+    warn "could not add the SessionStart hook to $PREFIX/settings.json (needs python3 and valid JSON)"
+  fi
+  if [ "$SKIP_INIT" -eq 0 ] && [ -x "${OPSX_BIN:-}" ] && grep -qxF "$OPSX_LAUNCHER_MARK" "$OPSX_BIN" 2>/dev/null; then
+    RESTORE_SAVE_CMD="$OPSX_BIN sessions save"
+    RESTORE_RESTORE_CMD="$OPSX_BIN sessions restore"
+  else
+    RESTORE_SAVE_CMD="bash $SESSIONS_SH save"
+    RESTORE_RESTORE_CMD="bash $SESSIONS_SH restore"
+  fi
+  TMUX_CONF=$(tmux_conf_path)
+  install_restore_tmux_block "$TMUX_CONF" "$RESTORE_SAVE_CMD" "$RESTORE_RESTORE_CMD" "$RESTORE_AT_BOOT"
+  case "$RESTORE_BLOCK" in
+    installed) ok "session restore block -> $(tilde "$TMUX_CONF") (tmux-resurrect post-save/post-restore hooks)" ;;
+    unchanged) ok "session restore block already in $(tilde "$TMUX_CONF")" ;;
+  esac
+  if [ "$RESTORE_AT_BOOT" -eq 1 ]; then
+    restore_linger_check
+  fi
+  if [ "$RESTORE_BLOCK" = installed ] || [ "$RESTORE_AT_BOOT" -eq 1 ]; then
+    note "load it into the running server:  tmux source $(tilde "$TMUX_CONF")"
+  fi
+  note "check what would come back:  opsx sessions list"
+fi
+info ""
+
 # ---------- verify ----------
 step "Verifying"
 FAIL=0
@@ -2544,7 +2797,7 @@ if [ -n "$EXPOSE_DOMAIN" ]; then
     warn "missing: $EXPOSE_CADDY_JSON"; FAIL=1
   fi
 fi
-for sh in opsx-window.sh opsx-merge.sh opsx-land.sh opsx-eval.sh opsx-preview.sh; do
+for sh in opsx-window.sh opsx-merge.sh opsx-land.sh opsx-eval.sh opsx-preview.sh opsx-sessions.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
   [ -x "$AGENTS_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Codex ~/.agents)"; FAIL=1; }
@@ -2565,6 +2818,18 @@ if [ "$SKIP_MCP" -eq 0 ]; then
       warn "browser-use MCP missing in $f"
     fi
   done
+fi
+if [ "$SKIP_RESTORE" -eq 0 ]; then
+  if grep -q 'opsx-sessions.sh' "$PREFIX/settings.json" 2>/dev/null; then
+    ok "session restore SessionStart hook in $(tilde "$PREFIX/settings.json")"
+  else
+    warn "session restore SessionStart hook missing in $PREFIX/settings.json"; FAIL=1
+  fi
+  if [ -f "$TMUX_CONF" ] && grep -qxF "$RESTORE_BLOCK_START" "$TMUX_CONF" 2>/dev/null; then
+    ok "session restore block in $(tilde "$TMUX_CONF")"
+  else
+    note "no session restore block in $(tilde "$TMUX_CONF") — add the lines printed above for automatic restores"
+  fi
 fi
 [ "$FAIL" -eq 0 ] || die "installation finished with problems — see above."
 info ""
