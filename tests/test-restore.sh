@@ -61,6 +61,9 @@ chmod +x "$FB"/* "$SP/pr.sh"
 export PATH="$FB:$PATH" HOME=$SP/home SHELL=/bin/bash OPSX_SESSIONS_DIR=$SP/state OPSX_PR_SH=$SP/pr.sh
 unset TMUX TMUX_PANE XDG_STATE_HOME OPSX_AGENT_CLI OPSX_MODEL CLAUDECODE CLAUDE_CODE_ENTRYPOINT
 ST=$SP/state
+# A cd function that refuses `--` (like zoxide's `--cmd cd`): restore must not depend on it.
+printf '%s\n' 'cd(){ echo "broken cd: $*" >&2; return 1; }' > "$SP/home/.bashrc"
+printf '%s\n' '. ~/.bashrc' > "$SP/home/.bash_profile"
 
 start_server(){
   $L -f /dev/null new-session -d -s keep -x 200 -y 50 'exec sleep 3000'
@@ -117,6 +120,21 @@ run_in_pane work:2 "STUB_HOOK_JSON=$SP/json/b STUB_HOOK_OUT=$SP/h2 STUB_EXIT=1 c
 wait_for 10 '[ -f "$SP/h2.rc" ]'
 out=$(bash "$S" list --live)
 ok "hook: clear replaces the id (one record, new id)" '[ "$(printf "%s\n" "$out" | grep -c "^work:2.0")" -eq 1 ] && printf "%s" "$out" | grep -q "$U2" && ! printf "%s" "$out" | grep -q "$U1"'
+
+# ---- no permission_mode in the JSON (real Claude Code): taken from claude's command line
+U8=$(uuid 8); printf '{"session_id":"%s","cwd":"/r","hook_event_name":"SessionStart","source":"startup"}\n' "$U8" > "$SP/json/m"
+$L new-window -d -t work:12 -n w12 -c "$SP/r"
+shell_ready work:12
+run_in_pane work:12 "STUB_HOOK_JSON=$SP/json/m STUB_HOOK_OUT=$SP/h8 STUB_EXIT=1 claude --model x --permission-mode bypassPermissions"
+wait_for 10 '[ -f "$SP/h8.rc" ]'
+out=$(bash "$S" list --live)
+ok "hook: mode taken from --permission-mode when the JSON has none" '[ "$(cat "$SP/h8.rc")" = 0 ] && printf "%s\n" "$out" | grep -F "work:12.0" | grep -F "$U8" | grep -q "bypassPermissions$"'
+U9=$(uuid 9); printf '{"session_id":"%s","cwd":"/r","source":"resume"}\n' "$U9" > "$SP/json/n"
+run_in_pane work:12 "STUB_HOOK_JSON=$SP/json/n STUB_HOOK_OUT=$SP/h9 STUB_EXIT=1 claude --permission-mode=acceptEdits"
+wait_for 10 '[ -f "$SP/h9.rc" ]'
+out=$(bash "$S" list --live)
+ok "hook: --permission-mode=<m> form read too" 'printf "%s\n" "$out" | grep -F "work:12.0" | grep -F "$U9" | grep -q "acceptEdits$"'
+$L kill-window -t work:12
 
 # ---- stripped TMUX_PANE: the pane is found through process ancestry
 U3=$(uuid 3); json "$SP/json/c" "$U3" /r3 default startup
@@ -223,6 +241,7 @@ for u in "$UA" "$UC" "$UD" "$UE" "$UF"; do wait_for 10 'grep -qx -- "$u" "$SP/lo
 sleep 0.3
 ok "restore: exit 0" '[ $rc -eq 0 ]'
 ok "restore: pane resumed in its cwd with --resume <id> --permission-mode bypassPermissions" '[ "$(cwd_of "$UA")" = "$SP/r" ] && [ "$(args_of "$UA" | tr "\n" " ")" = "--resume $UA --permission-mode bypassPermissions " ]'
+ok "restore: a shell function named cd does not stop the resume" 'grep -qs "broken cd" "$SP/home/.bashrc" && [ -n "$(cwd_of "$UA")" ]'
 ok "restore: two split panes each resume their own id" '[ "$(pane_called "$UC")" = "$($L display -p -t work:6.0 "#{pane_id}")" ] && [ "$(pane_called "$UD")" = "$($L display -p -t work:6.1 "#{pane_id}")" ] && [ "$(cwd_of "$UD")" = "$SP/r2" ]'
 ok "restore: missing session created, default mode passes no --permission-mode" '$L list-sessions -F "#{session_name}" | grep -qx hand && [ "$($L display -p -t "=hand:0" "#{window_name}")" = mine ] && [ "$(args_of "$UE" | tr "\n" " ")" = "--resume $UE " ] && [ "$(cwd_of "$UE")" = "$SP/r3" ]'
 ok "restore: missing window created with recorded name and cwd" '[ "$($L display -p -t "=work:3" "#{window_name}")" = "ox ·fix-y" ] && [ "$(cwd_of "$UF")" = "$SP/r4" ] && args_of "$UF" | grep -qx -- --resume'

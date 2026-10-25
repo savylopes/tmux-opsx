@@ -15,7 +15,7 @@
 ## 3. Replay (restore)
 
 - [x] 3.1 Add `opsx-window.sh type <pane-target> --text-file <f>` (literal send + Enter, refuses a missing target) and document it in the usage header; verify `bash tests/test-fork.sh` and `tests/test-agent-models.sh` still pass
-- [x] 3.2 Implement `restore`: ordered by session/window/pane, validate names/ids, create missing session/window with recorded name and cwd, type `cd -- <cwd> && claude --resume <id> [--permission-mode m] [--model @opsx_model]` into shell panes via `opsx-window.sh type`, skip and report busy panes and missing panes, re-apply `@opsx_*` options, mark entries restored
+- [x] 3.2 Implement `restore`: ordered by session/window/pane, validate names/ids, create missing session/window with recorded name and cwd, type `builtin cd -- <cwd> && claude --resume <id> [--permission-mode m] [--model @opsx_model]` into shell panes via `opsx-window.sh type`, skip and report busy panes and missing panes, re-apply `@opsx_*` options, mark entries restored
 - [x] 3.3 Add test cases: pane resumed (stub argv/cwd), missing window created, busy pane left alone, run twice sends nothing, tags put back; verify `bash tests/test-restore.sh` passes
 
 ## 4. Continue unfinished work
@@ -38,4 +38,4 @@
 
 ## 7. Integration check
 
-- [ ] 7.1 On a private tmux server with resurrect-style restore simulated (kill server, recreate sessions/windows as shells, run `opsx sessions restore`), confirm two split Claude panes in one window and a hand-started session each resume their own id, that `opsx-window.sh` finds a restored change window by `@opsx_change` instead of opening a duplicate, and, with the real `claude`, that a busy `--validate` window resumed with `/goal <goal> <message>` has its goal active and continues
+- [x] 7.1 On a private tmux server with resurrect-style restore simulated (kill server, recreate sessions/windows as shells, run `opsx sessions restore`), confirm two split Claude panes in one window and a hand-started session each resume their own id, that `opsx-window.sh` finds a restored change window by `@opsx_change` instead of opening a duplicate, and, with the real `claude`, that a busy `--validate` window resumed with `/goal <goal> <message>` has its goal active and continues

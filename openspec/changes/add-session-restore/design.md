@@ -10,7 +10,7 @@ See proposal.md "Why". Current state that shapes the approach:
 - One window can hold two Claude panes (`FZTD-72:0` appears twice in the save). So records are per pane, not per window.
 - tmux user options (`@opsx_change`, `@opsx_agent_cli`, `@opsx_model`, `@opsx_model_<agent>`, `@opsx_status`, `@opsx_task`, `@opsx_task_repo`, `@opsx_pr_repo`, `@opsx_explain`, `@opsx_preview*`) are not saved by resurrect. `opsx-window.sh` and `pr.sh` find windows only by these tags.
 - `opsx-window.sh` `tag_window` sets the tags *after* `new-window` starts the agent, so the `SessionStart` hook can fire before the tags exist.
-- Claude Code passes `session_id`, `cwd`, `permission_mode`, `hook_event_name` and `source` (`startup|resume|clear|compact`) on stdin to `SessionStart` hooks. `claude --resume <id>` keeps the same id (unless `--fork-session`) and looks the transcript up under the cwd's project folder.
+- Claude Code passes `session_id`, `cwd`, `hook_event_name` and `source` (`startup|resume|clear|compact`) on stdin to `SessionStart` hooks, and `permission_mode` only in some versions (2.1.310 leaves it out on startup and resume). When it is missing, the hook takes the mode from the claude process's command line (`--permission-mode <m>`, `--permission-mode=<m>`, or `bypassPermissions` for `--dangerously-skip-permissions`). `claude --resume <id>` keeps the same id (unless `--fork-session`) and looks the transcript up under the cwd's project folder.
 - `fork.sh`/`explain.sh` already recover a stripped `TMUX`/`TMUX_PANE` from `/proc/<pid>/environ` of ancestors (`recover_env_var`).
 
 ## Goals / Non-Goals
@@ -53,7 +53,7 @@ Order: `$TMUX_PANE`, then `recover_env_var TMUX_PANE` (copied verbatim from fork
 
 ### 4. Restore types into the pane; it does not respawn it
 
-`restore` sends `cd -- <cwd> && claude --resume <id> [--permission-mode <m>] [--model <m>]` as literal text plus Enter, through a new `opsx-window.sh type <pane-target> --text-file <f>`. That keeps the project rule that only opsx-window.sh calls `send-keys`. Typing, rather than `respawn-pane -k`, keeps the restored shell and its scrollback, and leaves a normal shell behind when the user later exits Claude, the same as a window the user opened by hand.
+`restore` sends `builtin cd -- <cwd> && claude --resume <id> [--permission-mode <m>] [--model <m>]` as literal text plus Enter, through a new `opsx-window.sh type <pane-target> --text-file <f>`. That keeps the project rule that only opsx-window.sh calls `send-keys`. Typing, rather than `respawn-pane -k`, keeps the restored shell and its scrollback, and leaves a normal shell behind when the user later exits Claude, the same as a window the user opened by hand. `builtin` keeps a shell function or alias named `cd` (zoxide's `--cmd cd`, for one) from breaking the line.
 
 - Shell test: `pane_current_command` is in `bash|zsh|sh|fish|dash|ksh`. Anything else is reported as skipped. Tags are still applied, because a busy pane in the right window still needs its window found by tag.
 - `--permission-mode` is passed only when it is not `default`, so harness windows come back as `bypassPermissions` and hand-started sessions keep what they had.

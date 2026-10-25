@@ -23,7 +23,9 @@
 #          pane order: finds session:window.pane (creating a missing session or
 #          window with the recorded name and cwd; a missing pane is skipped),
 #          and when that pane sits at a shell types
-#            cd -- <cwd> && claude --resume <id> [--permission-mode <m>] [--model <m>] [<prompt>]
+#            builtin cd -- <cwd> && claude --resume <id> [--permission-mode <m>] [--model <m>] [<prompt>]
+#          (`builtin`, so a shell function or alias named cd, such as
+#          zoxide's `--cmd cd`, cannot break it).
 #          through `opsx-window.sh type`. --permission-mode is left out for
 #          `default`, --model comes from the window's @opsx_model. A pane that
 #          runs anything else is skipped and stays pending. The window's
@@ -200,11 +202,14 @@ for k in ("session_id", "cwd", "permission_mode", "source"):
 }
 
 # Walk ancestors of the hook: sets HOOK_PANE (pane whose pane_pid is an
-# ancestor; only looked up when $1 is 1) and HOOK_PRINT=1 when the nearest
-# claude ancestor runs in print mode.
+# ancestor; only looked up when $1 is 1), HOOK_PRINT=1 when the nearest
+# claude ancestor runs in print mode, and HOOK_MODE to the permission mode on
+# that ancestor's command line (--permission-mode <m>|=<m>, or
+# bypassPermissions for --dangerously-skip-permissions). Claude Code does not
+# always pass permission_mode to SessionStart hooks; this is the fallback.
 walk_ancestors() {
-  local want_pane=$1 pid=$$ i=0 panes="" args a base found_claude=0 j
-  HOOK_PANE="" HOOK_PRINT=0
+  local want_pane=$1 pid=$$ i=0 panes="" args a base found_claude=0 j next
+  HOOK_PANE="" HOOK_PRINT=0 HOOK_MODE=""
   [ "$want_pane" -eq 1 ] && panes=$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)
   while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$i" -lt 40 ]; do
     if [ "$found_claude" -eq 0 ]; then
@@ -214,9 +219,14 @@ walk_ancestors() {
         base=${a##*/}
         if [ "$base" = claude ] || [[ "$a" == *claude-code/cli.js ]]; then
           found_claude=1
+          next=""
           for a in "${args[@]:$((j + 1))}"; do
+            if [ "$next" = mode ]; then HOOK_MODE=$a; next=""; continue; fi
             case "$a" in
               -p|--print|--print=*) HOOK_PRINT=1 ;;
+              --permission-mode) next=mode ;;
+              --permission-mode=*) HOOK_MODE=${a#--permission-mode=} ;;
+              --dangerously-skip-permissions) [ -n "$HOOK_MODE" ] || HOOK_MODE=bypassPermissions ;;
             esac
           done
           break
@@ -262,6 +272,7 @@ hook_main() {
     pane=$HOOK_PANE
   fi
   [ "$HOOK_PRINT" -eq 1 ] && return 0
+  if [ -z "$mode" ] && [[ $HOOK_MODE =~ ^[A-Za-z]{1,40}$ ]]; then mode=$HOOK_MODE; fi
   [[ $pane =~ ^%[0-9]+$ ]] || return 0
   v=$(tmux display-message -p -t "$pane" '#{pane_id}	#{session_name}	#{window_index}	#{pane_index}	#{window_name}' 2>/dev/null) || return 0
   [ "${v%%$'\t'*}" = "$pane" ] || return 0
@@ -586,7 +597,9 @@ restore_one() {
     fi
   fi
   [ -z "$prompt" ] || cli+=" $(squote "$prompt")"
-  typed="cd -- $(squote "$cwd") && $cli"
+  # builtin: zoxide (--cmd cd) and similar replace cd with a function that
+  # does not take `--` and a path the same way.
+  typed="builtin cd -- $(squote "$cwd") && $cli"
 
   tf=$(mktemp "$STATE_DIR/.type.XXXXXX") || { say "failed $label: cannot create a temp file"; return 1; }
   printf '%s\n' "$typed" > "$tf"
