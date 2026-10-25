@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Failure absorbed by seen is still reported
+# level: L1
+# requirement: Detect a failing CI on the current head
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+ck() { printf "%s\n" "$1" > "$GHD/checks/42.json"; }
+B() { printf "[{\"bucket\":\"%s\",\"link\":\"%s\"}" "$1" "$2"; }
+wt() { out=$("$PRSH" wait 42 --slice "${1:-3}" --poll 1 --repo "$R" 2>&1); rc=$?; echo "$out"; echo "exit $rc"; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+PASS='[{"bucket":"pass","link":""}]'
+FAILC='[{"bucket":"fail","link":"https://github.com/o/app/actions/runs/77/job/1"}]'
+
+
+mk_env
+ck "$PASS"; seen
+ck "$FAILC"; seen
+wt
+[ $rc -eq 0 ] || fail "expected exit 0, got $rc"
+echo "$out" | grep -qx "event=ci-failed" || fail "no event=ci-failed"
+echo OK

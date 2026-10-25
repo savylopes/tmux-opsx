@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt carries the CI triage
+# level: L2
+# requirement: Triage a CI failure before fixing it
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+ck() { printf "%s\n" "$1" > "$GHD/checks/42.json"; }
+B() { printf "[{\"bucket\":\"%s\",\"link\":\"%s\"}" "$1" "$2"; }
+wt() { out=$("$PRSH" wait 42 --slice "${1:-3}" --poll 1 --repo "$R" 2>&1); rc=$?; echo "$out"; echo "exit $rc"; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+PASS='[{"bucket":"pass","link":""}]'
+FAILC='[{"bucket":"fail","link":"https://github.com/o/app/actions/runs/77/job/1"}]'
+
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+p=$SP/prompt.copy; [ -s "$p" ] || fail "no prompt file"
+step=$(grep -n "ci-failed" "$p" | head -1 | cut -d: -f1); [ -n "$step" ] || fail "no ci-failed step"
+body=$(sed -n "${step},$((step+14))p" "$p"); echo "$body"
+echo "$body" | grep -q "rerun 42" || fail "ci-failed step does not name rerun 42"
+echo "$body" | grep -qiE "not (clearly )?caused by|unrelated" || fail "no condition for re-running"
+echo "$body" | grep -qiE "same head" || fail "no repeated-failure rule"
+echo "$body" | grep -qiE "fix|ask" || fail "no fix/ask rule"
+echo OK
