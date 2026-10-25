@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt allows one CI re-run
+# level: L2
+# requirement: Autonomous actions
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+ck() { printf "%s\n" "$1" > "$GHD/checks/42.json"; }
+B() { printf "[{\"bucket\":\"%s\",\"link\":\"%s\"}" "$1" "$2"; }
+wt() { out=$("$PRSH" wait 42 --slice "${1:-3}" --poll 1 --repo "$R" 2>&1); rc=$?; echo "$out"; echo "exit $rc"; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+PASS='[{"bucket":"pass","link":""}]'
+FAILC='[{"bucket":"fail","link":"https://github.com/o/app/actions/runs/77/job/1"}]'
+
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+p=$SP/prompt.copy; [ -s "$p" ] || fail "no prompt file"
+l=$(grep -n -i "on your own" "$p" | head -1 | cut -d: -f1); [ -n "$l" ] || fail "no on-your-own list"
+sed -n "${l},\$p" "$p" | grep -iE "re-?run" | grep -q "rerun 42" || fail "allowed list lacks rerun 42"
+sed -n "${l},\$p" "$p" | grep -qiE "once per head" || fail "no once-per-head"
+echo OK

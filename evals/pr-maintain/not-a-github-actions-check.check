@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Not a GitHub Actions check
+# level: L1
+# requirement: Re-run a failed CI once per head
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+ck() { printf "%s\n" "$1" > "$GHD/checks/42.json"; }
+B() { printf "[{\"bucket\":\"%s\",\"link\":\"%s\"}" "$1" "$2"; }
+wt() { out=$("$PRSH" wait 42 --slice "${1:-3}" --poll 1 --repo "$R" 2>&1); rc=$?; echo "$out"; echo "exit $rc"; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+PASS='[{"bucket":"pass","link":""}]'
+FAILC='[{"bucket":"fail","link":"https://github.com/o/app/actions/runs/77/job/1"}]'
+
+
+mk_env
+ck "$PASS"; seen
+ck "[{\"bucket\":\"fail\",\"link\":\"https://ci.example.com/build/9\"}]"
+"$PRSH" rerun 42 --repo "$R"; rc=$?
+[ $rc -eq 7 ] || fail "expected exit 7, got $rc"
+grep -q "^run rerun" "$GHD/gh.log" && fail "gh run rerun was called"
+echo OK
