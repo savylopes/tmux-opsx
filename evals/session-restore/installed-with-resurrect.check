@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Installed with resurrect
+# level: L2
+# requirement: Wire the restore into tmux-resurrect
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+mk_conf
+out=$(run_install); rc=$?; echo "$out" | tail -10; [ $rc -eq 0 ] || fail "install exit $rc"
+cat "$TMUXCONF"
+b=$(grep -n ">>> $MARK" "$TMUXCONF" | cut -d: -f1); r=$(grep -n "^run " "$TMUXCONF" | tail -1 | cut -d: -f1)
+[ -n "$b" ] || fail "no marked block"
+[ "$b" -lt "$r" ] || fail "block (line $b) is not above the run line ($r)"
+blk=$(sed -n "/>>> $MARK/,/<<< $MARK/p" "$TMUXCONF")
+echo "$blk" | grep -E '@resurrect-hook-post-save-all' | grep -q 'sessions save' || fail "save hook missing"
+echo "$blk" | grep -E '@resurrect-hook-post-restore-all' | grep -q 'sessions restore' || fail "restore hook missing"
+echo OK

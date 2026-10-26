@@ -452,10 +452,28 @@ out=$(P start 42 --agent-cli claude 2>&1); rc=$?
 ok "restart after stop keeps the state file" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "state kept" && [ -n "$(winof pr-42)" ]'
 P stop 42 >/dev/null
 
+# ---------------------------------------------------------------- restart-input (session restore 4.2)
+# No tmux at all: a failing tmux stub first on PATH records any call.
+mkdir -p "$SP/notmux"
+printf '#!/bin/sh\necho "$*" >> "%s/notmux/calls"\nexit 1\n' "$SP" > "$SP/notmux/tmux"; chmod +x "$SP/notmux/tmux"
+LCID=$(sed -n 's/^last_comment_id=//p' "$ST42")
+out=$(env -u TMUX -u TMUX_PANE PATH="$SP/notmux:$PATH" "$PRSH" restart-input 42 --repo "$R" 2>"$SP/ri.err"); rc=$?
+ok "restart-input: open PR prints one /goal line naming PR 42" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | wc -l)" -eq 1 ] && [ "${out#/goal }" != "$out" ] && printf "%s" "$out" | grep -q "o/app#42" && printf "%s" "$out" | grep -q "Dispatcher steps: read $PROMPT first"'
+ok "restart-input: within the 4000-character /goal cap" '[ $(( ${#out} - 6 )) -le 4000 ]'
+ok "restart-input: state file kept (same last_comment_id)" '[ -n "$LCID" ] && [ "$(sed -n "s/^last_comment_id=//p" "$ST42")" = "$LCID" ]'
+ok "restart-input: prompt and goal files rewritten" '[ -s "$PROMPT" ] && [ -s "$GOAL" ]'
+ok "restart-input: no tmux call, no window" '[ ! -e "$SP/notmux/calls" ] && [ -z "$(winof pr-42)" ]'
+out=$(env -u TMUX -u TMUX_PANE PATH="$SP/notmux:$PATH" "$PRSH" restart-input 41 --repo "$R" 2>"$SP/ri.err"); rc=$?
+ok "restart-input: merged PR refused, names MERGED, prints no input" '[ $rc -ne 0 ] && grep -q MERGED "$SP/ri.err" && [ -z "$out" ]'
+out=$(P restart-input 45 2>&1); rc=$?
+ok "restart-input: fork PR refused" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q fork'
+out=$(P restart-input 42 --agent-cli codex 2>/dev/null); rc=$?
+ok "restart-input: other CLIs get the prompt on one line" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | wc -l)" -eq 1 ] && [ "${out#/goal}" = "$out" ] && printf "%s" "$out" | grep -q "maintain loop"'
+
 # ---------------------------------------------------------------- skill (4.1)
 SK=$REPO/skills/opsx-pr/SKILL.md
 ok "SKILL.md frontmatter has name and description" 'awk "/^---\$/{n++; next} n==1" "$SK" | grep -qx "name: opsx-pr" && awk "/^---\$/{n++; next} n==1" "$SK" | grep -q "^description: ."'
-ok "every pr.sh subcommand named in SKILL.md exists" 'for c in $(grep -oE "pr\.sh [a-z]+" "$SK" | awk "{print \$2}" | sort -u); do "$PRSH" --help | grep -qE "pr\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done'
+ok "every pr.sh subcommand named in SKILL.md exists" 'for c in $(grep -oE "pr\.sh [a-z][a-z-]*" "$SK" | awk "{print \$2}" | sort -u); do "$PRSH" --help | grep -qE "pr\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done'
 
 # ---------------------------------------------------------------- install (4.2)
 unset TMUX TMUX_PANE
@@ -484,7 +502,7 @@ ok "install --help lists --skip-pr" 'bash "$REPO/install.sh" --help | grep -q --
 # ---------------------------------------------------------------- docs (4.3)
 RD=$REPO/README.md
 ok "README documents /opsx-pr" 'grep -q "/opsx-pr" "$RD" && grep -q "opsx-pr/" "$RD"'
-ok "README pr.sh commands exist in pr.sh usage" 'for c in $(grep -oE "pr\.sh [a-z]+" "$RD" | awk "{print \$2}" | sort -u); do "$PRSH" --help | grep -qE "pr\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done'
+ok "README pr.sh commands exist in pr.sh usage" 'for c in $(grep -oE "pr\.sh [a-z][a-z-]*" "$RD" | awk "{print \$2}" | sort -u); do "$PRSH" --help | grep -qE "pr\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done'
 ok "config.yaml states the /opsx-pr push exception" 'grep -q "/opsx-pr" "$REPO/openspec/config.yaml"'
 
 # ---------------------------------------------------------------- safety

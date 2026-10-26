@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Busy change window continued
+# level: L2
+# requirement: Continue an unfinished change window
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change add-auth; wopt work:2 @opsx_status busy
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 w2 "$R2"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+stub_args $UUID1; show_args
+[ "${ARGS[0]}" = --resume ] && [ "${ARGS[1]}" = $UUID1 ] || fail "not --resume <id> first"
+last="${ARGS[$((${#ARGS[@]}-1))]}"
+[ "${#ARGS[@]}" -ge 3 ] && [ "$last" != "$UUID1" ] && [ "$last" != bypassPermissions ] || fail "no prompt argument"
+echo "$last" | grep -qi 'restart' || fail "prompt does not name the restart"
+echo "$last" | grep -qi 'continue' || fail "prompt does not say to continue"
+i=0; while [ "$(wopt work:2 @opsx_status)" != busy ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+[ "$(wopt work:2 @opsx_status)" = busy ] || fail "status is '$(wopt work:2 @opsx_status)'"
+echo OK

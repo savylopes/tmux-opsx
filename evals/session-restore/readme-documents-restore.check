@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: session-restore / README documents restore
+# level: L1
+# requirement: Documentation
+set -u
+f="$EVAL_ROOT/README.md"
+for t in 'opsx sessions restore' '@resurrect-hook-post-restore-all' '--restore-at-boot' 'enable-linger'; do
+  grep -qF -- "$t" "$f" || { echo "FAIL: README lacks $t"; exit 1; }
+done
+grep -Eqi 'not restored|are not (restored|resumed)|only claude code|claude code only|no other cli' "$f" \
+  || { echo "FAIL: README does not say other CLIs are not restored"; exit 1; }
+grep -qi -- '--no-nudge' "$f" || { echo "FAIL: README lacks --no-nudge"; exit 1; }
+echo OK

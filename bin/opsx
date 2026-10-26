@@ -7,6 +7,9 @@
 #   dev      run a command in the checkout's dev container from
 #            .opsx/dev.yaml: opsx dev <cmd> | --shell | --status | --rm [--all]
 #            (see: opsx dev help)
+#   sessions bring Claude Code conversations back after a tmux restart:
+#            opsx sessions list [--live] | save | restore [--no-nudge]
+#            (hook: run by Claude Code's SessionStart hook; see README)
 #   notify   phone push notifications (ntfy): opsx notify test | info [--show-password]
 #            (see: opsx notify --help)
 #   help     show this help
@@ -79,6 +82,7 @@ cmd=$1; shift
 case "$cmd" in
   init)           run_skill_script opsx-init/opsx-init.sh "$@" ;;
   dev)            run_skill_script opsx-run/opsx-dev.sh "$@" ;;
+  sessions)       run_skill_script opsx-run/opsx-sessions.sh "$@" ;;
   notify)         notify_cmd "$@" ;;
   help|-h|--help) usage ;;
   *) printf 'opsx: unknown command %s\n\n' "'$cmd'" >&2; usage >&2; exit 2 ;;

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Skipped
+# level: L2
+# requirement: Skip and uninstall
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+mk_conf
+out=$(run_install --skip-restore); rc=$?; echo "$out" | tail -10; [ $rc -eq 0 ] || fail "install exit $rc"
+! grep -qs 'opsx-sessions.sh' "$SETTINGS" || fail "settings.json names opsx-sessions.sh"
+! grep -q "$MARK" "$TMUXCONF" || fail "marked block present"
+echo OK

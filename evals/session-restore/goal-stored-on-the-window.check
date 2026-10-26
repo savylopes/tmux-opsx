@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Goal stored on the window
+# level: L2
+# requirement: Remember a window's goal
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+printf '#!/usr/bin/env bash\nexec sleep 600\n' > "$FAKEBIN/agent"; chmod +x "$FAKEBIN/agent"
+printf 'task\n' > "$EVAL_TMP/p.md"; printf 'all gates PASS\n' > "$EVAL_TMP/g.txt"
+out=$("$WINSH" ensure add-auth --prompt-file "$EVAL_TMP/p.md" --goal-file "$EVAL_TMP/g.txt" --cwd "$R1" --agent-cli "$FAKEBIN/agent" 2>&1); rc=$?
+echo "$out"; [ $rc -eq 0 ] || fail "ensure exit $rc"
+g=$(T list-windows -a -F '#{@opsx_change}|#{@opsx_goal}' | grep '^add-auth|') || fail "no add-auth window"
+[ "$g" = 'add-auth|all gates PASS' ] || fail "goal option is: $g"
+# a later ensure without --goal-file leaves it
+out=$("$WINSH" ensure add-auth --prompt-file "$EVAL_TMP/p.md" --cwd "$R1" --agent-cli "$FAKEBIN/agent" 2>&1); echo "$out"
+g=$(T list-windows -a -F '#{@opsx_change}|#{@opsx_goal}' | grep '^add-auth|' | head -1)
+[ "$g" = 'add-auth|all gates PASS' ] || fail "goal option changed by a later ensure: $g"
+echo OK

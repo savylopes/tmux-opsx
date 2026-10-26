@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Linger already on
+# level: L2
+# requirement: Restore at system start
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+mk_conf "set -g @plugin 'tmux-plugins/tmux-continuum'"
+mk_loginctl yes
+out=$(run_install --restore-at-boot); rc=$?; echo "$out" | tail -20; [ $rc -eq 0 ] || fail "install exit $rc"
+echo "$out" | grep -q 'enable-linger' && fail "output mentions enable-linger"
+echo OK

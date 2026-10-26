@@ -10,12 +10,15 @@ context: |
   Product surface (what a change actually ships):
   - install.sh: installs/uninstalls everything, with --skip-* flags and .bak backups
   - skills/*/: SKILL.md plus helper scripts (e.g. skills/opsx-run/opsx-window.sh, opsx-merge.sh, opsx-land.sh, opsx-eval.sh,
-    opsx-notify.sh: the only push sender, ntfy via ~/.config/tmux-opsx/notify.env, never fails its caller)
+    opsx-sessions.sh, opsx-notify.sh = the only push sender, ntfy via ~/.config/tmux-opsx/notify.env, never fails its
+    caller); bin/opsx dispatches `opsx init|dev|sessions|notify`
   - push notifications: install.sh --expose-domain also runs a self-hosted ntfy (tmux-opsx-ntfy unit, static Caddy route
     opsx-ntfy), and merges Claude Code Stop/Notification/PreToolUse hooks into ~/.claude/settings.json (--skip-notify)
   - agents/*.md: subagent definitions (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa),
     converted by install.sh for each CLI
-  - tmux behaviour: one window per change, `ox` window prefix, @opsx_change tags, status colours
+  - tmux behaviour: one window per change, `ox` window prefix, @opsx_change tags, status colours;
+    session restore (Claude SessionStart hook + marked ~/.tmux.conf block for tmux-resurrect) resumes
+    Claude panes and puts the @opsx_* tags back after a tmux restart
   - README.md: the user-facing documentation; keep its component overview current
 
   Supported CLIs: Claude Code (claude), Cursor CLI (agent), Codex CLI (codex), OpenCode (opencode),

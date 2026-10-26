@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Merged PR only resumed
+# level: L2
+# requirement: Continue an open PR window
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+pr_stub merged
+server a work "$R1"
+claude_win work:2 pr-16 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change pr-16; wopt work:2 @opsx_pr_repo o/app; wopt work:2 @opsx_status idle
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 pr-16 "$R2"
+sess_run restore
+stub_args $UUID1; show_args; bare_args
+[ "${#BARE[@]}" -eq 2 ] && [ "${BARE[0]}" = --resume ] || fail "prompt argument given for a merged PR"
+echo "$OUT" | grep -q 'pr-16' || fail "output does not name pr-16"
+echo "$OUT" | grep -q 'MERGED' || fail "output does not name MERGED"
+echo OK

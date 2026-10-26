@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Change window found after restore
+# level: L2
+# requirement: Put back harness window tags
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change add-auth; wopt work:2 @opsx_agent_cli claude
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 w2 "$R2"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+out=$(T show-options -w -t work:2)
+echo "$out"
+echo "$out" | grep -q '^@opsx_change add-auth$' || fail "@opsx_change not restored"
+echo "$out" | grep -q '^@opsx_agent_cli claude$' || fail "@opsx_agent_cli not restored"
+echo OK

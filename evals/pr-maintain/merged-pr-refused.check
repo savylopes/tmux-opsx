@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Merged PR refused
+# level: L1
+# requirement: Restart input after a restore
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+mk_env
+export TMUX_TMPDIR="$EVAL_TMP/notmux"; mkdir -p "$TMUX_TMPDIR"; unset TMUX TMUX_PANE
+out=$("$PRSH" restart-input 41 --repo "$R" 2>"$EVAL_TMP/err"); rc=$?
+err=$(cat "$EVAL_TMP/err"); echo "stdout: [$out]"; echo "stderr: [$err]"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "expected non-zero exit"
+echo "$out$err" | grep -q MERGED || fail "message does not name MERGED"
+[ -z "$out" ] || fail "stdout is not empty: it prints an input"
+echo OK

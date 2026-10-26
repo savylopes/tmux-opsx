@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Not requested
+# level: L2
+# requirement: Restore at system start
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+mk_conf "set -g @plugin 'tmux-plugins/tmux-continuum'"
+out=$(run_install); rc=$?; [ $rc -eq 0 ] || fail "install exit $rc"
+grep -q "$MARK" "$TMUXCONF" || fail "no block written (precondition)"
+! grep -q '@continuum-boot' "$TMUXCONF" || fail "@continuum-boot written without the flag"
+echo OK

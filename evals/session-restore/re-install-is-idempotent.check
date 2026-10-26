@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Re-install is idempotent
+# level: L2
+# requirement: Install the hook and the tmux wiring
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+mk_conf
+run_install >/dev/null; rc1=$?; out=$(run_install); rc=$?; echo "$out" | tail -10
+[ $rc1 -eq 0 ] && [ $rc -eq 0 ] || fail "install exit $rc1/$rc"
+[ "$(count_hooks)" = 1 ] || fail "hook count $(count_hooks)"
+n=$(grep -c ">>> $MARK" "$TMUXCONF"); [ "$n" = 1 ] || fail "marked blocks: $n"
+echo OK

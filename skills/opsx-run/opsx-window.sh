@@ -7,7 +7,7 @@
 # follow-up instruction.
 #
 # Usage:
-#   opsx-window.sh ensure <change> --prompt-file <f> [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
+#   opsx-window.sh ensure <change> --prompt-file <f> [--goal-file <f>] [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
 #   opsx-window.sh send   <change> --prompt-file <f> [--<agent>-model <m>]...   # send, or create the window if missing
 #   opsx-window.sh models [<change>] [--agent-cli <cli>] [--<agent>-model <m>]...
 #   opsx-window.sh close  <change> [--force] [--keep-session]
@@ -22,6 +22,11 @@
 #   opsx-window.sh preview-start <change> --cwd <dir> --script <file>
 #   opsx-window.sh preview-find  <change>
 #   opsx-window.sh preview-kill  <change>|--all
+#   opsx-window.sh type   <pane-target> --text-file <f>   # type one line + Enter into a pane
+#
+# type (used by opsx-sessions.sh restore): sends the file's text literally
+# (newlines folded to spaces) followed by Enter into an existing pane, e.g. a
+# restored shell. It refuses a target that does not resolve to a pane.
 #
 # Preview windows (used by opsx-preview.sh, never by hand): preview-start opens
 # a window titled `ox ><change>` that runs `bash <file>` (no keys are
@@ -1174,6 +1179,18 @@ goal_prompt_file() {
   printf '%s' "$out"
 }
 
+# Remember the goal condition on the window (@opsx_goal, newlines folded to
+# spaces), so opsx-sessions.sh restore can re-arm it after a tmux restart.
+store_goal() {
+  local win=$1 goal_file=$2 cond
+  [ -n "$goal_file" ] || return 0
+  cond=$(tr '\n' ' ' <"$goal_file")
+  cond=${cond%"${cond##*[![:space:]]}"}
+  cond=${cond#"${cond%%[![:space:]]*}"}
+  [ -n "$cond" ] || return 0
+  tmux set-option -w -t "$win" @opsx_goal "$cond" >/dev/null 2>&1 || true
+}
+
 cmd_ensure() {
   local change=${1:-} prompt_file="" goal_file="" cwd="$PWD" create_only=0 agent_cli="" model=""
   shift || true
@@ -1224,6 +1241,7 @@ cmd_ensure() {
       win=$(tmux new-session -d -s "$sess" -n "$change" -c "$cwd" -P -F '#{window_id}' \
             "$launch" 2>&1) || die "failed to create session '$sess': $win"
       tag_window "$win" "$change" "$cli" "$model"
+      store_goal "$win" "$goal_file"
       store_agent_models "$win" "$(models_cli_key "$cli")"
       apply_window_status "$win" "$change" busy
       printf 'created %s %s:%s agent=%s model=%s session=created\n' \
@@ -1237,6 +1255,7 @@ cmd_ensure() {
 
   if [ -n "$win" ]; then
     [ "$create_only" -eq 1 ] && die "window '$change' already exists ($win)"
+    store_goal "$win" "$goal_file"
     store_agent_models "$win" "$(models_cli_key "$(window_cli "$win" "$cli")")"
     apply_window_status "$win" "$change" busy
     first_input=$(goal_prompt_file "$(window_cli "$win" "$cli")" "$prompt_file" "$goal_file") || exit 1
@@ -1256,6 +1275,7 @@ cmd_ensure() {
   # relabel the window to the running command ("claude" / "agent") and lose the
   # change name the whole workflow keys off.
   tag_window "$win" "$change" "$cli" "$model"
+  store_goal "$win" "$goal_file"
   store_agent_models "$win" "$(models_cli_key "$cli")"
   apply_window_status "$win" "$change" busy
 
@@ -1761,6 +1781,43 @@ cmd_preview_kill() {
   [ "$failed" -eq 0 ]
 }
 
+# ---------- type (driven by opsx-sessions.sh restore) ----------
+
+cmd_type() {
+  local target=${1:-} text_file="" pane text
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --text-file) text_file=${2:-}; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  if [ -z "$target" ] || [ "${target#-}" != "$target" ]; then
+    die "usage: opsx-window.sh type <pane-target> --text-file <f>"
+  fi
+  [ -n "$text_file" ] || die "--text-file is required"
+  [ -f "$text_file" ] || die "text file not found: $text_file"
+  require_tmux
+  # display-message -t falls back to another pane for a missing target, so
+  # resolve exactly: a pane id, or [=]session:window.pane.
+  local want=${target#=}
+  if [[ $target =~ ^%[0-9]+$ ]]; then
+    pane=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | awk -v p="$target" '$0 == p { print; exit }')
+  elif [[ $want =~ ^(.+):([0-9]+)\.([0-9]+)$ ]]; then
+    pane=$(tmux list-panes -a -F '#{session_name}	#{window_index}	#{pane_index}	#{pane_id}' 2>/dev/null \
+           | awk -F '\t' -v s="${BASH_REMATCH[1]}" -v w="${BASH_REMATCH[2]}" -v i="${BASH_REMATCH[3]}" \
+               '$1 == s && $2 == w && $3 == i { print $4; exit }')
+  else
+    die "pane target must be %<id> or <session>:<window>.<pane>, got '$target'."
+  fi
+  [[ ${pane:-} =~ ^%[0-9]+$ ]] || die "no pane '$target'."
+  text=$(tr '\n\r' '  ' <"$text_file")
+  text=${text%"${text##*[![:space:]]}"}
+  [ -n "$text" ] || die "text file is empty: $text_file"
+  tmux send-keys -t "$pane" -l -- "$text" || die "failed to send text to $pane"
+  tmux send-keys -t "$pane" Enter || die "failed to submit text in $pane"
+  printf 'typed %s\n' "$pane"
+}
 # Sourced (opsx-notify.sh uses recover_tmux_env): define functions only.
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 
@@ -1777,8 +1834,9 @@ case "${1:-}" in
   preview-start) shift; cmd_preview_start "$@" ;;
   preview-find)  shift; cmd_preview_find "$@" ;;
   preview-kill)  shift; cmd_preview_kill "$@" ;;
+  type)          shift; cmd_type "$@" ;;
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|models|list|preview-start|preview-find|preview-kill)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|models|list|preview-start|preview-find|preview-kill|type)" ;;
 esac

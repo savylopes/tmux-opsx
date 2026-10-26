@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: session-restore / User hook kept
+# level: L2
+# requirement: Wire the restore into tmux-resurrect
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+mk_conf "set -g @resurrect-hook-post-restore-all 'echo mine'"
+cp "$TMUXCONF" "$EVAL_TMP/before"
+out=$(run_install); rc=$?; echo "$out"; [ $rc -eq 0 ] || fail "install exit $rc"
+cmp -s "$TMUXCONF" "$EVAL_TMP/before" || { diff "$EVAL_TMP/before" "$TMUXCONF"; fail "~/.tmux.conf changed"; }
+echo "$out" | grep -q '@resurrect-hook-post-restore-all' || fail "output does not show the lines to add"
+echo "$out" | grep -q 'sessions restore' || fail "output lacks the restore command"
+echo OK

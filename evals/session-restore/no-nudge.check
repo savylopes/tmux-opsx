@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: session-restore / No nudge
+# level: L2
+# requirement: Restore without messages
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+pr_stub ok
+server a work "$R1"
+claude_win work:2 w2 "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change add-auth; wopt work:2 @opsx_status busy
+claude_win work:3 pr-16 "$R1" "$(hook_json $UUID2 "$R1" bypassPermissions)"
+wopt work:3 @opsx_change pr-16; wopt work:3 @opsx_pr_repo o/app; wopt work:3 @opsx_status idle
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 w2 "$R2"; bash_win work:3 pr-16 "$R2"
+sess_run restore --no-nudge; [ $RC -eq 0 ] || fail "restore exit $RC"
+for id in $UUID1 $UUID2; do
+  stub_args $id; show_args; bare_args
+  [ "${#BARE[@]}" -eq 2 ] && [ "${BARE[0]}" = --resume ] && [ "${BARE[1]}" = $id ] || fail "$id got a prompt"
+done
+[ ! -e "$FAKE_LOG/pr.log" ] || fail "pr.sh was called: $(cat $FAKE_LOG/pr.log)"
+echo OK

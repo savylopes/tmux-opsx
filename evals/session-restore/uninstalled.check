@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Uninstalled
+# level: L2
+# requirement: Skip and uninstall
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+
+mk_conf "set -g status-interval 5"
+run_install >/dev/null || fail "install failed"
+[ "$(count_hooks)" = 1 ] || fail "hook not installed first"
+python3 - "$SETTINGS" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+d["hooks"]["SessionStart"].append({"matcher":"startup","hooks":[{"type":"command","command":"echo unrelated-hook"}]})
+d["hooks"].setdefault("PreToolUse",[]).append({"matcher":"Bash","hooks":[{"type":"command","command":"echo other-event"}]})
+json.dump(d,open(sys.argv[1],"w"),indent=2)
+PY
+out=$(run_install --uninstall); rc=$?; echo "$out" | tail -10; [ $rc -eq 0 ] || fail "uninstall exit $rc"
+grep -q 'unrelated-hook' "$SETTINGS" || fail "unrelated SessionStart hook removed"
+grep -q 'other-event' "$SETTINGS" || fail "unrelated PreToolUse hook removed"
+! grep -q 'opsx-sessions.sh' "$SETTINGS" || fail "opsx-sessions.sh hook remains"
+! grep -q "$MARK" "$TMUXCONF" || fail "marked block remains"
+grep -q 'status-interval 5' "$TMUXCONF" || fail "unrelated tmux.conf line removed"
+echo OK

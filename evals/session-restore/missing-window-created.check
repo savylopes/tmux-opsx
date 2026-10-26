@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Missing window created
+# level: L2
+# requirement: Resume each conversation in its pane
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+claude_win work:3 'ox ·w3' "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+T list-windows -t work -F '#{window_index}' | grep -qx 3 && fail "window 3 exists before restore"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+T list-windows -t work -F '#{window_index}' | grep -qx 3 || fail "window 3 not created"
+[ "$(T display -p -t work:3 '#{window_name}')" = 'ox ·w3' ] || fail "window name $(T display -p -t work:3 '#{window_name}')"
+wait_cmd work:3.0 claude || fail "stub claude not running in work:3.0"
+stub_args $UUID1; show_args
+[ "${ARGS[0]}" = --resume ] && [ "${ARGS[1]}" = $UUID1 ] || fail "stub not resumed"
+[ "$(cat $FAKE_LOG/$UUID1.cwd)" = "$(cd "$R1" && pwd -P)" ] || fail "stub cwd $(cat $FAKE_LOG/$UUID1.cwd)"
+echo OK

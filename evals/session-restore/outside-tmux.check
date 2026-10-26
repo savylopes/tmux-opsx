@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Outside tmux
+# level: L2
+# requirement: Record only interactive tmux sessions
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+
+server a work "$R1"
+# a hook with no tmux client or pane in its ancestry: detached from every process of ours
+printf '%s' "$(hook_json $UUID1 "$R1" bypassPermissions)" > "$RUNS/o.json"
+env -u TMUX -u TMUX_PANE setsid -f bash -c "bash '$SESSH' hook < '$RUNS/o.json' > '$RUNS/o.out' 2>&1; echo \$? > '$RUNS/o.rc'" </dev/null >/dev/null 2>&1
+wait_file "$RUNS/o.rc" || fail "hook did not finish"
+[ "$(cat $RUNS/o.rc)" = 0 ] || fail "hook exit $(cat $RUNS/o.rc)"
+[ ! -s "$RUNS/o.out" ] || fail "hook printed: $(cat $RUNS/o.out)"
+sess_run list --live
+echo "$OUT" | grep -qF "$UUID1" && fail "a record was written outside tmux"
+[ -z "$(find "$OPSX_SESSIONS_DIR/live" -type f 2>/dev/null)" ] || fail "files under live/"
+echo OK
