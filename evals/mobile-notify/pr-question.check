@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / PR question
+# level: L2
+# requirement: Push when a decision is needed
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env; start_tmux
+command -v gh >/dev/null 2>&1 || true
+# fake gh: only `repo view` is needed by `pr.sh note`
+cat > "$SHIMS/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in "repo view") echo "o/r";; *) exit 1;; esac
+SH
+chmod +x "$SHIMS/gh"
+command -v jq >/dev/null 2>&1 || { echo "jq missing"; exit 77; }
+repo="$EVAL_TMP/r"; git init -q "$repo" || fail "git init"
+sd="$XDG_STATE_HOME/tmux-opsx/pr/o-r-42"; mkdir -p "$sd"; printf 'pr=42\n' > "$sd/state"
+read -r w p < <(new_win pr-42 change)
+out=$(cd "$repo" && TMUX_PANE=$p bash "$PRSH" note 42 "keep theirs or ours in api.ts?" 2>&1); rc=$?
+echo "rc=$rc out=[$out]"; [ "$rc" -eq 0 ] || fail "pr.sh note exit $rc"
+wait_calls 1 10 || fail "no push"
+curl_all_bodies | grep -qF "keep theirs or ours in api.ts?" || { curl_all_bodies; fail "body lacks the question"; }
+echo OK

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Private file
+# level: L2
+# requirement: Notification config
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+notify_install_ok dev.example.com
+[ -f "$NOTIFY_ENV" ] || fail "notify.env not written"
+m=$(stat -c %a "$NOTIFY_ENV"); echo "mode $m"; [ "$m" = 600 ] || fail "mode is $m, expected 600"
+echo OK

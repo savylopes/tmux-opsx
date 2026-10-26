@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Idle prompt is ignored
+# level: L2
+# requirement: Push when a decision is needed
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env; start_tmux
+read -r w p < <(new_win pr-42 change)
+for in in '{"hook_event_name":"Notification","notification_type":"idle_prompt","message":"Claude is waiting for your input"}' \
+          '{"hook_event_name":"Notification","type":"idle_prompt","message":"Claude is waiting for your input"}'; do
+  out=$(printf '%s' "$in" | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-notification 2>&1); rc=$?
+  [ "$rc" -eq 0 ] || fail "hook exit $rc"
+done
+sleep 2; [ "$(curl_calls)" -eq 0 ] || fail "a push was sent for idle_prompt"
+echo OK

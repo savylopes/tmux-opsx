@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Uninstalled
+# level: L2
+# requirement: Self-hosted ntfy installed by install.sh
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+notify_install_ok dev.example.com
+f=$(find "$HOME" -name 'tmux-opsx-ntfy*.service' | head -1); echo "unit: $f"
+[ -n "$f" ] || fail "setup: no tmux-opsx-ntfy unit after install"
+grep -q opsx-ntfy "$(caddy_json)" || fail "setup: no route after install"
+out=$(install_nt --uninstall 2>&1); rc=$?; echo "uninstall rc=$rc"; echo "$out" | tail -8
+[ "$rc" -eq 0 ] || fail "uninstall exited $rc"
+f=$(find "$HOME" -name 'tmux-opsx-ntfy*.service' | head -1); [ -z "$f" ] || fail "unit file still there: $f"
+c=$(caddy_json); if [ -n "$c" ]; then grep -q opsx-ntfy "$c" && fail "opsx-ntfy route still in $c"; fi
+no_real_privilege || fail "sudo/systemctl invoked"
+echo OK

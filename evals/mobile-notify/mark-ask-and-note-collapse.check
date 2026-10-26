@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Mark ask and note collapse
+# level: L2
+# requirement: One decision push per question
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env; start_tmux
+cat > "$SHIMS/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in "repo view") echo "o/r";; *) exit 1;; esac
+SH
+chmod +x "$SHIMS/gh"
+repo="$EVAL_TMP/r"; git init -q "$repo" || fail "git init"
+sd="$XDG_STATE_HOME/tmux-opsx/pr/o-r-42"; mkdir -p "$sd"; printf 'pr=42\n' > "$sd/state"
+read -r w p < <(new_win pr-42 change)
+TMUX_PANE=$p bash "$WINSH" mark pr-42 ask >/dev/null 2>&1 || fail "mark ask failed"
+sleep 2
+(cd "$repo" && TMUX_PANE=$p bash "$PRSH" note 42 "rebase onto main or develop?" >/dev/null 2>&1) || fail "note failed"
+sleep 12   # well past the bare-ask delay
+n=$(curl_calls); echo "messages: $n"; [ "$n" -eq 1 ] || { curl_all_bodies; fail "expected exactly one message, got $n"; }
+curl_all_bodies | grep -qF "rebase onto main or develop?" || fail "message body lacks the question"
+echo OK

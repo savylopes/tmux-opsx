@@ -56,7 +56,10 @@
 #           re-run (no check is failing, or no failing check is a GitHub
 #           Actions run).
 #           Exit 1: every gh run rerun failed.
-# note      records (or clears) an open question as an ask= line in the state.
+# note      records (or clears) an open question as an ask= line in the state,
+#           and sends it as a decision push through opsx-notify.sh (next to
+#           opsx-window.sh, or $OPSX_NOTIFY) when notify is configured; a push
+#           failure never fails note.
 # prompt    prints the generated window prompt (for inspection).
 # list      one line per PR with a state file: repo pr window-status last-event.
 # stop      closes window pr-<n>; the state file and worktree stay.
@@ -704,7 +707,30 @@ cmd_note() {
     [ -n "$ARG2" ] || die "note needs a question, or --clear"
     printf 'ask=%s\n' "$(printf '%s' "$ARG2" | tr '\n' ' ')" >>"$f"
     printf 'noted question for %s#%s\n' "$SLUG" "$PR"
+    notify_question "$ARG2" || true
   fi
+}
+
+# The PR window (pr-<n> of this repository, any session), empty when none.
+pr_window() {
+  tmux list-windows -a -F '#{window_id}	#{@opsx_change}	#{@opsx_pr_repo}' 2>/dev/null \
+    | awk -F '\t' -v n="pr-$PR" -v r="$SLUG" '$2 == n && ($3 == r || $3 == "") { print $1; exit }' || true
+}
+
+# Decision push with the question as body; records the time on the PR window
+# so a bare `mark pr-<n> ask` push within 30 s collapses into this one.
+notify_question() {
+  local n win args
+  n=${OPSX_NOTIFY:-}
+  if [ -z "$n" ]; then
+    n=$(dirname "$(window_script 2>/dev/null)" 2>/dev/null)/opsx-notify.sh
+  fi
+  [ -f "$n" ] || return 0
+  win=$(pr_window)
+  args=(send)
+  [ -z "$win" ] || args+=(--window "$win")
+  args+=(decision "pr-$PR" "pr-$PR: needs a decision" "$1")
+  bash "$n" "${args[@]}" </dev/null >/dev/null 2>&1 || true
 }
 
 cmd_open() {

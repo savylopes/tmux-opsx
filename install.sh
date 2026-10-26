@@ -78,6 +78,21 @@
 #      flag. No sudo: a non-root run prints the one systemd command to run; a root
 #      run enables the unit itself. DNS is never changed — add a DNS-only
 #      *.<domain> record pointing at this host yourself.
+#   9b. push notifications (ntfy) unless --skip-notify:
+#                                   -> opsx-notify.sh in every opsx-run skill dir (item 5)
+#                                   -> Stop, Notification (permission_prompt) and PreToolUse
+#                                      (AskUserQuestion) hooks merged into ~/.claude/settings.json
+#                                      (.bak first; replaced on a rerun, never duplicated)
+#      and, with --expose-domain, a self-hosted ntfy server:
+#                                   -> ~/.local/share/tmux-opsx/bin/ntfy (pinned release,
+#                                      sha256 checked against a hash pinned here; or $OPSX_NTFY_BIN)
+#                                   -> ~/.config/tmux-opsx/ntfy-server.yml (127.0.0.1:2586,
+#                                      base https://ntfy.<domain>, deny-all)
+#                                   -> ~/.config/tmux-opsx/tmux-opsx-ntfy.service (Linux)
+#                                   -> static route opsx-ntfy (ntfy.<domain>) in caddy.json
+#                                   -> ntfy user opsx, a random topic and a token in
+#                                      ~/.config/tmux-opsx/notify.env (mode 600)
+#      State (auth and cache DB) lives in ~/.local/state/tmux-opsx/ntfy/, never deleted.
 #  10. the opsx command + /opsx-init skill
 #                                   -> ~/.local/bin/opsx  (or ~/bin when only that is on PATH)
 #                                   -> ~/.claude/skills/opsx-init/  (and the other five
@@ -119,6 +134,8 @@
 #   --skip-restore     Don't install the session restore hook or the ~/.tmux.conf block
 #   --restore-at-boot  Also start tmux (and the restore) at system start through
 #                      tmux-continuum's @continuum-boot (see item 11)
+#   --skip-notify      Don't install push notifications (opsx-notify.sh, the Claude Code
+#                      hooks, the ntfy server and its route); removes them on a rerun
 #   --expose-domain <d>  Set up /expose: publish local ports at https://<name>--<project>.<d>
 #                      (opt-in; needs $CLOUDFLARE_API_TOKEN or a prompt, see item 9).
 #                      Use a domain that serves nothing else: the login cookie
@@ -150,6 +167,7 @@ SKIP_TASK=0
 SKIP_INIT=0
 SKIP_RESTORE=0
 RESTORE_AT_BOOT=0
+SKIP_NOTIFY=0
 EXPOSE_DOMAIN=""
 BACKUP=1
 UNINSTALL=0
@@ -187,6 +205,7 @@ while [ $# -gt 0 ]; do
     --skip-init)     SKIP_INIT=1; shift ;;
     --skip-restore)  SKIP_RESTORE=1; shift ;;
     --restore-at-boot) RESTORE_AT_BOOT=1; shift ;;
+    --skip-notify)   SKIP_NOTIFY=1; shift ;;
     --expose-domain) [ $# -ge 2 ] || die "--expose-domain needs a domain"
                      EXPOSE_DOMAIN=$2; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift 2 ;;
     --expose-domain=*) EXPOSE_DOMAIN=${1#--expose-domain=}; [ -n "$EXPOSE_DOMAIN" ] || die "--expose-domain needs a domain"; shift ;;
@@ -740,6 +759,12 @@ install_opsx_run_skill() {
   install_file "$SRC/skills/opsx-run/opsx-dev.sh"    "$dest/opsx-dev.sh"
   install_file "$SRC/skills/opsx-run/opsx-sessions.sh" "$dest/opsx-sessions.sh"
   install_file "$SRC/agents/models.conf"             "$dest/models.conf"
+  if [ "$SKIP_NOTIFY" -eq 0 ]; then
+    install_file "$SRC/skills/opsx-run/opsx-notify.sh" "$dest/opsx-notify.sh"
+    chmod +x "$dest/opsx-notify.sh" || die "cannot chmod +x $dest/opsx-notify.sh"
+  else
+    rm -f "$dest/opsx-notify.sh"
+  fi
   chmod +x "$dest/opsx-window.sh" || die "cannot chmod +x $dest/opsx-window.sh"
   chmod +x "$dest/opsx-merge.sh"  || die "cannot chmod +x $dest/opsx-merge.sh"
   chmod +x "$dest/opsx-land.sh"   || die "cannot chmod +x $dest/opsx-land.sh"
@@ -892,11 +917,45 @@ tmux_conf_active_lines() {
 
 tmux_conf_loads() { tmux_conf_active_lines "$1" | grep -q -- "$2"; }
 
+# settings.json is edited by two installers (the notify hooks and the session
+# restore hook): keep one .bak per run, of the file as it was before this run.
+SETTINGS_BACKED_UP=""
+backup_settings_once() {
+  local f=$1
+  [ "$BACKUP" -eq 1 ] && [ -e "$f" ] || return 0
+  [ "$SETTINGS_BACKED_UP" = "$f" ] && return 0
+  cp "$f" "$f.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  SETTINGS_BACKED_UP=$f
+}
+
+# Like replace_if_changed, with the once-per-run settings.json backup.
+replace_settings_if_changed() {
+  local dest=$1
+  if [ -f "$dest" ] && cmp -s "$dest" "$dest.tmp"; then
+    rm -f "$dest.tmp"
+    return 0
+  fi
+  backup_settings_once "$dest"
+  mv "$dest.tmp" "$dest" || die "cannot write $dest"
+}
+
+# True when $1 is missing or holds valid JSON.
+settings_json_ok() {
+  [ -f "$1" ] || return 0
+  if have jq; then
+    jq empty "$1" >/dev/null 2>&1
+  else
+    python3 -I -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8-sig"))' "$1" >/dev/null 2>&1
+  fi
+}
+
 # Merge the opsx-sessions.sh SessionStart hook into Claude Code's settings.json
-# (matcher startup|resume|clear), replacing an earlier copy of ours.
+# (matcher startup|resume|clear), replacing an earlier copy of ours. Returns 2
+# (file left alone) when settings.json is not valid JSON.
 upsert_claude_session_hook() {
   local dest=$1 script=$2
   have python3 || return 1
+  settings_json_ok "$dest" || return 2
   mkdir -p "$(dirname "$dest")" || return 1
   HOOK_DEST=$dest HOOK_SCRIPT=$script python3 <<'PYHOOK' || return 1
 import json, os, shlex
@@ -924,7 +983,7 @@ with open(dest + ".tmp", "w", encoding="utf-8") as f:
     json.dump(obj, f, indent=2)
     f.write("\n")
 PYHOOK
-  replace_if_changed "$dest"
+  replace_settings_if_changed "$dest"
 }
 
 remove_claude_session_hook() {
@@ -949,7 +1008,7 @@ with open(dest + ".tmp", "w", encoding="utf-8") as f:
     json.dump(obj, f, indent=2)
     f.write("\n")
 PYHOOK
-  replace_if_changed "$dest"
+  replace_settings_if_changed "$dest"
   ok "removed the session restore hook from $(tilde "$dest")"
 }
 
@@ -1193,7 +1252,12 @@ json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 # wildcard certificate via ACME DNS-01 through Cloudflare, admin API on a unix
 # socket inside a mode-700 state dir. Routes are added live by expose.sh.
 expose_write_caddy_config() {
-  local sock
+  local sock routes='[]'
+  if [ "$NOTIFY_SERVER" -eq 1 ]; then
+    routes="[
+            $(notify_route_json)
+          ]"
+  fi
   mkdir -p "$EXPOSE_STATE_DIR" || die "cannot create $EXPOSE_STATE_DIR"
   chmod 700 "$EXPOSE_STATE_DIR" || die "cannot chmod 700 $EXPOSE_STATE_DIR"
   if [ "${#EXPOSE_SOCK}" -gt 100 ]; then
@@ -1214,7 +1278,7 @@ expose_write_caddy_config() {
       "servers": {
         "expose": {
           "listen": [":443"],
-          "routes": [],
+          "routes": $routes,
           "tls_connection_policies": [{}],
           "automatic_https": {
             "disable_redirects": true,
@@ -1255,7 +1319,7 @@ JSON
   [ -f "$EXPOSE_CADDY_JSON" ] && existed=1
   replace_if_changed "$EXPOSE_CADDY_JSON"
   [ "$existed" -eq 1 ] && [ "$REPLACED" -eq 1 ] && EXPOSE_CONFIG_CHANGED=1
-  ok "$(tilde "$EXPOSE_CADDY_JSON") (*.$EXPOSE_DOMAIN on :443, admin socket $(tilde "$EXPOSE_SOCK"))"
+  ok "$(tilde "$EXPOSE_CADDY_JSON") (*.$EXPOSE_DOMAIN on :443, admin socket $(tilde "$EXPOSE_SOCK")$([ "$NOTIFY_SERVER" -eq 1 ] && printf ', route %s for ntfy.%s' "$NTFY_ROUTE_ID" "$EXPOSE_DOMAIN"))"
   expose_remove_autosave
 }
 
@@ -1456,9 +1520,460 @@ expose_dns_check() {
 expose_chown() {
   if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
     chown -R "$SUDO_USER" "$EXPOSE_CONFIG_DIR" "$EXPOSE_STATE_DIR" 2>/dev/null || true
+    [ -d "$NTFY_STATE_DIR" ] && chown -R "$SUDO_USER" "$NTFY_STATE_DIR" 2>/dev/null
     [ -d "$EXPOSE_BIN_DIR" ] && chown -R "$SUDO_USER" "$EXPOSE_BIN_DIR" 2>/dev/null
   fi
   return 0
+}
+
+# ---------- push notifications: ntfy server, notify.env, Claude Code hooks ----------
+# The ntfy server is set up only with --expose-domain (static Caddy route
+# opsx-ntfy for https://ntfy.<domain>); opsx-notify.sh and the Claude Code
+# hooks are installed on every run without --skip-notify, so a notify.env
+# written by hand for any ntfy server works too.
+NOTIFY_ENV=$EXPOSE_CONFIG_DIR/notify.env
+NTFY_VERSION=2.34.0
+NTFY_BIN=""
+NTFY_SERVER_YML=$EXPOSE_CONFIG_DIR/ntfy-server.yml
+NTFY_STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-opsx/ntfy
+NTFY_UNIT_NAME=tmux-opsx-ntfy
+NTFY_UNIT=$EXPOSE_CONFIG_DIR/$NTFY_UNIT_NAME.service
+NTFY_LISTEN=127.0.0.1:2586
+NTFY_ROUTE_ID=opsx-ntfy
+NTFY_USER=opsx
+# 1 once this run has an ntfy binary for the server (route, unit, credentials).
+NOTIFY_SERVER=0
+NTFY_CONFIG_CHANGED=0
+NOTIFY_READY=0
+CLAUDE_SETTINGS=$PREFIX/settings.json
+
+sha256_of() {
+  if have sha256sum; then sha256sum "$1" | awk '{print $1}'
+  elif have shasum; then shasum -a 256 "$1" | awk '{print $1}'
+  else return 1
+  fi
+}
+
+# $OPSX_NTFY_BIN, or the pinned release already installed, or a download of
+# the pinned release tarball verified against the sha256 pinned below for its
+# arch (never against a checksum file from the download origin). A failed
+# download skips the server for this run (warning); a hash mismatch aborts the
+# install and leaves no binary. $OPSX_NTFY_RELEASE_BASE only changes where the
+# tarball comes from; it must still match the pinned hash. Tests only:
+# $OPSX_NTFY_SHA256 replaces the pinned hash, honoured only when
+# $OPSX_NTFY_RELEASE_BASE is a local file:// fixture (never for a download
+# over the network, which always has to match the pinned hash).
+notify_get_ntfy() {
+  local arch name base tmpd want got src
+  if [ -n "${OPSX_NTFY_BIN:-}" ]; then
+    [ -x "$OPSX_NTFY_BIN" ] || die "OPSX_NTFY_BIN=$OPSX_NTFY_BIN is not an executable file"
+    NTFY_BIN=$OPSX_NTFY_BIN; NOTIFY_SERVER=1
+    ok "ntfy $(tilde "$NTFY_BIN") (from \$OPSX_NTFY_BIN)"
+    return 0
+  fi
+  if [ "$PLATFORM" = macOS ]; then
+    warn "macOS: no ntfy server is installed (documented gap); point notify.env at any ntfy server by hand"
+    return 0
+  fi
+  NTFY_BIN=$EXPOSE_BIN_DIR/ntfy
+  if [ -x "$NTFY_BIN" ] && "$NTFY_BIN" --version 2>/dev/null | grep -qF "version $NTFY_VERSION"; then
+    NOTIFY_SERVER=1
+    ok "ntfy $NTFY_VERSION $(tilde "$NTFY_BIN") (already installed)"
+    return 0
+  fi
+  # sha256 of ntfy_<NTFY_VERSION>_linux_<arch>.tar.gz, copied from
+  # https://github.com/binwiederhier/ntfy/releases/download/v2.34.0/checksums.txt
+  # Bump NTFY_VERSION and these hashes together.
+  case "$(uname -m)" in
+    x86_64|amd64)  arch=amd64; want=f78e2645c6457363f37d5d1c4f7cddb7e9658abd197824a7387a1a38d92bb895 ;;
+    aarch64|arm64) arch=arm64; want=d585fe48d1b2e80b1b1719977bb651cc7d9259bacb817aa8a8d5b4c8f0c9e946 ;;
+    armv7*)        arch=armv7; want=c8c3a58301db93a9f5de32c0b028ce09485e9dcb0fa1433b9171e073c23e8342 ;;
+    armv6*)        arch=armv6; want=4eaad91bf08f6c959449203de009cfb065b564bd37ba32a2e1f95d75bcb9adb9 ;;
+    *) warn "no pinned ntfy $NTFY_VERSION build for CPU $(uname -m); notifications server skipped (set OPSX_NTFY_BIN to an ntfy binary)"; NTFY_BIN=""; return 0 ;;
+  esac
+  case "${OPSX_NTFY_RELEASE_BASE:-}" in
+    file://*) [ -n "${OPSX_NTFY_SHA256:-}" ] && want=$OPSX_NTFY_SHA256 ;;
+  esac
+  name=ntfy_${NTFY_VERSION}_linux_$arch.tar.gz
+  base=${OPSX_NTFY_RELEASE_BASE:-https://github.com/binwiederhier/ntfy/releases/download/v$NTFY_VERSION}
+  mkdir -p "$EXPOSE_BIN_DIR" || die "cannot create $EXPOSE_BIN_DIR"
+  tmpd=$(mktemp -d "$EXPOSE_BIN_DIR/.ntfy.XXXXXX") || die "cannot create a temp dir in $EXPOSE_BIN_DIR"
+  note "downloading ntfy $NTFY_VERSION (linux/$arch)"
+  if ! curl -fsSL --max-time 600 -o "$tmpd/$name" "$base/$name"; then
+    rm -rf "$tmpd"; NTFY_BIN=""
+    warn "could not download ntfy from $base — the notification server is skipped this run"
+    note "re-run online, set OPSX_NTFY_BIN to an ntfy binary, or pass --skip-notify"
+    return 0
+  fi
+  got=$(sha256_of "$tmpd/$name") || { rm -rf "$tmpd"; die "no sha256sum or shasum to verify the ntfy download"; }
+  if [ "$want" != "$got" ]; then
+    rm -rf "$tmpd"
+    die "the ntfy download $name does not match its pinned sha256 (expected $want, got $got) — removed it, no ntfy binary was installed"
+  fi
+  if ! tar -xzf "$tmpd/$name" -C "$tmpd" 2>/dev/null; then
+    rm -rf "$tmpd"; die "cannot unpack $name"
+  fi
+  src=$tmpd/ntfy_${NTFY_VERSION}_linux_$arch/ntfy
+  [ -f "$src" ] || { rm -rf "$tmpd"; die "$name has no ntfy binary"; }
+  if ! chmod 755 "$src" || ! mv -f "$src" "$NTFY_BIN"; then
+    rm -rf "$tmpd"; die "cannot write $NTFY_BIN"
+  fi
+  rm -rf "$tmpd"
+  NOTIFY_SERVER=1
+  ok "ntfy $NTFY_VERSION $(tilde "$NTFY_BIN") (downloaded, sha256 verified against the pinned hash)"
+}
+
+# The static Caddy route for https://ntfy.<domain> (streaming, no buffering).
+notify_route_json() {
+  printf '{"@id": "%s", "match": [{"host": ["ntfy.%s"]}], "handle": [{"handler": "reverse_proxy", "flush_interval": -1, "upstreams": [{"dial": "%s"}]}], "terminal": true}' \
+    "$NTFY_ROUTE_ID" "$EXPOSE_DOMAIN" "$NTFY_LISTEN"
+}
+
+ntfy_cmd() { run_as_owner "$NTFY_BIN" "$@"; }
+# ntfy_pw_cmd <password> <ntfy args...>: `ntfy user add|change-pass` with the
+# password on stdin (ntfy reads it and its confirmation as two lines when
+# stdin is not a TTY). Never in argv or the environment: under sudo, env_reset
+# would drop NTFY_PASSWORD, and `env NTFY_PASSWORD=...` would show it in ps.
+ntfy_pw_cmd() {
+  local pw=$1; shift
+  printf '%s\n%s\n' "$pw" "$pw" | ( unset NTFY_PASSWORD NTFY_PASSWORD_HASH; ntfy_cmd "$@" )
+}
+
+notify_write_server_config() {
+  mkdir -p "$NTFY_STATE_DIR" || die "cannot create $NTFY_STATE_DIR"
+  chmod 700 "$NTFY_STATE_DIR" || die "cannot chmod 700 $NTFY_STATE_DIR"
+  cat > "$NTFY_SERVER_YML.tmp" <<YML || die "cannot write $NTFY_SERVER_YML"
+# tmux-opsx push server — written by install.sh --expose-domain.
+# Listens on loopback only; Caddy serves it at https://ntfy.$EXPOSE_DOMAIN.
+base-url: https://ntfy.$EXPOSE_DOMAIN
+listen-http: $NTFY_LISTEN
+behind-proxy: true
+auth-file: "$(json_escape "$NTFY_STATE_DIR/auth.db")"
+auth-default-access: deny-all
+cache-file: "$(json_escape "$NTFY_STATE_DIR/cache.db")"
+YML
+  local existed=0
+  [ -f "$NTFY_SERVER_YML" ] && existed=1
+  replace_if_changed "$NTFY_SERVER_YML"
+  [ "$existed" -eq 1 ] && [ "$REPLACED" -eq 1 ] && NTFY_CONFIG_CHANGED=1
+  ok "$(tilde "$NTFY_SERVER_YML") (ntfy on $NTFY_LISTEN, base https://ntfy.$EXPOSE_DOMAIN, deny-all)"
+  # The ntfy user/token commands need the auth database to exist.
+  if [ ! -e "$NTFY_STATE_DIR/auth.db" ]; then
+    ( umask 077; : > "$NTFY_STATE_DIR/auth.db" ) || die "cannot create $NTFY_STATE_DIR/auth.db"
+  fi
+  # Under sudo the ntfy user/token commands run as $SUDO_USER: hand the config
+  # dir (server.yml), the state dir (auth.db, later cache.db) and the bin dir
+  # over first, or ntfy cannot read its config or open its database.
+  expose_chown
+}
+
+random_alnum() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"; }
+random_hex() { od -An -N"$1" -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'; }
+
+# User opsx (random password), read-write on a random opsx-<12 hex> topic, one
+# token; notify.env (mode 600). A rerun keeps all of it while the user and the
+# token still exist in ntfy's auth database.
+notify_credentials() {
+  local topic token pw users tokens out tmp changed=""
+  topic=$(env_file_get "$NOTIFY_ENV" NTFY_TOPIC 2>/dev/null) || topic=""
+  token=$(env_file_get "$NOTIFY_ENV" NTFY_TOKEN 2>/dev/null) || token=""
+  pw=$(env_file_get "$NOTIFY_ENV" NTFY_PASSWORD 2>/dev/null) || pw=""
+  [[ "$topic" =~ ^opsx-[0-9a-f]{12}$ ]] || { topic="opsx-$(random_hex 6)"; changed="topic"; }
+  users=$(ntfy_cmd user --config "$NTFY_SERVER_YML" list 2>&1) || users=""
+  if ! printf '%s\n' "$users" | grep -q "^user $NTFY_USER "; then
+    pw=$(random_alnum 24)
+    [ "${#pw}" -eq 24 ] || { warn "could not generate a password (tr, head, /dev/urandom)"; return 0; }
+    if ! out=$(ntfy_pw_cmd "$pw" user --config "$NTFY_SERVER_YML" add "$NTFY_USER" 2>&1); then
+      warn "could not create the ntfy user $NTFY_USER: $out"; return 0
+    fi
+    token=""; changed="${changed:+$changed, }user"
+    ok "ntfy user $NTFY_USER created (generated password)"
+  elif [ -z "$pw" ]; then
+    # The user exists but notify.env lost its password: set a new one.
+    pw=$(random_alnum 24)
+    if ! out=$(ntfy_pw_cmd "$pw" user --config "$NTFY_SERVER_YML" change-pass "$NTFY_USER" 2>&1); then
+      warn "could not reset the password of ntfy user $NTFY_USER: $out"; return 0
+    fi
+    changed="${changed:+$changed, }password"
+  fi
+  if ! printf '%s\n' "$users" | grep -qF "read-write access to topic $topic"; then
+    if ! out=$(ntfy_cmd access --config "$NTFY_SERVER_YML" "$NTFY_USER" "$topic" rw 2>&1); then
+      warn "could not grant $NTFY_USER read-write on $topic: $out"; return 0
+    fi
+  fi
+  if [ -n "$token" ]; then
+    tokens=$(ntfy_cmd token --config "$NTFY_SERVER_YML" list "$NTFY_USER" 2>/dev/null) || tokens=""
+    printf '%s\n' "$tokens" | grep -qF -- "$token" || token=""
+  fi
+  if [ -z "$token" ]; then
+    out=$(ntfy_cmd token --config "$NTFY_SERVER_YML" add "$NTFY_USER" 2>/dev/null) || out=""
+    token=$(printf '%s\n' "$out" | grep -oE 'tk_[A-Za-z0-9]+' | head -n1)
+    [ -n "$token" ] || { warn "could not create an ntfy token for $NTFY_USER"; return 0; }
+    changed="${changed:+$changed, }token"
+  fi
+  mkdir -p "$EXPOSE_CONFIG_DIR" || die "cannot create $EXPOSE_CONFIG_DIR"
+  chmod 700 "$EXPOSE_CONFIG_DIR" || die "cannot chmod 700 $EXPOSE_CONFIG_DIR"
+  tmp=$( umask 077; mktemp "$EXPOSE_CONFIG_DIR/.notify.env.XXXXXX" ) || die "cannot create a temp file in $EXPOSE_CONFIG_DIR"
+  if ! ( umask 077
+         printf '# tmux-opsx push notifications — written by install.sh --expose-domain. Mode 600; keep it private.\n'
+         printf 'NTFY_URL=https://ntfy.%s\n' "$EXPOSE_DOMAIN"
+         printf 'NTFY_TOPIC=%s\n' "$topic"
+         printf 'NTFY_TOKEN=%s\n' "$token"
+         printf 'NTFY_USER=%s\n' "$NTFY_USER"
+         printf 'NTFY_PASSWORD=%s\n' "$pw" ) > "$tmp" || ! chmod 600 "$tmp"; then
+    rm -f "$tmp"; die "cannot write $NOTIFY_ENV"
+  fi
+  if [ -f "$NOTIFY_ENV" ] && cmp -s "$tmp" "$NOTIFY_ENV"; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$NOTIFY_ENV" || { rm -f "$tmp"; die "cannot write $NOTIFY_ENV"; }
+  fi
+  chmod 600 "$NOTIFY_ENV" 2>/dev/null
+  NOTIFY_READY=1
+  ok "$(tilde "$NOTIFY_ENV") (topic $topic, ${changed:+new }${changed:-kept the existing user and token}, mode 600)"
+}
+
+notify_write_unit() {
+  cat > "$NTFY_UNIT.tmp" <<UNIT || die "cannot write $NTFY_UNIT"
+# Written by tmux-opsx install.sh --expose-domain (push notifications)
+[Unit]
+Description=tmux-opsx push server (ntfy on $NTFY_LISTEN)
+After=network.target
+
+[Service]
+Type=simple
+User=$(expose_unit_user)
+Environment="HOME=$HOME"
+ExecStart="$NTFY_BIN" serve --config "$NTFY_SERVER_YML"
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  replace_if_changed "$NTFY_UNIT"
+  ok "$(tilde "$NTFY_UNIT") (systemd unit, runs as $(expose_unit_user), listens on $NTFY_LISTEN)"
+}
+
+# Same sudo-or-print path as the proxy: root enables the unit, anyone else
+# gets the one privileged command.
+notify_service_step() {
+  local cmd installed=$EXPOSE_SYSTEMD_DIR/$NTFY_UNIT_NAME.service
+  if [ "$PLATFORM" = macOS ]; then
+    note "macOS: start ntfy with: \"$NTFY_BIN\" serve --config \"$NTFY_SERVER_YML\""
+    return 0
+  fi
+  notify_write_unit
+  if [ "$(id -u)" -eq 0 ]; then
+    if [ -f "$installed" ] && { [ "$NTFY_CONFIG_CHANGED" -eq 1 ] || ! cmp -s "$NTFY_UNIT" "$installed"; }; then
+      if install -m 644 "$NTFY_UNIT" "$installed" && systemctl daemon-reload \
+         && systemctl enable "$NTFY_UNIT_NAME" && systemctl restart "$NTFY_UNIT_NAME"; then
+        ok "restarted $NTFY_UNIT_NAME with the new configuration (systemd)"
+      else
+        warn "could not restart $NTFY_UNIT_NAME — check: systemctl status $NTFY_UNIT_NAME"
+      fi
+    elif install -m 644 "$NTFY_UNIT" "$installed" \
+       && systemctl daemon-reload && systemctl enable --now "$NTFY_UNIT_NAME"; then
+      ok "enabled and started $NTFY_UNIT_NAME (systemd)"
+    else
+      warn "could not enable $NTFY_UNIT_NAME — check: systemctl status $NTFY_UNIT_NAME"
+    fi
+    return 0
+  fi
+  if [ -f "$installed" ]; then
+    if ! cmp -s "$NTFY_UNIT" "$installed" || [ "$NTFY_CONFIG_CHANGED" -eq 1 ]; then
+      cmd="sudo install -m 644 \"$NTFY_UNIT\" $EXPOSE_SYSTEMD_DIR/ && sudo systemctl daemon-reload && sudo systemctl restart $NTFY_UNIT_NAME"
+      warn "the running push server needs a restart to pick up the new configuration (install.sh never uses sudo):"
+      info "    $cmd"
+    fi
+    return 0
+  fi
+  cmd="sudo install -m 644 \"$NTFY_UNIT\" $EXPOSE_SYSTEMD_DIR/ && sudo systemctl daemon-reload && sudo systemctl enable --now $NTFY_UNIT_NAME"
+  warn "one privileged step left — run this once to start the push server (install.sh never uses sudo):"
+  info "    $cmd"
+}
+
+# --skip-notify / --uninstall: drop the ntfy unit (the state dir stays).
+notify_remove_unit() {
+  local installed=$EXPOSE_SYSTEMD_DIR/$NTFY_UNIT_NAME.service
+  if [ -f "$NTFY_UNIT" ]; then
+    rm -f "$NTFY_UNIT" && ok "removed $(tilde "$NTFY_UNIT") (push server unit)"
+  fi
+  [ -f "$installed" ] || return 0
+  if [ "$(id -u)" -eq 0 ]; then
+    systemctl disable --now "$NTFY_UNIT_NAME" >/dev/null 2>&1 || true
+    if rm -f "$installed" && systemctl daemon-reload; then
+      ok "disabled and removed $NTFY_UNIT_NAME (systemd)"
+    else
+      warn "could not remove $installed — check: systemctl status $NTFY_UNIT_NAME"
+    fi
+  else
+    warn "remove the push server unit with (install.sh never uses sudo):"
+    info "    sudo systemctl disable --now $NTFY_UNIT_NAME && sudo rm -f $installed && sudo systemctl daemon-reload"
+  fi
+}
+
+# --skip-notify / --uninstall: drop the opsx-ntfy route from caddy.json and from a running proxy.
+notify_remove_route() {
+  local tmp
+  [ -f "$EXPOSE_CADDY_JSON" ] && grep -q "\"$NTFY_ROUTE_ID\"" "$EXPOSE_CADDY_JSON" 2>/dev/null || return 0
+  tmp=$EXPOSE_CADDY_JSON.tmp
+  if have jq; then
+    jq --arg id "$NTFY_ROUTE_ID" '(.apps.http.servers[]?.routes) |= (if type == "array" then map(select(."@id" != $id)) else . end)' \
+      "$EXPOSE_CADDY_JSON" > "$tmp" 2>/dev/null || { rm -f "$tmp"; warn "could not edit $EXPOSE_CADDY_JSON"; return 0; }
+  elif have python3; then
+    python3 -I - "$EXPOSE_CADDY_JSON" "$NTFY_ROUTE_ID" > "$tmp" <<'PY' || { rm -f "$tmp"; warn "could not edit $EXPOSE_CADDY_JSON"; return 0; }
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+for srv in ((cfg.get("apps") or {}).get("http") or {}).get("servers", {}).values():
+    if isinstance(srv.get("routes"), list):
+        srv["routes"] = [r for r in srv["routes"] if not (isinstance(r, dict) and r.get("@id") == sys.argv[2])]
+print(json.dumps(cfg, indent=2))
+PY
+  else
+    warn "jq or python3 is needed to remove the $NTFY_ROUTE_ID route from $EXPOSE_CADDY_JSON"; return 0
+  fi
+  replace_if_changed "$EXPOSE_CADDY_JSON"
+  ok "removed the $NTFY_ROUTE_ID route from $(tilde "$EXPOSE_CADDY_JSON")"
+  if [ -S "$EXPOSE_SOCK" ]; then
+    curl -sS --max-time 10 --unix-socket "$EXPOSE_SOCK" -X DELETE -o /dev/null \
+      "http://127.0.0.1/id/$NTFY_ROUTE_ID" >/dev/null 2>&1 || true
+  fi
+}
+
+# Hook command for one event: the installed helper, quoted only when needed.
+notify_hook_cmd() {
+  local p=$PREFIX/skills/opsx-run/opsx-notify.sh
+  if [[ "$p" =~ ^[A-Za-z0-9_./~+-]+$ ]]; then
+    printf '%s hook %s' "$p" "$1"
+  else
+    printf '"%s" hook %s' "$(json_escape "$p")" "$1"
+  fi
+}
+
+# notify_settings_hooks add|remove: merge (or drop) the tmux-opsx hooks in
+# Claude Code's settings.json with jq, else python3. Our entries are found by
+# their `opsx-notify.sh hook` command; everything else is kept as it is. The
+# file is rewritten only when it changes (with a .bak unless --no-backup).
+notify_settings_hooks() {
+  local mode=$1 f=$CLAUDE_SETTINGS tmp add=0 pre ntf stp
+  [ "$mode" = add ] && add=1
+  if [ ! -f "$f" ]; then
+    [ "$add" -eq 1 ] || return 0
+    mkdir -p "$(dirname "$f")" || die "cannot create $(dirname "$f")"
+    printf '{}\n' > "$f.new" || die "cannot write $f"
+  fi
+  pre=$(notify_hook_cmd claude-pretool); ntf=$(notify_hook_cmd claude-notification); stp=$(notify_hook_cmd claude-stop)
+  tmp=$f.tmp
+  local src=$f; [ -f "$f.new" ] && src=$f.new
+  if have jq; then
+    if ! jq --arg add "$add" --arg pre "$pre" --arg ntf "$ntf" --arg stp "$stp" '
+      def ours: (type == "object") and ((.command // "") | type == "string")
+                and ((.command // "") | test("opsx-notify\\.sh[\"'"'"']? hook"));
+      def group_has: (type == "object") and ([(.hooks // [])[]? | ours] | any);
+      def strip: [ .[] | if group_has then (.hooks |= [ .[] | select(ours | not) ]) | select((.hooks | length) > 0) else . end ];
+      has("hooks") as $had
+      | if (.hooks | type) == "object" then
+          .hooks |= with_entries(if (.value | type) == "array" and ([.value[] | group_has] | any)
+                                 then (.value |= strip) | select((.value | length) > 0) else . end)
+        else . end
+      | if $add == "1" then
+          .hooks = (.hooks // {})
+          | .hooks.PreToolUse   = ((.hooks.PreToolUse // [])   + [{matcher: "AskUserQuestion", hooks: [{type: "command", command: $pre}]}])
+          | .hooks.Notification = ((.hooks.Notification // []) + [{matcher: "permission_prompt", hooks: [{type: "command", command: $ntf}]}])
+          | .hooks.Stop         = ((.hooks.Stop // [])         + [{hooks: [{type: "command", command: $stp}]}])
+        else . end
+      | if ($had | not) and ((.hooks // {}) | length) == 0 then del(.hooks) else . end
+      ' "$src" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp" "$f.new"; warn "$(tilde "$f") is not valid JSON — left it alone (no notify hooks)"; return 0
+    fi
+  elif have python3; then
+    if ! python3 -I - "$src" "$add" "$pre" "$ntf" "$stp" > "$tmp" 2>/dev/null <<'PY'; then
+import json, re, sys
+src, add, pre, ntf, stp = sys.argv[1:6]
+d = json.load(open(src))
+if not isinstance(d, dict):
+    sys.exit(1)
+pat = re.compile(r"""opsx-notify\.sh["']? hook""")
+def ours(h):
+    return isinstance(h, dict) and isinstance(h.get("command", ""), str) and bool(pat.search(h.get("command", "")))
+def group_has(g):
+    return isinstance(g, dict) and any(ours(h) for h in (g.get("hooks") or []))
+had = "hooks" in d
+hooks = d.get("hooks")
+if isinstance(hooks, dict):
+    for ev in list(hooks):
+        v = hooks[ev]
+        if isinstance(v, list) and any(group_has(g) for g in v):
+            nv = []
+            for g in v:
+                if group_has(g):
+                    g = dict(g); g["hooks"] = [h for h in g["hooks"] if not ours(h)]
+                    if not g["hooks"]:
+                        continue
+                nv.append(g)
+            if nv:
+                hooks[ev] = nv
+            else:
+                del hooks[ev]
+if add == "1":
+    hooks = d.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        sys.exit(1)
+    hooks.setdefault("PreToolUse", []).append({"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": pre}]})
+    hooks.setdefault("Notification", []).append({"matcher": "permission_prompt", "hooks": [{"type": "command", "command": ntf}]})
+    hooks.setdefault("Stop", []).append({"hooks": [{"type": "command", "command": stp}]})
+if not had and not d.get("hooks"):
+    d.pop("hooks", None)
+print(json.dumps(d, indent=2, ensure_ascii=False))
+PY
+      rm -f "$tmp" "$f.new"; warn "$(tilde "$f") is not valid JSON — left it alone (no notify hooks)"; return 0
+    fi
+  else
+    rm -f "$f.new"; warn "jq or python3 is needed to edit $(tilde "$f") — notify hooks not changed"; return 0
+  fi
+  if [ -f "$f.new" ]; then
+    mv -f "$tmp" "$f" || die "cannot write $f"; rm -f "$f.new"
+    ok "Claude Code hooks (Stop, Notification permission_prompt, PreToolUse AskUserQuestion) -> $(tilde "$f")"
+    return 0
+  fi
+  if notify_json_same "$f" "$tmp"; then
+    rm -f "$tmp"
+    [ "$add" -eq 1 ] && ok "Claude Code notify hooks already in $(tilde "$f")"
+    return 0
+  fi
+  backup_settings_once "$f"
+  # Write through the file (keeps a symlinked settings.json and its mode).
+  cat "$tmp" > "$f" || die "cannot write $f"
+  rm -f "$tmp"
+  if [ "$add" -eq 1 ]; then
+    ok "Claude Code hooks (Stop, Notification permission_prompt, PreToolUse AskUserQuestion) -> $(tilde "$f")"
+  else
+    ok "removed the tmux-opsx notify hooks from $(tilde "$f")"
+  fi
+}
+
+# Same JSON value (key order ignored)?
+notify_json_same() {
+  if have jq; then
+    [ "$(jq -S . "$1" 2>/dev/null)" = "$(jq -S . "$2" 2>/dev/null)" ]
+  else
+    python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])) else 1)' "$1" "$2" 2>/dev/null
+  fi
+}
+
+# Android setup lines (no password: `opsx notify info --show-password`).
+notify_setup_lines() {
+  local topic
+  topic=$(env_file_get "$NOTIFY_ENV" NTFY_TOPIC 2>/dev/null) || return 0
+  info "  Phone pushes (ntfy): server ${B}https://ntfy.$EXPOSE_DOMAIN${N}, user ${B}$NTFY_USER${N}, topic ${B}$topic${N}"
+  info "     Android: install ntfy, add server https://ntfy.$EXPOSE_DOMAIN, log in as $NTFY_USER, subscribe to $topic"
+  if [ "$SKIP_INIT" -eq 0 ]; then
+    info "     Password: ${B}opsx notify info --show-password${N}   then test with ${B}opsx notify test${N}"
+  else
+    info "     Password: ${B}bash $PREFIX/skills/opsx-run/opsx-notify.sh info --show-password${N}   then test with: bash $PREFIX/skills/opsx-run/opsx-notify.sh test"
+  fi
 }
 
 file_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
@@ -2015,6 +2530,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
   for f in "$HOME/.tmux.conf" "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf"; do
     remove_marked_block "$f" "$RESTORE_BLOCK_START" "$RESTORE_BLOCK_END" "session restore"
   done
+  notify_settings_hooks remove
+  notify_remove_unit
+  notify_remove_route
   info ""
   info "The OpenSpec CLI was left installed. Remove it with:"
   info "  npm uninstall -g $NPM_PKG"
@@ -2025,6 +2543,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   info "Learned skills in each project's .opsx/skills/ (and their learned-* links) were left in place."
   info "Fork state and /explain pages in \${XDG_STATE_HOME:-~/.local/state}/agent-forks/ were left in place."
   info "Session restore state in \${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/sessions/ was left in place."
+  [ -d "$NTFY_STATE_DIR" ] && info "The ntfy state in $(tilde "$NTFY_STATE_DIR") (user, token, cached pushes) and $(tilde "$NOTIFY_ENV") were left in place."
   exit 0
 fi
 
@@ -2454,10 +2973,18 @@ info ""
 if [ -n "$EXPOSE_DOMAIN" ]; then
   step "Setting up /expose for *.$EXPOSE_DOMAIN"
   expose_get_caddy
+  [ "$SKIP_NOTIFY" -eq 1 ] || notify_get_ntfy
   expose_write_env
   expose_write_caddy_config
   expose_rewrite_records
   expose_service_step
+  if [ "$NOTIFY_SERVER" -eq 1 ]; then
+    info ""
+    step "Setting up the push server for https://ntfy.$EXPOSE_DOMAIN"
+    notify_write_server_config
+    notify_credentials
+    notify_service_step
+  fi
   expose_dns_check
   expose_chown
   note "exposed URLs are PUBLIC with no authentication; bind apps to 127.0.0.1 and open only 443 (and 22) in the provider firewall"
@@ -2473,6 +3000,25 @@ if [ -n "$EXPOSE_DOMAIN" ]; then
   install_expose_skill "$GEMINI_EXPOSE_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
   info ""
 fi
+
+# ---------- 9b. push notifications (opsx-notify.sh + Claude Code hooks) ----------
+if [ "$SKIP_NOTIFY" -eq 1 ]; then
+  step "Skipping push notifications (--skip-notify)"
+  notify_settings_hooks remove
+  # A rerun takes out what an earlier install added, with or without --expose-domain.
+  notify_remove_unit
+  notify_remove_route
+else
+  step "Installing push notification hooks (Claude Code)"
+  notify_settings_hooks add
+  if [ -f "$NOTIFY_ENV" ]; then
+    ok "pushes go to $(env_file_get "$NOTIFY_ENV" NTFY_URL 2>/dev/null || echo '?') ($(tilde "$NOTIFY_ENV"))"
+  else
+    note "no $(tilde "$NOTIFY_ENV") yet: write NTFY_URL / NTFY_TOPIC / NTFY_TOKEN there for any ntfy server, or let install.sh run its own (README: Notifications)"
+  fi
+  note "Cursor, Codex, OpenCode and Gemini windows push on mark / pr.sh note only (no question or turn-end hooks)"
+fi
+info ""
 
 # ---------- 10. opsx command + /opsx-init skill ----------
 if [ "$SKIP_INIT" -eq 1 ]; then
@@ -2513,11 +3059,12 @@ if [ "$SKIP_RESTORE" -eq 1 ]; then
 else
   step "Installing session restore (Claude Code + tmux-resurrect)"
   SESSIONS_SH=$PREFIX/skills/opsx-run/opsx-sessions.sh
-  if upsert_claude_session_hook "$PREFIX/settings.json" "$SESSIONS_SH"; then
-    ok "SessionStart hook -> $(tilde "$PREFIX/settings.json") (records each Claude session's tmux pane)"
-  else
-    warn "could not add the SessionStart hook to $PREFIX/settings.json (needs python3 and valid JSON)"
-  fi
+  upsert_claude_session_hook "$PREFIX/settings.json" "$SESSIONS_SH"
+  case $? in
+    0) ok "SessionStart hook -> $(tilde "$PREFIX/settings.json") (records each Claude session's tmux pane)" ;;
+    2) warn "$(tilde "$PREFIX/settings.json") is not valid JSON — left it alone (no SessionStart hook)" ;;
+    *) warn "could not add the SessionStart hook to $PREFIX/settings.json (needs python3 and valid JSON)" ;;
+  esac
   if [ "$SKIP_INIT" -eq 0 ] && [ -x "${OPSX_BIN:-}" ] && grep -qxF "$OPSX_LAUNCHER_MARK" "$OPSX_BIN" 2>/dev/null; then
     RESTORE_SAVE_CMD="$OPSX_BIN sessions save"
     RESTORE_RESTORE_CMD="$OPSX_BIN sessions restore"
@@ -2797,6 +3344,29 @@ if [ -n "$EXPOSE_DOMAIN" ]; then
     warn "missing: $EXPOSE_CADDY_JSON"; FAIL=1
   fi
 fi
+if [ "$SKIP_NOTIFY" -eq 0 ]; then
+  for d in "$PREFIX/skills/opsx-run" "$CURSOR_SKILLS_DIR" "$AGENTS_SKILLS_DIR" \
+           "$CODEX_SKILLS_DIR" "$OPENCODE_SKILLS_DIR" "$GEMINI_SKILLS_DIR"; do
+    [ -x "$d/opsx-notify.sh" ] || { warn "opsx-notify.sh is missing or not executable in $d"; FAIL=1; }
+  done
+  if bash -n "$PREFIX/skills/opsx-run/opsx-notify.sh" 2>/dev/null; then
+    ok "opsx-notify.sh parses"
+  else
+    warn "opsx-notify.sh failed to parse"; FAIL=1
+  fi
+  if [ -f "$CLAUDE_SETTINGS" ] && grep -q 'opsx-notify.sh hook claude-stop' "$CLAUDE_SETTINGS" 2>/dev/null; then
+    ok "notify hooks in $(tilde "$CLAUDE_SETTINGS")"
+  else
+    warn "notify hooks missing in $CLAUDE_SETTINGS"
+  fi
+  if [ "$NOTIFY_READY" -eq 1 ]; then
+    if [ "$(file_mode "$NOTIFY_ENV")" = 600 ]; then
+      ok "$(tilde "$NOTIFY_ENV") (mode 600)"
+    else
+      warn "$NOTIFY_ENV is not mode 600"; FAIL=1
+    fi
+  fi
+fi
 for sh in opsx-window.sh opsx-merge.sh opsx-land.sh opsx-eval.sh opsx-preview.sh opsx-sessions.sh; do
   [ -x "$PREFIX/skills/opsx-run/$sh" ] || { warn "$sh is not executable (Claude)"; FAIL=1; }
   [ -x "$CURSOR_SKILLS_DIR/$sh" ] || { warn "$sh is not executable (Cursor)"; FAIL=1; }
@@ -2822,6 +3392,8 @@ fi
 if [ "$SKIP_RESTORE" -eq 0 ]; then
   if grep -q 'opsx-sessions.sh' "$PREFIX/settings.json" 2>/dev/null; then
     ok "session restore SessionStart hook in $(tilde "$PREFIX/settings.json")"
+  elif ! settings_json_ok "$PREFIX/settings.json"; then
+    warn "session restore SessionStart hook missing: $PREFIX/settings.json is not valid JSON"
   else
     warn "session restore SessionStart hook missing in $PREFIX/settings.json"; FAIL=1
   fi
@@ -2847,5 +3419,6 @@ info "  3. Propose a change:  ${B}/opsx:propose \"add rate limiting\"${N}"
 info "  4. From inside tmux:  ${B}/opsx-run add-rate-limiting${N}"
 [ "$SKIP_FORK" -eq 1 ] || info "  5. Side questions in a read-only pane:  ${B}/fork \"where are retries handled?\"${N}"
 [ -z "$EXPOSE_DOMAIN" ] || info "  6. Publish a local port (after the proxy is running):  ${B}/expose 3000${N}  ->  https://3000--<project>.$EXPOSE_DOMAIN"
+[ "$NOTIFY_READY" -eq 0 ] || notify_setup_lines
 info ""
 [ -n "${TMUX:-}" ] || info "  ${Y}Note:${N} /opsx-run must be run from inside a tmux session."

@@ -668,6 +668,10 @@ EOF
   cat <<EOF
 - For your first reply, briefly confirm what you understood and answer the
   question if one was given. Then wait for the user.
+- Before you ask the user a question, run
+  \`$(dirname -- "$(dirname -- "$script")")/opsx-run/opsx-window.sh mark . ask\`
+  (it pushes a decision notification to the user's phone when notifications
+  are set up; skip it if that file is missing).
 - When the user says \`/fork return\` (or asks you to report back), write a
   concise result — **Answer**, **Evidence** (\`file:line\`, commands run),
   **Unresolved** — at most ~40 lines, and save it by running exactly:

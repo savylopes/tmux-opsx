@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Skipped
+# level: L2
+# requirement: Self-hosted ntfy installed by install.sh
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+notify_install_ok dev.example.com --skip-notify
+cfg=$(caddy_json); [ -n "$cfg" ] || fail "no caddy json"
+grep -q opsx-ntfy "$cfg" && fail "opsx-ntfy route present with --skip-notify"
+f=$(find "$HOME" "$EVAL_TMP" -name 'tmux-opsx-ntfy*' 2>/dev/null | head -3); [ -z "$f" ] || fail "ntfy unit present: $f"
+[ ! -e "$NOTIFY_ENV" ] || fail "notify.env exists with --skip-notify"
+echo OK

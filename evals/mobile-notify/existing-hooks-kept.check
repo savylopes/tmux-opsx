@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Existing hooks kept
+# level: L2
+# requirement: Claude Code hooks installed safely
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+mkdir -p "$HOME/.claude"
+cat > "$HOME/.claude/settings.json" <<'J'
+{"theme":"dark","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo user-pretool-hook"}]}]}}
+J
+before=$(jq -c '.hooks.PreToolUse' "$HOME/.claude/settings.json")
+notify_install_ok dev.example.com
+notify_install_ok dev.example.com
+s="$HOME/.claude/settings.json"; jq . "$s" || fail "settings.json invalid"
+[ "$(jq -c '.hooks.PreToolUse[] | select(.matcher=="Bash")' "$s")" = "$(echo "$before" | jq -c '.[0]')" ] || fail "user PreToolUse hook changed"
+[ "$(jq -r .theme "$s")" = dark ] || fail "other setting lost"
+n=$(jq '[.hooks.Stop[]?.hooks[]? | select(.command | test("opsx-notify"))] | length' "$s"); echo "Stop hooks: $n"
+[ "$n" -eq 1 ] || fail "tmux-opsx Stop hook appears $n times, expected 1"
+nn=$(jq '[.hooks.Notification[]?.hooks[]? | select(.command | test("opsx-notify"))] | length' "$s"); echo "Notification hooks: $nn"
+[ "$nn" -ge 1 ] || fail "no Notification hook installed"
+ls "$HOME/.claude"/settings.json.bak* >/dev/null 2>&1 || fail "no .bak copy of settings.json"
+echo OK

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Test reports failure
+# level: L1
+# requirement: Push failures never break the caller
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env
+export FAKE_CURL_RC=7
+out=$("$EVAL_ROOT/bin/opsx" notify test 2>&1); rc=$?; echo "rc=$rc"; echo "$out"
+[ "$rc" -ne 0 ] || fail "expected a non-zero exit"
+echo "$out" | grep -qi 'fail' || fail "output does not say the push failed"
+echo OK

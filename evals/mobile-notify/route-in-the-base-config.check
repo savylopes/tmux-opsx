@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Route in the base config
+# level: L2
+# requirement: Self-hosted ntfy installed by install.sh
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+notify_install_ok dev.example.com
+no_real_privilege || fail "install.sh called sudo/systemctl"
+cfg=$(caddy_json); [ -n "$cfg" ] || fail "no caddy json under $CFG_DIR"
+jq -e . "$cfg" >/dev/null || fail "caddy json invalid"
+r=$(jq -c '[.. | objects | select(."@id"? == "opsx-ntfy")] | first // empty' "$cfg"); echo "route: $r"
+[ -n "$r" ] || fail "no route with @id opsx-ntfy"
+echo "$r" | jq -e '[.match[]?.host[]?] | index("ntfy.dev.example.com") != null' >/dev/null || fail "route does not match host ntfy.dev.example.com"
+echo "$r" | jq -e '[.. | objects | .dial? // empty] | index("127.0.0.1:2586") != null' >/dev/null || fail "route does not proxy to 127.0.0.1:2586"
+yml=$(ls "$CFG_DIR"/*.yml "$CFG_DIR"/*.yaml 2>/dev/null | xargs grep -l 'base-url' 2>/dev/null | head -1)
+[ -n "$yml" ] || fail "no ntfy config (with base-url) under $CFG_DIR"
+cat "$yml"
+grep -Eq '^base-url:[[:space:]]*"?https://ntfy\.dev\.example\.com"?[[:space:]]*$' "$yml" || fail "base-url is not https://ntfy.dev.example.com"
+grep -Eq '^auth-default-access:[[:space:]]*"?deny-all"?[[:space:]]*$' "$yml" || fail "auth-default-access is not deny-all"
+grep -Eq '^listen-http:[[:space:]]*"?127\.0\.0\.1:' "$yml" || fail "ntfy does not listen on 127.0.0.1"
+echo OK

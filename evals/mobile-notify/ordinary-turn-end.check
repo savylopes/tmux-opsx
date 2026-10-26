@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Ordinary turn end
+# level: L2
+# requirement: One push when a window finishes
+set -u
+. "$EVAL_ROOT/evals/_lib/notify.sh"
+write_notify_env; start_tmux
+read -r w p < <(new_win fix-x change)
+printf '{"hook_event_name":"Stop","last_assistant_message":"working on it"}' | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-stop >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] || fail "hook exit $rc"
+sleep 3; [ "$(curl_calls)" -eq 0 ] || fail "a push was sent for an unmarked turn end"
+echo OK
