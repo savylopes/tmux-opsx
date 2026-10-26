@@ -1899,7 +1899,7 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart="$exe" listen
-Restart=always
+Restart=on-failure
 RestartSec=5s
 
 [Install]

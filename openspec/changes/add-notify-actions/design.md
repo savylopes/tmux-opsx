@@ -34,10 +34,12 @@ The ntfy server is self-hosted behind the static Caddy route `opsx-ntfy`, with d
    - matches the body against `^[0-9a-f]{32}:[1-3]$`, otherwise drops it;
    - finds the window whose `@opsx_notify_reply` nonce equals it, across `tmux list-windows -a`;
    - takes the existing per-window lock (`claim()`'s lock-dir pattern);
-   - re-checks the nonce, its age (≤ 3600 s) and that the window still shows the question (`claude`: `capture-pane -p` of the recorded pane contains the stored question text; `pr`: the PR state file still has that `ask=` line);
+   - re-checks the nonce, its age (≤ 3600 s) and that the window still shows the question (`claude`: `capture-pane -p` of the recorded pane's visible screen, without scrollback, contains the stored question text; `pr`: the PR state file still has that `ask=` line);
    - unsets the record, then delivers the answer.
 
-   A well-formed reply with a missing or invalid nonce sends one `info` push titled "already answered or expired". To keep forged spam bounded, that push is sent at most once per nonce value within an hour (an in-memory set).
+   A well-formed reply with a missing or invalid nonce sends one `info` push titled "already answered or expired". To keep forged spam bounded, that push is sent at most once per nonce value within an hour and at most 10 times per hour in total (`OPSX_NOTIFY_STALE_MAX`), since a forger holding the reply token can pick a fresh nonce for every reply; the in-memory set is pruned of entries older than an hour, so it never holds more than the cap.
+
+   A Claude nonce is also forgotten when the asking pane runs a later AskUserQuestion (even one that gets no buttons: 4+ options, multi-select, several questions) or shows a permission prompt, so a late tap can never type a digit into a menu the phone never showed.
 
 5. **Delivery.**
    - **pr:** the n-th recorded label is written to a mode-600 temp file and sent with `opsx-window.sh type <pane> --text-file`.
@@ -63,14 +65,14 @@ The ntfy server is self-hosted behind the static Caddy route `opsx-ntfy`, with d
 
 8. **Install.**
    - **Credentials:** `notify_credentials` gains the reply topic (`<topic>-reply`), the `opsx-reply` user with a random password that is never stored, `access opsx-reply <reply> wo`, `access opsx <reply> ro`, and a token for `opsx-reply`. They are written to `notify.env` as `NTFY_REPLY_TOPIC` and `NTFY_REPLY_TOKEN`, and kept on a re-run when the token still lists.
-   - **Listener unit:** `~/.config/systemd/user/tmux-opsx-notify-listen.service` with `ExecStart=<skills>/opsx-run/opsx-notify.sh listen` and `Restart=always`, then `systemctl --user daemon-reload && systemctl --user enable --now`. No sudo is needed, because the unit runs as the user and so reaches the user's default tmux socket.
+   - **Listener unit:** `~/.config/systemd/user/tmux-opsx-notify-listen.service` with `ExecStart=<skills>/opsx-run/opsx-notify.sh listen` and `Restart=on-failure` (`listen` exits 0 when `notify.env` has no reply keys, so the unit stays stopped instead of restarting every 5 s), then `systemctl --user daemon-reload && systemctl --user enable --now`. No sudo is needed, because the unit runs as the user and so reaches the user's default tmux socket.
    - **Removal:** uninstall and `--skip-notify` run `systemctl --user disable --now` and delete the file.
 
 ## Risks / Trade-offs
 
 - [A tap types into an agent that runs with bypassed permissions] → The token is write-only, nonces are single-use and live for at most an hour, the still-asking check runs before typing, only offered labels or fixed keys are sent, and the reply body is never typed.
 - [Claude Code changes its menu keys] → The sequence is pinned in one function, together with the version it was checked against. A wrong sequence selects nothing or the wrong option, so the README says to check the pane after a tap. Re-running the spike procedure fixes it.
-- [The still-asking check reads the pane, and the question text could scroll out of view] → `capture-pane` uses `-S -200` lines of history. A miss only makes the tap report "already answered", which is safe.
+- [The still-asking check reads the pane, and the question text could scroll out of view] → `capture-pane` reads the visible screen only: an open menu is on screen, while scrollback still holds questions that were already answered. A miss only makes the tap report "already answered", which is safe.
 - [The listener runs only while the user's systemd manager runs] → Without lingering it stops at logout. That is acceptable because the tmux server it types into is the user's too; the README mentions `loginctl enable-linger` as an option.
 - [A notify.env written by hand without the reply keys] → No answer buttons; link buttons still work.
 

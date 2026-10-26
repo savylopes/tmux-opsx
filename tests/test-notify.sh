@@ -534,6 +534,76 @@ start_listen "$S3"; wait_urls "$S3" 2; sleep 1
 ok "3.1/5.2 a reply with the replaced nonce does not act" '[ "$(grep -c "^GOT:" "$GOTPR")" -eq 1 ] && [ -n "$(wopt "$W_L" @opsx_notify_reply)" ]'
 stop_listen
 
+# F1: a later question without buttons, or a permission prompt, ends a Claude nonce
+GOTC2=$SP/got-c2
+$L new-window -d -t nt -n cq2 "bash -c 'echo \"Keep theirs or ours in api.ts?\"; stty -icanon -echo; while IFS= read -r -s -n1 -d \"\" c; do printf \"%s\" \"\$c\" | od -An -tx1 >> \"$GOTC2\"; done'"
+W_C2=$($L display -p -t nt:cq2 '#{window_id}'); P_C2=$($L display -p -t nt:cq2 '#{pane_id}')
+$L set-option -w -t "$W_C2" @opsx_change fix-c2
+sleep 0.5
+hook "$P_C2" "$(ask_json false theirs ours)" claude-pretool
+NQ1=$(wopt "$W_C2" @opsx_notify_reply | cut -d' ' -f1)
+hook "$P_C2" "$(ask_json false a b c d)" claude-pretool
+ok "F1 a later 4-option question (no buttons) forgets the Claude nonce" '[[ $NQ1 =~ ^[0-9a-f]{32}$ ]] && [ -z "$(wopt "$W_C2" @opsx_notify_reply)" ] && [ -z "$(wopt "$W_C2" @opsx_notify_reply_q)" ]'
+hook "$P_C2" "$(ask_json false theirs ours)" claude-pretool
+NQ2=$(wopt "$W_C2" @opsx_notify_reply | cut -d' ' -f1)
+hook "$P_C2" "$(ask_json true theirs ours)" claude-pretool
+ok "F1 a later multi-select question forgets the Claude nonce" '[[ $NQ2 =~ ^[0-9a-f]{32}$ ]] && [ -z "$(wopt "$W_C2" @opsx_notify_reply)" ]'
+hook "$P_C2" "$(ask_json false theirs ours)" claude-pretool
+NQ3=$(wopt "$W_C2" @opsx_notify_reply | cut -d' ' -f1)
+hook "$P_C2" '{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}' claude-notification
+ok "F1 a permission prompt forgets the Claude nonce" '[[ $NQ3 =~ ^[0-9a-f]{32}$ ]] && [ -z "$(wopt "$W_C2" @opsx_notify_reply)" ]'
+hook "$P_C2" "$(ask_json false theirs ours)" claude-pretool
+NQ4=$(wopt "$W_C2" @opsx_notify_reply | cut -d' ' -f1)
+hook "$P_C" "$(ask_json false a b c d)" claude-pretool
+ok "F1 another pane's question leaves this pane's nonce alone" '[ "$(wopt "$W_C2" @opsx_notify_reply | cut -d" " -f1)" = "$NQ4" ]'
+hook "$P_C2" '{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash"}' claude-notification
+S4=$SP/streams4; mkdir -p "$S4"
+{ msg q1 "$NQ1:2"; msg q2 "$NQ2:2"; msg q3 "$NQ3:2"; msg q4 "$NQ4:2"; } > "$S4/stream-1"
+reset_calls
+start_listen "$S4"; wait_urls "$S4" 2; sleep 1
+ok "F1 late taps after a buttonless question / permission prompt type nothing" '[ ! -s "$GOTC2" ]'
+ok "F1 each late tap sends one already-answered push" '[ "$(n_info)" -eq 4 ] && [ "$(ncalls)" -eq 4 ]'
+stop_listen
+
+# F1: the Claude check reads the visible screen, not the scrollback
+GOTC3=$SP/got-c3
+$L new-window -d -t nt -n cq3 "bash -c 'echo \"Keep theirs or ours in api.ts?\"; for i in \$(seq 1 120); do echo l\$i; done; stty -icanon -echo; while IFS= read -r -s -n1 -d \"\" c; do printf \"%s\" \"\$c\" | od -An -tx1 >> \"$GOTC3\"; done'"
+W_C3=$($L display -p -t nt:cq3 '#{window_id}'); P_C3=$($L display -p -t nt:cq3 '#{pane_id}')
+$L set-option -w -t "$W_C3" @opsx_change fix-c3
+sleep 0.5
+hook "$P_C3" "$(ask_json false theirs ours)" claude-pretool
+NQ5=$(wopt "$W_C3" @opsx_notify_reply | cut -d' ' -f1)
+S5=$SP/streams5; mkdir -p "$S5"
+msg s1 "$NQ5:1" > "$S5/stream-1"
+reset_calls
+start_listen "$S5"; wait_urls "$S5" 2; sleep 1
+ok "F1 a question only in the scrollback is not live: nothing typed, one already-answered push" '[[ $NQ5 =~ ^[0-9a-f]{32}$ ]] && [ ! -s "$GOTC3" ] && [ "$(n_info)" -eq 1 ]'
+stop_listen
+
+# F2: forged replies with fresh nonces get a bounded number of pushes
+S6=$SP/streams6; mkdir -p "$S6"
+for i in $(seq 1 25); do msg "f$i" "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'):1"; done > "$S6/stream-1"
+reset_calls
+start_listen "$S6"; wait_urls "$S6" 2; sleep 2
+ok "F2 25 forged replies with fresh nonces: at most 10 already-answered pushes" '[ "$(n_info)" -eq 10 ] && [ "$(ncalls)" -eq 10 ]'
+stop_listen
+S7=$SP/streams7; mkdir -p "$S7"
+for i in $(seq 1 6); do msg "g$i" "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'):2"; done > "$S7/stream-1"
+reset_calls
+OPSX_NOTIFY_STALE_MAX=3 start_listen "$S7"; wait_urls "$S7" 2; sleep 1
+ok "F2 OPSX_NOTIFY_STALE_MAX=3: 6 forged replies send 3 pushes" '[ "$(n_info)" -eq 3 ] && [ "$(ncalls)" -eq 3 ]'
+stop_listen
+
+# F3: an empty option label means no answer buttons (button n must type line n)
+$L set-option -wu -t "$W_L" @opsx_notify_reply
+reset_calls
+bash "$N" send --window "$W_L" --pr 77 --repo acme/api --option "" --option B --option C decision pr-77 "pr-77: needs a decision" "b?"
+ok "F3 send --option \"\": no http action, no nonce recorded" '[ "$(ncalls)" -eq 1 ] && [ "$(n_http)" -eq 0 ] && [ -z "$(wopt "$W_L" @opsx_notify_reply)" ]'
+reset_calls
+bash "$N" send --window "$W_L" --pr 77 --repo acme/api --option "  " --option B decision pr-77 "pr-77: needs a decision" "b?"
+ok "F3 send --option of blanks: no http action" '[ "$(n_http)" -eq 0 ]'
+$L kill-window -t "$W_C2"; $L kill-window -t "$W_C3"
+
 # not configured / no reply keys: listen exits 0 with a message
 write_env
 out=$(bash "$N" listen 2>&1); rc=$?
@@ -619,7 +689,7 @@ ok "6.1: notify.env has the reply topic <topic>-reply and a reply token" '[ "$RT
 ok "6.1: opsx-reply is granted only wo on the reply topic; opsx gets ro on it" '[ "$(grep -c "^access .* opsx-reply " "$IH.ntfy/calls.log")" -eq 1 ] && grep -q "^access .* opsx-reply $RT wo$" "$IH.ntfy/calls.log" && grep -q "^access .* opsx $RT ro$" "$IH.ntfy/calls.log" && [ "$(grep -c "^user .*add opsx-reply$" "$IH.ntfy/calls.log")" -eq 1 ]'
 ok "6.1: the reply user's password is not stored and the reply token not printed" '! grep -q "pw-opsx-reply\|NTFY_REPLY_PASSWORD" "$NE" && ! grep -qF "$RK" "$IH.out" && [[ "$out" == *"$RT"* ]] && [[ "$out" != *"$RK"* ]]'
 LU=$IH/.config/systemd/user/tmux-opsx-notify-listen.service
-ok "6.2: listener user unit: ExecStart is the installed opsx-notify.sh listen, Restart=always" 'grep -qx "ExecStart=\"$IH/.claude/skills/opsx-run/opsx-notify.sh\" listen" "$LU" && grep -qx "Restart=always" "$LU"'
+ok "6.2: listener user unit: ExecStart is the installed opsx-notify.sh listen, Restart=on-failure" 'grep -qx "ExecStart=\"$IH/.claude/skills/opsx-run/opsx-notify.sh\" listen" "$LU" && grep -qx "Restart=on-failure" "$LU"'
 ok "6.2: systemctl --user daemon-reload and enable --now tmux-opsx-notify-listen" 'grep -qx "systemctl --user daemon-reload" "$SP/privileged.log" && grep -qx "systemctl --user enable --now tmux-opsx-notify-listen" "$SP/privileged.log"'
 
 # 5.4 rerun keeps the credentials and makes no second user

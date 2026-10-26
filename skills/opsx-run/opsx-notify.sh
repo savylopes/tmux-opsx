@@ -53,7 +53,9 @@
 #   <epoch> <claude|pr> <pane>", @opsx_notify_reply_opts = the labels, one per
 #   line, @opsx_notify_reply_q = the question (claude: its first 60
 #   characters; pr: PR number, repo and the ask= value, one per line). A newer
-#   answer push replaces it. Without both reply keys: no answer buttons.
+#   answer push replaces it; any AskUserQuestion or permission prompt from the
+#   pane (and its turn end) forgets a claude record first. An empty label
+#   means no answer buttons. Without both reply keys: no answer buttons.
 # - link buttons (`view` actions) after them on decision and finished pushes:
 #   Open PR (window @opsx_change pr-<n> with @opsx_pr_repo), Open preview
 #   (opsx-preview.sh url <change> within 2 s), Open page (a /fork page pane
@@ -61,12 +63,15 @@
 #
 # listen (the tmux-opsx-notify-listen user unit): subscribes to the reply
 # topic with the main token, and for a reply `<nonce>:<n>` whose nonce is
-# live (recorded, at most 1 hour old, the window still shows the question)
+# live (recorded, at most 1 hour old, the window still shows the question:
+# claude = on the pane's visible screen, pr = the ask= line in the PR state)
 # forgets the nonce and delivers option n: pr -> the label typed as one line
 # through opsx-window.sh type; claude -> the keys of `menu-keys <n>` through
 # opsx-window.sh keys. Anything else is dropped; a well-formed reply with a
 # dead nonce sends one "already answered or expired" push (once per nonce per
-# hour). Reconnects with a 1..60 s backoff, `since=<last id>`.
+# hour, at most OPSX_NOTIFY_STALE_MAX=10 per hour in all). Reconnects with a
+# 1..60 s backoff, `since=<last id>`. Exits 0 when notify.env has no reply
+# keys (the unit restarts only on failure).
 #
 # Hooks only act in opsx panes: a pane tagged @fork_dir, a window tagged
 # @opsx_change or a session tagged @opsx_task. The pane comes from $TMUX_PANE,
@@ -420,6 +425,8 @@ record_reply() {
   shift 4
   nonce=$(new_nonce)
   [[ $nonce =~ ^[0-9a-f]{32}$ ]] || return 1
+  # Button n types line n: an empty label would shift the lines, so no buttons.
+  for opts in "$@"; do [ -n "$opts" ] || return 1; done
   opts=$(printf '%s\n' "$@")
   tmux set-option -w -t "$win" @opsx_notify_reply_opts "$opts" >/dev/null 2>&1 || return 1
   tmux set-option -w -t "$win" @opsx_notify_reply_q "$q" >/dev/null 2>&1 || return 1
@@ -638,6 +645,9 @@ hook_claude_pretool() {
   pane_scope "$TMUX_PANE" || return 0
   q=$(question_text "$input")
   record_decision "$P_WIN"
+  # A new question replaces whatever menu this pane showed: an older answer
+  # nonce must not reach it, even when this question gets no buttons.
+  forget_pane_reply "$P_WIN" "$TMUX_PANE"
   local labels=() l nonce="" first
   if reply_ready && [ -n "$(menu_keys 1)" ]; then
     while IFS= read -r l; do labels+=("$(clean_label "$l")"); done < <(question_options "$input")
@@ -664,6 +674,8 @@ hook_claude_notification() {
   load_config || return 0
   resolve_pane || return 0
   pane_scope "$TMUX_PANE" || return 0
+  # The pane now shows a permission prompt, not the question a nonce answers.
+  forget_pane_reply "$P_WIN" "$TMUX_PANE"
   record_decision "$P_WIN"
   set_actions "" -- "$P_WIN" "$TMUX_PANE"
   do_send decision "" "$P_LABEL: waiting for permission" "${msg:-$P_LABEL is waiting for permission.}"
@@ -712,7 +724,9 @@ still_asking() {
   case "$kind" in
     claude)
       [ -n "$q" ] || return 1
-      tmux capture-pane -p -J -S -200 -t "$pane" 2>/dev/null | grep -qF -- "$q" ;;
+      # The visible screen only: an open menu is on screen, while scrollback
+      # still holds questions that were answered.
+      tmux capture-pane -p -J -t "$pane" 2>/dev/null | grep -qF -- "$q" ;;
     pr)
       pr=$(printf '%s\n' "$q" | sed -n 1p); repo=$(printf '%s\n' "$q" | sed -n 2p)
       ask=$(printf '%s\n' "$q" | sed -n '3,$p')
@@ -725,11 +739,19 @@ still_asking() {
 
 declare -A STALE_SENT=()
 
-# stale_push <nonce>: one "already answered or expired" push per nonce per hour.
+# stale_push <nonce>: one "already answered or expired" push per nonce per
+# hour, and at most $OPSX_NOTIFY_STALE_MAX (default 10) of them per hour in
+# total: a forger with the reply token picks a fresh nonce for every reply.
+# Entries older than an hour are pruned, so the table holds at most the cap.
 stale_push() {
-  local t
+  local t k max
   t=$(now)
-  if [ -n "${STALE_SENT[$1]:-}" ] && [ $(( t - STALE_SENT[$1] )) -lt "$REPLY_TTL" ]; then return 0; fi
+  max=$(int_or "${OPSX_NOTIFY_STALE_MAX:-}" 10)
+  for k in "${!STALE_SENT[@]}"; do
+    [ $(( t - STALE_SENT[$k] )) -lt "$REPLY_TTL" ] || unset 'STALE_SENT[$k]'
+  done
+  [ -z "${STALE_SENT[$1]:-}" ] || return 0
+  [ "${#STALE_SENT[@]}" -lt "$max" ] || return 0
   STALE_SENT[$1]=$t
   ACTIONS=""
   do_send info "" "already answered or expired" \
@@ -749,7 +771,7 @@ handle_reply() {
   read -r rn epoch kind pane <<<"$rec"
   if [ "${rn:-}" != "$nonce" ]; then win_unlock; stale_push "$nonce"; return 0; fi
   opts=$(tmux show-options -wqv -t "$win" @opsx_notify_reply_opts 2>/dev/null)
-  count=$(printf '%s\n' "$opts" | awk 'NF { c++ } END { print c + 0 }')
+  count=$(printf '%s\n' "$opts" | awk 'END { print NR }')
   # An option that was never offered: drop it, the question stays open.
   if [ "$n" -gt "$count" ]; then win_unlock; return 0; fi
   q=$(tmux show-options -wqv -t "$win" @opsx_notify_reply_q 2>/dev/null)
@@ -761,7 +783,7 @@ handle_reply() {
   win_unlock
   case "$kind" in
     pr)
-      label=$(printf '%s\n' "$opts" | awk 'NF' | sed -n "${n}p")
+      label=$(printf '%s\n' "$opts" | sed -n "${n}p")
       [ -n "$label" ] || return 0
       tmp=$( umask 077; mktemp "${TMPDIR:-/tmp}/opsx-reply.XXXXXX" ) || return 0
       printf '%s\n' "$label" > "$tmp"

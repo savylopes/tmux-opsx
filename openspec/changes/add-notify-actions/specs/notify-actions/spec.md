@@ -53,7 +53,7 @@ Each answer button SHALL POST to `<NTFY_URL>/<NTFY_REPLY_TOPIC>` with `Authoriza
 - **THEN** the push is sent with no `http` action
 
 ### Requirement: Live nonce
-Each answer push SHALL record its nonce, kind, time and offered options on the asking window. A nonce SHALL be live only while it is recorded, at most 1 hour old, and the window still shows that question: for a Claude question the pane still shows the question text, for a PR question the PR state still has that `ask=` line. A newer answer push for the same window SHALL replace the older nonce.
+Each answer push SHALL record its nonce, kind, time and offered options on the asking window. A nonce SHALL be live only while it is recorded, at most 1 hour old, and the window still shows that question: for a Claude question the pane's visible screen still shows the question text, for a PR question the PR state still has that `ask=` line. A newer answer push for the same window SHALL replace the older nonce.
 
 #### Scenario: Newer question replaces the nonce
 - **WHEN** two answer pushes are sent for the same window
@@ -62,6 +62,13 @@ Each answer push SHALL record its nonce, kind, time and offered options on the a
 #### Scenario: Expired nonce
 - **WHEN** a reply arrives for a nonce recorded more than 1 hour ago
 - **THEN** nothing is typed into the pane
+
+### Requirement: A later prompt ends a Claude nonce
+Any later AskUserQuestion from the asking pane, with or without answer buttons, and any permission prompt from it SHALL forget that pane's Claude nonce, so a late tap never reaches a menu the push did not show.
+
+#### Scenario: A later question without buttons ends the nonce
+- **WHEN** a Claude question with 2 options got answer buttons, then the same pane asks a question with 4 options or shows a permission prompt, then a reply with the first nonce arrives
+- **THEN** nothing is typed into the pane and one push saying it was already answered is sent
 
 ### Requirement: Listener delivers a valid reply once
 `opsx-notify.sh listen` SHALL subscribe to the reply topic and, for a reply with a live nonce, deliver option n into the asking pane and then forget the nonce, so a second reply with it does nothing. A PR answer SHALL type the option's label as one line through `opsx-window.sh type`. A Claude answer SHALL send the key sequence printed by `opsx-notify.sh menu-keys <n>`.
@@ -86,7 +93,7 @@ The listener SHALL drop any reply whose body does not match `^[0-9a-f]{32}:[1-3]
 - **THEN** nothing is typed into the pane
 
 ### Requirement: Stale tap reports already answered
-A well-formed reply whose nonce is not live (used, replaced, expired, or the window no longer shows the question) SHALL send one push saying the question was already answered or has expired, and SHALL type nothing. A tap that is delivered SHALL send no confirmation push.
+A well-formed reply whose nonce is not live (used, replaced, expired, or the window no longer shows the question) SHALL send one push saying the question was already answered or has expired, and SHALL type nothing. Such pushes SHALL be sent at most once per nonce and at most 10 per hour in total, so forged replies with fresh nonces cannot cause unbounded pushes. A tap that is delivered SHALL send no confirmation push.
 
 #### Scenario: Answered at the terminal first
 - **WHEN** a PR question's `ask=` line was cleared with `pr.sh note 42 --clear` and then its answer button reply arrives
