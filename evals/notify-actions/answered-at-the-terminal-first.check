@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Answered at the terminal first
+# level: L2
+# requirement: Stale tap reports already answered
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(typed_win pr-42 line)
+pr_setup 42
+pr_note "$p" 42 "main or develop?" --option main --option develop >/dev/null
+wait_calls 1 10 || fail "no push"; sleep 1; n=$(last_nonce)
+out=$(pr_note "$p" 42 --clear); echo "clear rc=$? out=[$out]"
+grep -q '^ask=' "$(pr_state_dir 42)/state" && fail "setup: ask= line not cleared"
+sleep 1; reset_curl
+stream_live 1 "$n:1"
+start_listener 6; sleep 3.5; stop_listener
+[ -d "$SUB_DIR/c1" ] || fail "listener never subscribed"
+t=$(typed pr-42); echo "typed=[$t]"
+[ -z "$t" ] || fail "a stale tap typed into the pane"
+echo "pushes: $(curl_calls)"; curl_all_headers; curl_all_bodies; echo
+[ "$(curl_calls)" -eq 1 ] || fail "expected exactly one push, got $(curl_calls)"
+{ curl_all_headers; curl_all_bodies; } | grep -Eqi 'already answered|expired' || fail "the push does not say already answered / expired"
+echo OK

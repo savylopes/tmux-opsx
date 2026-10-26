@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Two options become two buttons
+# level: L2
+# requirement: Answer buttons for a single Claude question
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(new_win fix-x change)
+in='{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"How do we land this?","multiSelect":false,"options":[{"label":"rebase"},{"label":"merge"}]}]}}'
+out=$(printf '%s' "$in" | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-pretool 2>&1); rc=$?; echo "rc=$rc out=[$out]"
+[ "$rc" -eq 0 ] || fail "hook exit $rc"
+wait_calls 1 10 || fail "no push"; sleep 1
+actions_tsv
+[ "$(actions_tsv | awk -F'\t' '$1=="http"{printf "%s,",$2}')" = "rebase,merge," ] || fail "expected two http actions labelled rebase and merge"
+echo OK

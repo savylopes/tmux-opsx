@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Unit installed
+# level: L2
+# requirement: Reply listener unit
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+notify_install_ok dev.example.com
+echo "unit: $LISTEN_UNIT"; [ -f "$LISTEN_UNIT" ] && cat "$LISTEN_UNIT"
+[ -f "$LISTEN_UNIT" ] || fail "unit file not written"
+ex=$(sed -n 's/^ExecStart=//p' "$LISTEN_UNIT"); echo "ExecStart=$ex"
+echo "$ex" | grep -q 'opsx-notify.sh"\? listen' || fail "ExecStart does not run opsx-notify.sh listen"
+script=$(echo "$ex" | sed 's/^"\?\([^" ]*opsx-notify.sh\).*/\1/'); [ -f "$script" ] || fail "ExecStart script $script is not an installed file"
+case $script in "$HOME"/*) ;; *) fail "ExecStart script is outside the scratch HOME: $script";; esac
+grep -F "systemctl --user enable --now tmux-opsx-notify-listen" "$SHIM_LOG" >/dev/null || { grep systemctl "$SHIM_LOG"; fail "systemctl --user enable --now tmux-opsx-notify-listen not called"; }
+echo OK

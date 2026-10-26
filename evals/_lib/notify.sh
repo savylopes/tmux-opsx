@@ -43,27 +43,31 @@ write_notify_env() {
   chmod 600 "$NOTIFY_ENV"
 }
 
-# Stateful fake ntfy binary (user/access/token subcommands only).
+# Stateful fake ntfy binary (user/access/token subcommands, several users; the real `user list` / `token list` wording
 FAKE_NTFY="$EVAL_TMP/fake-ntfy"
 cat > "$FAKE_NTFY" <<'SH'
 #!/usr/bin/env bash
 S=$FAKE_NTFY_STATE
 printf 'ntfy %s\n' "$*" >> "$FAKE_NTFY_LOG"
+touch "$S/users" "$S/access" "$S/tokens"
 sub=${1:-}; shift || true
 a=(); while [ $# -gt 0 ]; do case $1 in --config) shift 2;; *) a+=("$1"); shift;; esac; done
 set -- "${a[@]}"
 case $sub in
   user) case ${1:-} in
-          list) if [ -f "$S/user" ]; then echo "user opsx (role: user, tier: none)"
-                  [ -f "$S/topic" ] && echo "- read-write access to topic $(cat "$S/topic")"; fi; exit 0;;
-          add) : > "$S/user"; echo "user opsx added with role user";;
-          change-pass) :;;
+          list) while read -r u; do [ -n "$u" ] || continue
+                  echo "user $u (role: user, tier: none)"
+                  while read -r au at am; do [ "$au" = "$u" ] || continue
+                    case $am in rw|read-write) w=read-write;; ro|read-only) w=read-only;; wo|write-only) w=write-only;; *) w=$am;; esac
+                    echo "- $w access to topic $at"; done < "$S/access"
+                done < "$S/users"; exit 0;;
+          add) echo "$2" >> "$S/users"; echo "user $2 added with role user";;
         esac;;
-  access) printf '%s' "$3" > "$S/topic";;
+  access) grep -v "^$1 $2 " "$S/access" > "$S/access.n" 2>/dev/null; mv "$S/access.n" "$S/access"; echo "$1 $2 $3" >> "$S/access";;
   token) case ${1:-} in
-           list) [ -f "$S/token" ] && printf 'user opsx\n- %s (never expires)\n' "$(cat "$S/token")"; exit 0;;
-           add) t=tk_$(LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 29); printf '%s' "$t" > "$S/token"
-                echo "token $t created for user opsx, never expires";;
+           list) printf 'user %s\n' "$2"; while read -r tu tt; do [ "$tu" = "$2" ] && printf -- '- %s (never expires)\n' "$tt"; done < "$S/tokens"; exit 0;;
+           add) t=tk_$(LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 29); echo "$2 $t" >> "$S/tokens"
+                echo "token $t created for user $2, never expires";;
          esac;;
   version|--version) echo "ntfy 2.34.0";;
   serve) exit 0;;
@@ -82,7 +86,8 @@ notify_install_ok() {
   local out; out=$(notify_install "$@") || { echo "$out" | tail -25; fail "setup: install.sh failed"; }
   printf '%s\n' "$out" > "$EVAL_TMP/install.out"
 }
-no_real_privilege() { ! grep -E '^(sudo|systemctl) ' "$SHIM_LOG" >/dev/null; }
+# sudo and system-level systemctl are forbidden; `systemctl --user` (the reply listener unit) is allowed
+no_real_privilege() { ! grep -E '^(sudo|systemctl) ' "$SHIM_LOG" | grep -vE '^systemctl --user ' | grep . >/dev/null; }
 
 # ---- private tmux server ----
 need_tmux() { command -v tmux >/dev/null 2>&1 || { echo "tmux missing"; exit 77; }; }

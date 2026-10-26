@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / No preview running
+# level: L2
+# requirement: Link buttons
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(new_win fix-x change)
+export OPSX_NOTIFY_FLUSH_AFTER=1
+TMUX_PANE=$p bash "$WINSH" mark fix-x done >/dev/null 2>&1; echo "mark rc=$?"
+wait_calls 1 20 || fail "no push"; sleep 1
+curl_all_headers; actions_tsv
+actions_tsv | awk -F'\t' '$2=="Open preview"{f=1} END{exit f}' || fail "an Open preview action is present with no preview running"
+echo OK

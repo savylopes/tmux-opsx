@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Free text dropped
+# level: L2
+# requirement: Replies never carry free text
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(typed_win pr-42 line)
+pr_setup 42
+pr_note "$p" 42 "main or develop?" --option main --option develop >/dev/null
+wait_calls 1 10 || fail "no push"; sleep 1; reset_curl
+stream_live 1 'rm -rf ~'
+start_listener 8; sleep 3.5
+alive=0; listener_alive && alive=1
+stop_listener
+[ -d "$SUB_DIR/c1" ] || fail "listener never subscribed"
+t=$(typed pr-42); echo "typed=[$t] alive=$alive"
+[ -z "$t" ] || fail "free text produced typing"
+[ "$alive" -eq 1 ] || { cat "$EVAL_TMP/listen.out"; fail "the listener stopped after a bad reply"; }
+echo OK

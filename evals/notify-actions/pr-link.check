@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / PR link
+# level: L2
+# requirement: Link buttons
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(new_win pr-42 change); TM set-option -w -t "$w" @opsx_pr_repo acme/api
+export OPSX_NOTIFY_FLUSH_AFTER=1
+TMUX_PANE=$p bash "$WINSH" mark pr-42 done >/dev/null 2>&1; echo "mark rc=$?"
+wait_calls 1 20 || fail "no push"; sleep 1
+actions_tsv
+actions_tsv | awk -F'\t' '$1=="view" && $2=="Open PR" && $3=="https://github.com/acme/api/pull/42"{f=1} END{exit !f}' || fail "no view action 'Open PR' -> https://github.com/acme/api/pull/42"
+echo OK

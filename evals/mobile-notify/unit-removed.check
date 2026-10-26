@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Unit removed
+# level: L2
+# requirement: Reply listener unit
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+notify_install_ok dev.example.com
+[ -f "$LISTEN_UNIT" ] || fail "setup: unit not installed"
+out=$(CLOUDFLARE_API_TOKEN=t1 OPSX_NTFY_BIN="$FAKE_NTFY" OPSX_CADDY_BIN="$FAKE_CADDY" install_nt --uninstall 2>&1); rc=$?; echo "rc=$rc"; echo "$out" | tail -15
+[ ! -e "$LISTEN_UNIT" ] || fail "unit file still present after --uninstall"
+grep -F "systemctl --user disable --now tmux-opsx-notify-listen" "$SHIM_LOG" >/dev/null || { grep systemctl "$SHIM_LOG"; fail "systemctl --user disable --now tmux-opsx-notify-listen not called"; }
+echo OK

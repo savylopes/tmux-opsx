@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt shows note with options
+# level: L2
+# requirement: Fixed-choice questions carry options
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+
+need_tmux; mk_env
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+p=$SP/prompt.copy; [ -s "$p" ] || fail "no prompt file"
+grep -n 'note\|option' "$p" | head -20
+grep -Eq 'pr\.sh note .*--option' "$p" || fail "no 'pr.sh note ... --option' example in the prompt"
+grep -Ei 'option' "$p" | grep -Eiq 'typed|type|answer' || fail "prompt does not say a typed option label is the user's answer"
+echo OK

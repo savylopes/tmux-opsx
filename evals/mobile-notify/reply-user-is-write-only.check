@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Reply user is write-only
+# level: L2
+# requirement: ntfy credentials
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+notify_install_ok dev.example.com
+topic=$(sed -n 's/^NTFY_TOPIC=//p' "$NOTIFY_ENV"); rtopic=$(sed -n 's/^NTFY_REPLY_TOPIC=//p' "$NOTIFY_ENV")
+echo "topic=$topic reply=$rtopic"; cat "$FAKE_NTFY_LOG"
+[ -n "$rtopic" ] || fail "notify.env has no NTFY_REPLY_TOPIC"
+acc=$(grep -E '^ntfy access ' "$FAKE_NTFY_LOG")
+rw=$(echo "$acc" | grep -E " opsx-reply " || true)
+[ "$(echo "$rw" | grep -c .)" -eq 1 ] || fail "expected exactly one access grant for opsx-reply, got: $rw"
+echo "$rw" | grep -E " opsx-reply $rtopic (wo|write-only)$" >/dev/null || fail "opsx-reply grant is not write-only on the reply topic: $rw"
+echo "$acc" | grep -E " opsx $rtopic (ro|read-only|rw|read-write)$" >/dev/null || fail "opsx has no read grant on the reply topic"
+echo "$acc" | grep -E " opsx-reply " | grep -F "$topic " | grep -vF "$rtopic" && fail "opsx-reply was granted the main topic"
+echo OK

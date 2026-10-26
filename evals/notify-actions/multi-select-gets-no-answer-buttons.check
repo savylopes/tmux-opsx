@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Multi-select gets no answer buttons
+# level: L2
+# requirement: Answer buttons for a single Claude question
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+write_notify_env_reply; start_tmux
+read -r w p < <(new_win fix-x change)
+in='{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which parts?","multiSelect":true,"options":[{"label":"api"},{"label":"ui"}]}]}}'
+printf '%s' "$in" | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-pretool >/dev/null 2>&1; echo "hook rc=$?"
+wait_calls 1 10 || fail "no push (a decision push is still expected)"; sleep 1
+actions_tsv
+[ "$(actions_tsv | awk -F'\t' '$1=="http"' | wc -l)" -eq 0 ] || fail "multi-select question got http actions"
+echo OK
