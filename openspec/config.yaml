@@ -11,7 +11,8 @@ context: |
   - install.sh: installs/uninstalls everything, with --skip-* flags and .bak backups
   - skills/*/: SKILL.md plus helper scripts (e.g. skills/opsx-run/opsx-window.sh, opsx-merge.sh, opsx-land.sh, opsx-eval.sh,
     opsx-sessions.sh, opsx-notify.sh = the only push sender, ntfy via ~/.config/tmux-opsx/notify.env, never fails its
-    caller); bin/opsx dispatches `opsx init|dev|sessions|notify`
+    caller; answer/link buttons, `listen` = the tmux-opsx-notify-listen user unit that types a tapped answer into the
+    asking pane via opsx-window.sh type/keys); bin/opsx dispatches `opsx init|dev|sessions|notify`
   - push notifications: install.sh --expose-domain also runs a self-hosted ntfy (tmux-opsx-ntfy unit, static Caddy route
     opsx-ntfy), and merges Claude Code Stop/Notification/PreToolUse hooks into ~/.claude/settings.json (--skip-notify)
   - agents/*.md: subagent definitions (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa),

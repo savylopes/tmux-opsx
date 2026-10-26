@@ -417,7 +417,7 @@ NC=$SP/ncalls; mkdir -p "$NC"
 cat > "$SP/fakebin/curl" <<EOF
 #!/usr/bin/env bash
 f=$NC/call-\$(date +%s%N)-\$\$
-{ printf 'ARGV: %s\n' "\$*"; printf 'BODY:\n'; cat; } > "\$f.tmp"; mv "\$f.tmp" "\$f.call"
+{ printf 'ARGV: %s\n' "\$*"; prev=""; for a in "\$@"; do [ "\$prev" = -H ] && case \$a in @*) sed 's/^/HDR: /' "\${a#@}" ;; esac; prev=\$a; done; printf 'BODY:\n'; cat; } > "\$f.tmp"; mv "\$f.tmp" "\$f.call"
 printf ' %s ' "\$@" | grep -q ' -w ' && printf 200
 exit 0
 EOF
@@ -439,6 +439,20 @@ P note 42 "rebase onto main or develop?" >/dev/null
 sleep 5
 ok "mark ask, then note 2 s later: exactly one push, with the question" '[ "$(ncalls)" -eq 1 ] && nbody | grep -qF "rebase onto main or develop?"'
 P note 42 --clear >/dev/null
+# note --option -> answer buttons (add-notify-actions 3.3)
+printf 'NTFY_REPLY_TOPIC=opsx-0123456789ab-reply\nNTFY_REPLY_TOKEN=tk_r\n' >> "$NENV"
+nacts() { sed -n 's/^HDR: Actions: //p' "$(find "$NC" -name '*.call' | sort | tail -n1)"; }
+rm -f "$NC"/*
+out=$(P note 42 "rebase onto main or develop?" --option main --option develop); rc=$?
+ok "note --option x2: two http actions labelled main and develop, and the ask= line" '[ $rc -eq 0 ] && [ "$(ncalls)" -eq 1 ] && [ "$(nacts | jq -r "[.[] | select(.action==\"http\") | .label] | join(\",\")")" = "main,develop" ] && grep -qx "ask=rebase onto main or develop?" "$ST42"'
+ok "note --option: the window records the PR nonce with both options" '[ "$(opt "$WIN" @opsx_notify_reply | cut -d" " -f3)" = pr ] && [ "$(opt "$WIN" @opsx_notify_reply_opts)" = "$(printf "main\ndevelop")" ] && [ "$(opt "$WIN" @opsx_notify_reply_q | sed -n 1,2p | tr "\n" " ")" = "42 o/app " ]'
+P note 42 --clear >/dev/null; rm -f "$NC"/*
+out=$(P note 42 "pick" --option a --option b --option c --option d 2>&1); rc=$?
+ok "note with 4 options: non-zero, no ask= line, no push" '[ $rc -ne 0 ] && ! grep -q "^ask=" "$ST42" && [ "$(ncalls)" -eq 0 ]'
+out=$(P note 42 "plain question?"); rc=$?
+ok "note without options: unchanged (push without http actions)" '[ $rc -eq 0 ] && [ "$(ncalls)" -eq 1 ] && ! nacts | grep -q "\"http\"" && grep -qx "ask=plain question?" "$ST42"'
+P note 42 --clear >/dev/null
+ok "prompt: note example with --option and the typed label is the answer" 'P prompt 42 | grep -q "note 42 \"rebase onto main or develop?\" --option main --option develop" && P prompt 42 | grep -q "exactly one of those option labels is the user.s answer"'
 rm -f "$NENV" "$SP/fakebin/curl"
 out=$("$PRSH" list)
 ok "list shows the running PR with its window status" 'printf "%s\n" "$out" | grep -P "^o/app\t42\task\t" >/dev/null'

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Too many options
+# level: L2
+# requirement: Answer buttons for a PR question
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+write_notify_env_reply; start_tmux
+read -r w p < <(new_win pr-42 change)
+pr_setup 42
+out=$(pr_note "$p" 42 "pick" --option a --option b --option c --option d); rc=$?; echo "rc=$rc out=[$out]"
+[ "$rc" -ne 0 ] || fail "expected non-zero exit for 4 options"
+grep -q '^ask=' "$(pr_state_dir 42)/state" && fail "an ask= line was recorded"
+sleep 2; [ "$(curl_calls)" -eq 0 ] || fail "a push was sent"
+echo OK

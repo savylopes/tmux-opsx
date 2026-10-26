@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Three options leave no room for links
+# level: L2
+# requirement: At most three buttons per push
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(new_win pr-42 change); TM set-option -w -t "$w" @opsx_pr_repo acme/api
+pr_setup 42
+out=$(pr_note "$p" 42 "pick one" --option a --option b --option c); rc=$?; echo "rc=$rc out=[$out]"
+[ "$rc" -eq 0 ] || fail "note exit $rc"
+wait_calls 1 10 || fail "no push"; sleep 1
+curl_all_headers | grep -i '^Actions:'
+actions_tsv
+[ "$(action_count)" -eq 3 ] || fail "expected exactly 3 actions, got $(action_count)"
+[ "$(actions_tsv | awk -F'\t' '$1=="http"' | wc -l)" -eq 3 ] || fail "not all 3 actions are http"
+[ "$(actions_tsv | awk -F'\t' '{printf "%s,",$2}')" = "a,b,c," ] || fail "labels not in option order"
+echo OK

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Newer question replaces the nonce
+# level: L2
+# requirement: Live nonce
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(typed_win pr-42 line)
+pr_setup 42
+pr_note "$p" 42 "first: main or develop?" --option main --option develop >/dev/null
+wait_calls 1 10 || fail "no first push"; sleep 1; n1=$(last_nonce); reset_curl
+pr_note "$p" 42 "second: squash or merge?" --option squash --option merge >/dev/null
+wait_calls 1 10 || fail "no second push"; sleep 1; n2=$(last_nonce); reset_curl
+echo "nonces: $n1 $n2"; [ -n "$n1" ] && [ -n "$n2" ] && [ "$n1" != "$n2" ] || fail "pushes did not carry two distinct nonces"
+stream_live 1 "$n1:1"
+start_listener 6; sleep 3.5; stop_listener
+[ -d "$SUB_DIR/c1" ] || fail "listener never subscribed"
+t=$(typed pr-42); echo "typed=[$t]"
+[ -z "$t" ] || fail "the replaced nonce typed into the pane"
+echo OK

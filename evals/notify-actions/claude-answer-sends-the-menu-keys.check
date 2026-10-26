@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Claude answer sends the menu keys
+# level: L2
+# requirement: Listener delivers a valid reply once
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+q="Which database should we use today?"
+read -r w p < <(typed_win fix-x raw "$q")
+wait_pane_text "$p" "$q" 5 || fail "setup: pane never showed the question"
+keys=$(bash "$NOTIFY_SH" menu-keys 1); echo "menu-keys 1: [$keys]"
+[ -n "$keys" ] || { echo "no known key sequence; no Claude answer buttons by spec"; exit 77; }
+in="{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[{\"question\":\"$q\",\"multiSelect\":false,\"options\":[{\"label\":\"sqlite\"},{\"label\":\"postgres\"}]}]}}"
+printf '%s' "$in" | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-pretool >/dev/null 2>&1
+wait_calls 1 10 || fail "no push"; sleep 1; n=$(last_nonce); reset_curl
+[ -n "$n" ] || fail "no answer button nonce"
+stream_live 1 "$n:1"
+start_listener 6; sleep 3.5; stop_listener
+[ -d "$SUB_DIR/c1" ] || fail "listener never subscribed"
+# shellcheck disable=SC2086
+exp=$(key_bytes $keys | od -An -c | tr -d ' \n'); got=$(od -An -c < "$EVAL_TMP/typed.fix-x" | tr -d ' \n')
+echo "expected bytes: $exp"; echo "pane got:       $got"
+[ "$exp" = "$got" ] || fail "pane did not receive exactly the menu-keys 1 sequence"
+echo OK

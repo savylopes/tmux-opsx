@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Old replies are not replayed
+# level: L2
+# requirement: Listener survives the server
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(typed_win pr-42 line)
+pr_setup 42
+pr_note "$p" 42 "main or develop?" --option main --option develop >/dev/null
+wait_calls 1 10 || fail "no push"; sleep 1; n=$(last_nonce); reset_curl
+# a valid reply published 100 s before the listener starts; the model serves history only when asked for it with since=
+echo "h1 $(( $(date +%s) - 100 )) $n:1" > "$STREAM/history"
+start_listener 6; sleep 3.5; stop_listener
+[ -d "$SUB_DIR/c1" ] || fail "listener never subscribed"
+cat "$SUB_DIR/c1/args"
+t=$(typed pr-42); echo "typed=[$t]"
+[ -z "$t" ] || fail "an old reply was replayed into the pane"
+echo OK

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: mobile-notify / Info hides the reply token
+# level: L2
+# requirement: Notification config
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+notify_install_ok dev.example.com
+rt=$(sed -n 's/^NTFY_REPLY_TOKEN=//p' "$NOTIFY_ENV" | tr -d "\"'"); rtopic=$(sed -n 's/^NTFY_REPLY_TOPIC=//p' "$NOTIFY_ENV")
+[ -n "$rt" ] && [ -n "$rtopic" ] || { echo "install stored no reply token/topic to look for"; exit 77; }
+out=$("$EVAL_ROOT/bin/opsx" notify info 2>&1); rc=$?; echo "rc=$rc"; echo "$out"
+[ "$rc" -eq 0 ] || fail "opsx notify info exited $rc"
+echo "$out" | grep -qF "$rtopic" || fail "reply topic not printed"
+echo "$out" | grep -qF "$rt" && fail "reply token printed"
+echo OK

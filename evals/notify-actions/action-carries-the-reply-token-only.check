@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Action carries the reply token only
+# level: L2
+# requirement: Answer button posts a nonce to the reply topic
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(new_win pr-42 change)
+pr_setup 42
+pr_note "$p" 42 "pick" --option a --option b --option c >/dev/null
+wait_calls 1 10 || fail "no push"; sleep 1
+actions_tsv
+n=0
+while IFS=$'\t' read -r act label url body hdrs; do
+  [ "$act" = http ] || continue; n=$((n+1))
+  [ "$url" = "https://ntfy.test.example/$REPLY_TOPIC_DEFAULT" ] || fail "url is $url, expected the reply topic"
+  echo "$body" | grep -Eq '^[0-9a-f]{32}:[1-3]$' || fail "body '$body' does not match ^[0-9a-f]{32}:[1-3]\$"
+  echo "$hdrs" | grep -qF "Bearer tk_replytoken456" || fail "headers lack the reply token: $hdrs"
+done < <(actions_tsv)
+[ "$n" -ge 1 ] || fail "no http actions"
+curl_all_headers | grep -i '^Actions:' | grep -qF "tk_secrettoken123" && fail "main NTFY_TOKEN appears in the Actions header"
+echo OK

@@ -13,6 +13,6 @@ for run in 1 2; do
   [ "$rc" -eq 0 ] || fail "install.sh exited $rc"
 done
 echo "--- shim log"; cat "$SHIM_LOG"
-if grep -Ei '^(curl|wget) .*(caddyserver|download)' "$SHIM_LOG"; then fail "a Caddy binary download was attempted"; fi
+if grep -Ei '^(curl|wget) .*(caddyserver|github.com/caddyserver|caddy_[0-9])' "$SHIM_LOG"; then fail "a Caddy binary download was attempted"; fi
 [ "$(sha256sum "$bin")" = "$sum" ] || fail "installed caddy binary was replaced"
 echo OK
