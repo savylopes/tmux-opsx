@@ -92,6 +92,10 @@
 #                                   -> static route opsx-ntfy (ntfy.<domain>) in caddy.json
 #                                   -> ntfy user opsx, a random topic and a token in
 #                                      ~/.config/tmux-opsx/notify.env (mode 600)
+#                                   -> reply topic <topic>-reply, write-only user
+#                                      opsx-reply and its token (answer buttons)
+#                                   -> ~/.config/systemd/user/tmux-opsx-notify-listen.service
+#                                      (user unit: opsx-notify.sh listen; Linux)
 #      State (auth and cache DB) lives in ~/.local/state/tmux-opsx/ntfy/, never deleted.
 #  10. the opsx command + /opsx-init skill
 #                                   -> ~/.local/bin/opsx  (or ~/bin when only that is on PATH)
@@ -1541,6 +1545,9 @@ NTFY_UNIT=$EXPOSE_CONFIG_DIR/$NTFY_UNIT_NAME.service
 NTFY_LISTEN=127.0.0.1:2586
 NTFY_ROUTE_ID=opsx-ntfy
 NTFY_USER=opsx
+NTFY_REPLY_USER=opsx-reply
+NTFY_LISTEN_UNIT_NAME=tmux-opsx-notify-listen
+NTFY_LISTEN_UNIT=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$NTFY_LISTEN_UNIT_NAME.service
 # 1 once this run has an ntfy binary for the server (route, unit, credentials).
 NOTIFY_SERVER=0
 NTFY_CONFIG_CHANGED=0
@@ -1670,11 +1677,39 @@ YML
 random_alnum() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"; }
 random_hex() { od -An -N"$1" -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'; }
 
+# ntfy_has_grant <user-list-output> <user> <wording> <topic>: the `ntfy user
+# list` section of <user> lists "<wording> access to topic <topic>".
+ntfy_has_grant() {
+  printf '%s\n' "$1" | awk -v u="$2" -v want="- $3 access to topic $4" '
+    /^user / { cur = $2; next }
+    cur == u && $0 == want { found = 1 }
+    END { exit !found }'
+}
+
+# ntfy_token_for <user> <token|''>: keep the token while ntfy still lists it,
+# else create one. Prints the token; returns 1 when none could be made.
+ntfy_token_for() {
+  local u=$1 token=$2 tokens out
+  if [ -n "$token" ]; then
+    tokens=$(ntfy_cmd token --config "$NTFY_SERVER_YML" list "$u" 2>/dev/null) || tokens=""
+    printf '%s\n' "$tokens" | grep -qF -- "$token" || token=""
+  fi
+  if [ -z "$token" ]; then
+    out=$(ntfy_cmd token --config "$NTFY_SERVER_YML" add "$u" 2>/dev/null) || out=""
+    token=$(printf '%s\n' "$out" | grep -oE 'tk_[A-Za-z0-9]+' | head -n1)
+    [ -n "$token" ] || return 1
+  fi
+  printf '%s' "$token"
+}
+
 # User opsx (random password), read-write on a random opsx-<12 hex> topic, one
-# token; notify.env (mode 600). A rerun keeps all of it while the user and the
-# token still exist in ntfy's auth database.
+# token; the reply topic <topic>-reply that opsx may read, and a user
+# opsx-reply (random password, never stored) that may only write to it, with
+# its own token (the answer buttons of a push carry it); notify.env (mode
+# 600). A rerun keeps all of it while the users and the tokens still exist in
+# ntfy's auth database.
 notify_credentials() {
-  local topic token pw users tokens out tmp changed=""
+  local topic token pw users tokens out tmp changed="" rtopic rtoken rpw rold
   topic=$(env_file_get "$NOTIFY_ENV" NTFY_TOPIC 2>/dev/null) || topic=""
   token=$(env_file_get "$NOTIFY_ENV" NTFY_TOKEN 2>/dev/null) || token=""
   pw=$(env_file_get "$NOTIFY_ENV" NTFY_PASSWORD 2>/dev/null) || pw=""
@@ -1711,6 +1746,31 @@ notify_credentials() {
     [ -n "$token" ] || { warn "could not create an ntfy token for $NTFY_USER"; return 0; }
     changed="${changed:+$changed, }token"
   fi
+  # Reply path for answer buttons: write-only user, read access for opsx.
+  rtopic=$topic-reply
+  rtoken=$(env_file_get "$NOTIFY_ENV" NTFY_REPLY_TOKEN 2>/dev/null) || rtoken=""
+  [ "$(env_file_get "$NOTIFY_ENV" NTFY_REPLY_TOPIC 2>/dev/null)" = "$rtopic" ] || rtoken=""
+  if ! printf '%s\n' "$users" | grep -q "^user $NTFY_REPLY_USER "; then
+    rpw=$(random_alnum 24)
+    [ "${#rpw}" -eq 24 ] || { warn "could not generate a password (tr, head, /dev/urandom)"; return 0; }
+    if ! out=$(ntfy_pw_cmd "$rpw" user --config "$NTFY_SERVER_YML" add "$NTFY_REPLY_USER" 2>&1); then
+      warn "could not create the ntfy user $NTFY_REPLY_USER: $out"; return 0
+    fi
+    rpw=""; rtoken=""; changed="${changed:+$changed, }reply user"
+  fi
+  if ! ntfy_has_grant "$users" "$NTFY_REPLY_USER" write-only "$rtopic"; then
+    if ! out=$(ntfy_cmd access --config "$NTFY_SERVER_YML" "$NTFY_REPLY_USER" "$rtopic" wo 2>&1); then
+      warn "could not grant $NTFY_REPLY_USER write-only on $rtopic: $out"; return 0
+    fi
+  fi
+  if ! ntfy_has_grant "$users" "$NTFY_USER" read-only "$rtopic"; then
+    if ! out=$(ntfy_cmd access --config "$NTFY_SERVER_YML" "$NTFY_USER" "$rtopic" ro 2>&1); then
+      warn "could not grant $NTFY_USER read on $rtopic: $out"; return 0
+    fi
+  fi
+  rold=$rtoken
+  rtoken=$(ntfy_token_for "$NTFY_REPLY_USER" "$rtoken") || { warn "could not create an ntfy token for $NTFY_REPLY_USER"; return 0; }
+  [ "$rtoken" = "$rold" ] || changed="${changed:+$changed, }reply token"
   mkdir -p "$EXPOSE_CONFIG_DIR" || die "cannot create $EXPOSE_CONFIG_DIR"
   chmod 700 "$EXPOSE_CONFIG_DIR" || die "cannot chmod 700 $EXPOSE_CONFIG_DIR"
   tmp=$( umask 077; mktemp "$EXPOSE_CONFIG_DIR/.notify.env.XXXXXX" ) || die "cannot create a temp file in $EXPOSE_CONFIG_DIR"
@@ -1720,7 +1780,9 @@ notify_credentials() {
          printf 'NTFY_TOPIC=%s\n' "$topic"
          printf 'NTFY_TOKEN=%s\n' "$token"
          printf 'NTFY_USER=%s\n' "$NTFY_USER"
-         printf 'NTFY_PASSWORD=%s\n' "$pw" ) > "$tmp" || ! chmod 600 "$tmp"; then
+         printf 'NTFY_PASSWORD=%s\n' "$pw"
+         printf 'NTFY_REPLY_TOPIC=%s\n' "$rtopic"
+         printf 'NTFY_REPLY_TOKEN=%s\n' "$rtoken" ) > "$tmp" || ! chmod 600 "$tmp"; then
     rm -f "$tmp"; die "cannot write $NOTIFY_ENV"
   fi
   if [ -f "$NOTIFY_ENV" ] && cmp -s "$tmp" "$NOTIFY_ENV"; then
@@ -1812,6 +1874,63 @@ notify_remove_unit() {
     warn "remove the push server unit with (install.sh never uses sudo):"
     info "    sudo systemctl disable --now $NTFY_UNIT_NAME && sudo rm -f $installed && sudo systemctl daemon-reload"
   fi
+}
+
+# The reply listener (opsx-notify.sh listen) as a systemd *user* unit: it
+# types answers into the user's own tmux server, so it runs as the user and
+# needs no sudo. Installed when notify.env has the reply keys.
+notify_listen_step() {
+  local exe=$PREFIX/skills/opsx-run/opsx-notify.sh changed=0
+  if [ "$PLATFORM" = macOS ]; then
+    note "macOS: run the answer-button listener with: bash \"$exe\" listen   (no launchd agent is installed)"
+    return 0
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    note "running as root: install the answer-button listener as yourself: rerun ./install.sh without sudo, or run: bash \"$exe\" listen"
+    return 0
+  fi
+  mkdir -p "$(dirname -- "$NTFY_LISTEN_UNIT")" || die "cannot create $(dirname -- "$NTFY_LISTEN_UNIT")"
+  cat > "$NTFY_LISTEN_UNIT.tmp" <<UNIT || die "cannot write $NTFY_LISTEN_UNIT"
+# Written by tmux-opsx install.sh (push notification answer buttons)
+[Unit]
+Description=tmux-opsx answer-button listener (ntfy reply topic -> tmux pane)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart="$exe" listen
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+UNIT
+  replace_if_changed "$NTFY_LISTEN_UNIT"
+  changed=$REPLACED
+  if ! have systemctl; then
+    warn "no systemctl: start the listener yourself: bash \"$exe\" listen"
+    return 0
+  fi
+  if systemctl --user daemon-reload >/dev/null 2>&1 \
+     && systemctl --user enable --now "$NTFY_LISTEN_UNIT_NAME" >/dev/null 2>&1; then
+    [ "$changed" -eq 0 ] || systemctl --user restart "$NTFY_LISTEN_UNIT_NAME" >/dev/null 2>&1 || true
+    ok "$(tilde "$NTFY_LISTEN_UNIT") (user unit, enabled; answer buttons on)"
+    note "the listener stops at logout unless lingering is on: loginctl enable-linger $(id -un)"
+  else
+    warn "could not enable the user unit $NTFY_LISTEN_UNIT_NAME (no systemd user manager?) — run:"
+    info "    systemctl --user daemon-reload && systemctl --user enable --now $NTFY_LISTEN_UNIT_NAME"
+  fi
+}
+
+# --skip-notify / --uninstall: stop and drop the listener user unit.
+notify_remove_listen_unit() {
+  [ -f "$NTFY_LISTEN_UNIT" ] || return 0
+  if have systemctl; then
+    systemctl --user disable --now "$NTFY_LISTEN_UNIT_NAME" >/dev/null 2>&1 || true
+  fi
+  rm -f "$NTFY_LISTEN_UNIT" && ok "removed $(tilde "$NTFY_LISTEN_UNIT") (answer-button listener)"
+  have systemctl && { systemctl --user daemon-reload >/dev/null 2>&1 || true; }
+  return 0
 }
 
 # --skip-notify / --uninstall: drop the opsx-ntfy route from caddy.json and from a running proxy.
@@ -2531,6 +2650,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     remove_marked_block "$f" "$RESTORE_BLOCK_START" "$RESTORE_BLOCK_END" "session restore"
   done
   notify_settings_hooks remove
+  notify_remove_listen_unit
   notify_remove_unit
   notify_remove_route
   info ""
@@ -3006,6 +3126,7 @@ if [ "$SKIP_NOTIFY" -eq 1 ]; then
   step "Skipping push notifications (--skip-notify)"
   notify_settings_hooks remove
   # A rerun takes out what an earlier install added, with or without --expose-domain.
+  notify_remove_listen_unit
   notify_remove_unit
   notify_remove_route
 else
@@ -3015,6 +3136,9 @@ else
     ok "pushes go to $(env_file_get "$NOTIFY_ENV" NTFY_URL 2>/dev/null || echo '?') ($(tilde "$NOTIFY_ENV"))"
   else
     note "no $(tilde "$NOTIFY_ENV") yet: write NTFY_URL / NTFY_TOPIC / NTFY_TOKEN there for any ntfy server, or let install.sh run its own (README: Notifications)"
+  fi
+  if [ -n "$(env_file_get "$NOTIFY_ENV" NTFY_REPLY_TOPIC 2>/dev/null)" ] && [ -n "$(env_file_get "$NOTIFY_ENV" NTFY_REPLY_TOKEN 2>/dev/null)" ]; then
+    notify_listen_step
   fi
   note "Cursor, Codex, OpenCode and Gemini windows push on mark / pr.sh note only (no question or turn-end hooks)"
 fi

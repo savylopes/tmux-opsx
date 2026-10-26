@@ -23,6 +23,7 @@ L="tmux -L $SOCK"
 cleanup() {
   # Detached senders started by mark: stop them before the scratch dir goes.
   pkill -f "$N" 2>/dev/null
+  [ -n "${LPID:-}" ] && kill -- -"$LPID" 2>/dev/null
   [ -n "${APID:-}" ] && kill "$APID" 2>/dev/null
   $L kill-server 2>/dev/null
   [ -n "${KEEP_SP:-}" ] || rm -rf "$SP"
@@ -308,7 +309,7 @@ ok "Stop hook with only transcript_path: body from the transcript" '[ "$(ncalls)
 # python3 fallback for the hook JSON (no jq on PATH).
 if command -v python3 >/dev/null 2>&1; then
   mkdir -p "$SP/nojq"
-  for t in bash tmux sed head tail tr basename dirname cat date python3 find mkdir rmdir sleep setsid env curl mv grep; do
+  for t in bash tmux sed head tail tr basename dirname cat date python3 find mkdir rmdir sleep setsid env curl mv grep od awk sort timeout mktemp rm; do
     p=$(PATH="$SP/bin:$PATH" command -v "$t") && ln -sf "$p" "$SP/nojq/$t"
   done
   reset_calls
@@ -341,6 +342,209 @@ mv "$ENVF" "$ENVF.off"; reset_calls; $L set-option -wu -t "$W_CHG" @opsx_notify_
 o=$(TMUX_PANE=$P_PLAIN bash "$W" mark fix-x "done"); rc=$?
 ok "not configured: mark done works, no pending stamp, no push" '[ $rc -eq 0 ] && [[ "$o" == marked* ]] && [ "$(ncalls)" -eq 0 ] && [ -z "$($L show-options -wqv -t "$W_CHG" @opsx_notify_pending)" ]'
 mv "$ENVF.off" "$ENVF"
+
+# ================================================================ add-notify-actions
+write_env_reply() {
+  write_env
+  printf 'NTFY_REPLY_TOPIC=opsx-0123456789ab-reply\nNTFY_REPLY_TOKEN=tk_replytoken789\n' >> "$ENVF"
+}
+acts() { hdr Actions; }
+n_http() { local a; a=$(acts); [ -n "$a" ] || { echo 0; return; }; printf '%s' "$a" | jq '[.[] | select(.action == "http")] | length' 2>/dev/null || echo 0; }
+labels_of() { acts | jq -r '[.[].label] | join(",")' 2>/dev/null; }
+wopt() { $L show-options -wqv -t "$1" "$2"; }
+
+# ---------------------------------------------------------------- 2.1 keys
+KL=$SP/keylog
+$L new-window -d -t nt -n keys "bash -c 'stty -icanon -echo; while IFS= read -r -s -n1 -d \"\" c; do printf \"%s\" \"\$c\" | od -An -tx1 >> \"$KL\"; done'"
+P_KEYS=$($L display -p -t nt:keys '#{pane_id}')
+sleep 0.5
+out=$(bash "$W" keys "$P_KEYS" Down 1 Enter 2>&1); rc=$?
+sleep 0.5
+ok "2.1 keys: a key-logging pane receives Down, 1, Enter" '[ $rc -eq 0 ] && [ "$(tr -s " \n" " " < "$KL" | sed "s/^ //;s/ $//")" = "1b 5b 42 31 0a" ]'
+out=$(bash "$W" keys %99999 Enter 2>&1); rc=$?
+ok "2.1 keys: a missing pane fails" '[ $rc -ne 0 ] && [[ "$out" == *"no pane"* ]]'
+: > "$KL"
+out=$(bash "$W" keys "$P_KEYS" "rm -rf" 2>&1); rc=$?
+out2=$(bash "$W" keys "$P_KEYS" "a;b" 2>&1); rc2=$?
+sleep 0.3
+ok "2.1 keys: a key with spaces or punctuation fails and sends nothing" '[ $rc -ne 0 ] && [ $rc2 -ne 0 ] && [ ! -s "$KL" ]'
+$L kill-window -t nt:keys
+
+# ---------------------------------------------------------------- 2.2 menu-keys
+ok "2.2 menu-keys 1..3 print one key each" '[ "$(bash "$N" menu-keys 1)" = 1 ] && [ "$(bash "$N" menu-keys 2)" = 2 ] && [ "$(bash "$N" menu-keys 3)" = 3 ]'
+bash "$N" menu-keys 0 >/dev/null 2>&1; r0=$?; bash "$N" menu-keys 4 >/dev/null 2>&1; r4=$?; bash "$N" menu-keys x >/dev/null 2>&1; rx=$?
+ok "2.2 menu-keys out of range: non-zero" '[ $r0 -ne 0 ] && [ $r4 -ne 0 ] && [ $rx -ne 0 ]'
+
+# ---------------------------------------------------------------- 2.3 / 3.1 answer buttons
+write_env_reply
+$L set-option -w -t "$W_PR" @opsx_pr_repo acme/api
+reset_calls
+bash "$N" send finished x "x: done" "b"
+ok "2.3 a push with nothing to offer has no Actions header" '[ "$(ncalls)" -eq 1 ] && ! last_call | grep -q "^HDR: Actions:"'
+reset_calls
+bash "$N" send --window "$W_PR" --pr 42 --repo acme/api --option main --option develop --option "$(printf 'a very long option label that goes on and on\nwith a newline')" decision pr-42 "pr-42: needs a decision" "rebase onto main, develop or other?"
+ok "3.1 three options: exactly 3 http actions in option order, no links" '[ "$(acts | jq length)" -eq 3 ] && [ "$(n_http)" -eq 3 ] && [ "$(acts | jq -r "[.[].label][0:2] | join(\",\")")" = "main,develop" ]'
+ok "2.3 labels are cut to 40 characters without newlines" 'l=$(acts | jq -r ".[2].label"); [ "${#l}" -le 40 ] && [[ "$l" != *$'"'"'\n'"'"'* ]] && [[ "$l" == "a very long option label that goes on an"* ]]'
+ok "3.1 actions POST <nonce>:<n> to the reply topic with the reply token only" 'acts | jq -e "all(.[]; .method == \"POST\" and (.url | endswith(\"/opsx-0123456789ab-reply\")) and (.body | test(\"^[0-9a-f]{32}:[1-3]$\")) and .headers.Authorization == \"Bearer tk_replytoken789\")" >/dev/null && [ "$(acts | jq -r "[.[].body | split(\":\")[1]] | join(\",\")")" = "1,2,3" ] && ! acts | grep -q tk_secrettoken123'
+ok "3.1 the main token still authorizes the push itself, off argv" '[ "$(hdr Authorization)" = "Bearer tk_secrettoken123" ] && ! last_call | grep "^ARGV:" | grep -q tk_'
+NONCE1=$(acts | jq -r '.[0].body | split(":")[0]')
+ok "3.1 the window records nonce, kind, pane, options and question" 'set -- $(wopt "$W_PR" @opsx_notify_reply); [ "$1" = "$NONCE1" ] && [[ $2 =~ ^[0-9]+$ ]] && [ "$3" = pr ] && [ "$4" = "$P_PR" ] && [ "$(wopt "$W_PR" @opsx_notify_reply_opts | sed -n 2p)" = develop ] && [ "$(wopt "$W_PR" @opsx_notify_reply_q | sed -n 2p)" = acme/api ]'
+reset_calls
+bash "$N" send --window "$W_PR" --pr 42 --repo acme/api --option yes --option no decision pr-42 "pr-42: needs a decision" "squash?"
+NONCE2=$(acts | jq -r '.[0].body | split(":")[0]')
+ok "3.1 a newer answer push replaces the nonce; 2 options leave room for the PR link" '[ -n "$NONCE2" ] && [ "$NONCE2" != "$NONCE1" ] && [ "$(wopt "$W_PR" @opsx_notify_reply | cut -d" " -f1)" = "$NONCE2" ] && [ "$(labels_of)" = "yes,no,Open PR" ]'
+write_env; reset_calls
+bash "$N" send --window "$W_PR" --pr 42 --repo acme/api --option main --option develop decision pr-42 "pr-42: needs a decision" "rebase?"
+ok "3.1 no reply keys: no http action (links only)" '[ "$(ncalls)" -eq 1 ] && [ "$(n_http)" -eq 0 ] && [ "$(labels_of)" = "Open PR" ]'
+write_env_reply
+
+# ---------------------------------------------------------------- 3.2 Claude question buttons
+ask_json() { # <multiSelect> <labels...>
+  local m=$1; shift
+  jq -nc --argjson m "$m" '{tool_name:"AskUserQuestion",tool_input:{questions:[{question:"Keep theirs or ours in api.ts?",header:"Merge",multiSelect:$m,options:[$ARGS.positional[] | {label:., description:"d"}]}]}}' --args "$@"
+}
+reset_calls; hook "$P_CHG" "$(ask_json false rebase merge)" claude-pretool
+ok "3.2 one single-select question, 2 options: 2 http buttons labelled with them" '[ "$(n_http)" -eq 2 ] && [ "$(acts | jq -r "[.[] | select(.action==\"http\") | .label] | join(\",\")")" = "rebase,merge" ] && [ "$(wopt "$W_CHG" @opsx_notify_reply | cut -d" " -f3)" = claude ] && [ "$(wopt "$W_CHG" @opsx_notify_reply_q)" = "Keep theirs or ours in api.ts?" ]'
+reset_calls; hook "$P_CHG" "$(ask_json true rebase merge)" claude-pretool
+ok "3.2 multiSelect: no http action" '[ "$(ncalls)" -eq 1 ] && [ "$(n_http)" -eq 0 ]'
+reset_calls; hook "$P_CHG" "$(ask_json false a b c d)" claude-pretool
+ok "3.2 4 options: no http action" '[ "$(ncalls)" -eq 1 ] && [ "$(n_http)" -eq 0 ]'
+reset_calls; hook "$P_CHG" '{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"q1","options":[{"label":"a"},{"label":"b"}]},{"question":"q2","options":[{"label":"c"},{"label":"d"}]}]}}' claude-pretool
+ok "3.2 two questions: no http action" '[ "$(ncalls)" -eq 1 ] && [ "$(n_http)" -eq 0 ]'
+if command -v python3 >/dev/null 2>&1; then
+  reset_calls; printf '%s' "$(ask_json false rebase merge)" | PATH=$SP/nojq TMUX_PANE=$P_CHG bash "$N" hook claude-pretool
+  ok "3.2/2.3 no jq: python3 builds the same 2 answer buttons" '[ "$(n_http)" -eq 2 ] && [ "$(labels_of)" = "rebase,merge" ]'
+fi
+
+# ---------------------------------------------------------------- 4.1 link buttons
+reset_calls; $L set-option -wu -t "$W_PR" @opsx_notify_pending
+OPSX_NOTIFY_FLUSH_AFTER=1 TMUX_PANE=$P_PLAIN bash "$W" mark pr-42 "done" >/dev/null
+wait_calls 1 6; sleep 0.5
+ok "4.1 mark pr-42 done with @opsx_pr_repo acme/api: Open PR view action" '[ "$(acts | jq -r ".[0].action")" = view ] && [ "$(acts | jq -r ".[0].label")" = "Open PR" ] && [ "$(acts | jq -r ".[0].url")" = "https://github.com/acme/api/pull/42" ]'
+reset_calls; $L set-option -wu -t "$W_CHG" @opsx_notify_pending
+OPSX_NOTIFY_FLUSH_AFTER=1 TMUX_PANE=$P_PLAIN bash "$W" mark fix-x "done" >/dev/null
+wait_calls 1 6; sleep 0.5
+ok "4.1 mark fix-x done, no PR, no preview, no page: no Actions header" '[ "$(ncalls)" -eq 1 ] && ! last_call | grep -q "^HDR: Actions:"'
+PG=$SP/pages/3; mkdir -p "$PG" "$SP/forks/7"
+printf 'url=https://explain.dev.example.com/3/\n' > "$PG/.meta"
+printf 'id=7\npage_dir=%s\n' "$PG" > "$SP/forks/7/meta"
+reset_calls; hook "$P_FORK" "$(ask_json false a b c d)" claude-pretool
+ok "4.1 a /fork page pane: Open page view action" '[ "$(labels_of)" = "Open page" ] && [ "$(acts | jq -r ".[0].url")" = "https://explain.dev.example.com/3/" ]'
+rm -rf "$SP/forks/7/meta"
+
+# ---------------------------------------------------------------- 5.x listener
+# A second fake curl in front: subscriptions (…/json) log their URL and serve
+# $STREAMS/stream-<k> for the k-th connection, then fail (exit 7); without a
+# stream file they hang until killed. Everything else goes to the logging fake.
+mkdir -p "$SP/lbin"
+cat > "$SP/lbin/curl" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case \$a in
+    */json|*/json\?*)
+      printf '%s\n' "\$a" >> "\$STREAMS/urls"
+      k=\$(wc -l < "\$STREAMS/urls" | tr -d ' ')
+      if [ -f "\$STREAMS/stream-\$k" ]; then cat "\$STREAMS/stream-\$k"; exit 7; fi
+      exec sleep 300 ;;
+  esac
+done
+exec "$SP/bin/curl" "\$@"
+SH
+chmod +x "$SP/lbin/curl"
+msg() { jq -nc --arg id "$1" --arg m "$2" '{id:$id,time:1700000100,event:"message",topic:"opsx-0123456789ab-reply",message:$m}'; }
+LPID=""
+start_listen() { # <streams dir>
+  STREAMS=$1 PATH="$SP/lbin:$PATH" OPSX_NOTIFY_LISTEN_BACKOFF=1 OPSX_NOTIFY_LISTEN_BACKOFF_MAX=2 \
+    setsid bash "$N" listen </dev/null >"$1/out" 2>&1 & LPID=$!
+}
+stop_listen() { [ -z "$LPID" ] || { kill -- -"$LPID" 2>/dev/null; kill "$LPID" 2>/dev/null; wait "$LPID" 2>/dev/null; }; LPID=""; }
+wait_urls() { local i; for i in $(seq 1 100); do [ "$(wc -l 2>/dev/null < "$1/urls" || echo 0)" -ge "$2" ] && return 0; sleep 0.1; done; return 1; }
+n_info() { grep -l "^HDR: Title: already answered or expired" "$CALLS"/*.call 2>/dev/null | wc -l | tr -d ' '; }
+
+GOTPR=$SP/got-pr GOTC=$SP/got-c GOTE=$SP/got-e
+reader() { printf "bash -c 'while IFS= read -r l; do printf \"GOT:%%s\\\\n\" \"\$l\" >> \"%s\"; done'" "$1"; }
+$L new-window -d -t nt -n pr77 "$(reader "$GOTPR")"
+W_L=$($L display -p -t nt:pr77 '#{window_id}'); P_L=$($L display -p -t nt:pr77 '#{pane_id}')
+$L set-option -w -t "$W_L" @opsx_change pr-77; $L set-option -w -t "$W_L" @opsx_pr_repo acme/api
+ST77=$XDG_STATE_HOME/tmux-opsx/pr/acme-api-77/state; mkdir -p "${ST77%/*}"
+printf 'head_sha=x\nask=rebase onto main or develop?\n' > "$ST77"
+$L new-window -d -t nt -n cq "bash -c 'echo \"Keep theirs or ours in api.ts?\"; stty -icanon -echo; while IFS= read -r -s -n1 -d \"\" c; do printf \"%s\" \"\$c\" | od -An -tx1 >> \"$GOTC\"; done'"
+W_C=$($L display -p -t nt:cq '#{window_id}'); P_C=$($L display -p -t nt:cq '#{pane_id}')
+$L set-option -w -t "$W_C" @opsx_change fix-c
+sleep 0.5
+bash "$N" send --window "$W_L" --pr 77 --repo acme/api --option main --option develop decision pr-77 "pr-77: needs a decision" "rebase onto main or develop?"
+NPR=$(wopt "$W_L" @opsx_notify_reply | cut -d' ' -f1)
+hook "$P_C" "$(ask_json false theirs ours)" claude-pretool
+NC=$(wopt "$W_C" @opsx_notify_reply | cut -d' ' -f1)
+ok "5.x setup: live PR and Claude nonces recorded" '[[ $NPR =~ ^[0-9a-f]{32}$ ]] && [[ $NC =~ ^[0-9a-f]{32}$ ]] && [ "$(wopt "$W_C" @opsx_notify_reply | cut -d" " -f4)" = "$P_C" ]'
+
+S1=$SP/streams1; mkdir -p "$S1"
+{
+  printf '{"id":"op1","time":1700000000,"event":"open","topic":"opsx-0123456789ab-reply"}\n'
+  printf '{"id":"ka1","time":1700000001,"event":"keepalive","topic":"opsx-0123456789ab-reply"}\n'
+  msg m1 'rm -rf ~'
+  msg m2 "$NPR:3"
+  msg m3 "$NPR:2"
+  msg m4 "$NPR:2"
+  msg m5 "$NC:1"
+} > "$S1/stream-1"
+reset_calls
+start_listen "$S1"
+wait_urls "$S1" 2; sleep 1
+ok "5.1 first connection has no since=, uses the reply topic json stream" '[ "$(sed -n 1p "$S1/urls")" = "https://ntfy.dev.example.com/opsx-0123456789ab-reply/json" ]'
+ok "5.1 reconnect after the drop uses since=<last id>" '[ "$(sed -n 2p "$S1/urls")" = "https://ntfy.dev.example.com/opsx-0123456789ab-reply/json?since=m5" ]'
+ok "5.2 PR reply :2 sent twice types develop + Enter exactly once" '[ "$(grep -c "^GOT:" "$GOTPR" 2>/dev/null)" -eq 1 ] && grep -qx "GOT:develop" "$GOTPR"'
+ok "5.2 free text and :3 with 2 options type nothing else; the listener keeps running" 'kill -0 "$LPID" && ! grep -q "rm\|GOT:main" "$GOTPR"'
+ok "5.2 Claude reply :1 sends exactly the menu-keys 1 sequence" '[ "$(tr -d " \n" < "$GOTC" 2>/dev/null)" = "$(bash "$N" menu-keys 1 | tr -d "\n" | od -An -tx1 | tr -d " \n")" ]'
+ok "5.2 delivered nonces are forgotten" '[ -z "$(wopt "$W_L" @opsx_notify_reply)" ] && [ -z "$(wopt "$W_C" @opsx_notify_reply)" ]'
+ok "5.3 the second tap sends exactly one already-answered push; delivered taps none" '[ "$(n_info)" -eq 1 ] && [ "$(ncalls)" -eq 1 ]'
+ok "5.1 the listener reads the reply topic with the main token from a file" '! ps -o args= -p "$LPID" | grep -q tk_'
+stop_listen
+
+# stale taps: answered at the terminal (ask= cleared), expired, never offered
+bash "$N" send --window "$W_L" --pr 77 --repo acme/api --option main --option develop decision pr-77 "pr-77: needs a decision" "rebase onto main or develop?"
+NPR2=$(wopt "$W_L" @opsx_notify_reply | cut -d' ' -f1)
+grep -v '^ask=' "$ST77" > "$ST77.tmp"; mv "$ST77.tmp" "$ST77"
+$L new-window -d -t nt -n exp "$(reader "$GOTE")"
+W_E=$($L display -p -t nt:exp '#{window_id}'); $L set-option -w -t "$W_E" @opsx_change pr-78; $L set-option -w -t "$W_E" @opsx_pr_repo acme/api
+ST78=$XDG_STATE_HOME/tmux-opsx/pr/acme-api-78/state; mkdir -p "${ST78%/*}"; printf 'ask=old?\n' > "$ST78"
+bash "$N" send --window "$W_E" --pr 78 --repo acme/api --option yes --option no decision pr-78 "pr-78: needs a decision" "old?"
+read -r NEX _ KEX PEX <<<"$(wopt "$W_E" @opsx_notify_reply)"
+$L set-option -w -t "$W_E" @opsx_notify_reply "$NEX $(( $(date +%s) - 4000 )) $KEX $PEX"
+S2=$SP/streams2; mkdir -p "$S2"
+{ msg n1 "$NPR2:1"; msg n2 "$NPR2:1"; msg n3 "$NEX:1"; msg n4 "$NONCE1:1"; } > "$S2/stream-1"
+reset_calls
+start_listen "$S2"
+wait_urls "$S2" 2; sleep 1
+ok "5.3 ask= cleared (note --clear) then the tap: nothing typed" '[ "$(grep -c "^GOT:" "$GOTPR")" -eq 1 ]'
+ok "5.2 expired nonce: nothing typed" '[ ! -s "$GOTE" ]'
+ok "5.3 one already-answered push per stale nonce (3 nonces, 4 taps)" '[ "$(n_info)" -eq 3 ] && [ "$(ncalls)" -eq 3 ]'
+stop_listen
+
+# replaced nonce: a newer question on the same window
+$L set-option -w -t "$W_L" @opsx_notify_reply_q x
+printf 'ask=a?\n' >> "$ST77"
+bash "$N" send --window "$W_L" --pr 77 --repo acme/api --option main --option develop decision pr-77 "pr-77: needs a decision" "a?"
+NA=$(wopt "$W_L" @opsx_notify_reply | cut -d' ' -f1)
+printf 'ask=b?\n' >> "$ST77"
+bash "$N" send --window "$W_L" --pr 77 --repo acme/api --option main --option develop decision pr-77 "pr-77: needs a decision" "b?"
+S3=$SP/streams3; mkdir -p "$S3"
+msg r1 "$NA:1" > "$S3/stream-1"
+start_listen "$S3"; wait_urls "$S3" 2; sleep 1
+ok "3.1/5.2 a reply with the replaced nonce does not act" '[ "$(grep -c "^GOT:" "$GOTPR")" -eq 1 ] && [ -n "$(wopt "$W_L" @opsx_notify_reply)" ]'
+stop_listen
+
+# not configured / no reply keys: listen exits 0 with a message
+write_env
+out=$(bash "$N" listen 2>&1); rc=$?
+ok "5.1 listen without reply keys: exit 0 with a message" '[ $rc -eq 0 ] && [[ "$out" == *NTFY_REPLY_TOPIC* ]]'
+mv "$ENVF" "$ENVF.off"; out=$(bash "$N" listen 2>&1); rc=$?; mv "$ENVF.off" "$ENVF"
+ok "5.1 listen without notify.env: exit 0 with a message" '[ $rc -eq 0 ] && [[ "$out" == *"not configured"* ]]'
+write_env_reply
+out=$(bash "$OPSX" notify info 2>&1 || OPSX_SKILLS_DIR=$REPO/skills bash "$OPSX" notify info 2>&1)
+ok "6.1 opsx notify info prints the reply topic, never the reply token" '[[ "$out" == *opsx-0123456789ab-reply* ]] && [[ "$out" != *tk_replytoken789* ]]'
+write_env
+$L kill-window -t "$W_L"; $L kill-window -t "$W_C"; $L kill-window -t "$W_E"
 
 # ---------------------------------------------------------------- 5.x install.sh
 # Fresh scratch HOMEs, offline: fake caddy ($OPSX_CADDY_BIN), fake ntfy
@@ -381,6 +585,8 @@ DOM=(CLOUDFLARE_API_TOKEN=t1 OPSX_EXPOSE_SKIP_VERIFY=1 OPSX_CADDY_BIN="$SP/fcadd
 CFG() { printf '%s/.config/tmux-opsx' "$IH"; }
 route_ids() { jq -r '[.apps.http.servers[].routes[]?."@id"] | join(",")' "$(CFG)/caddy.json"; }
 SKILL_DIRS=(.claude/skills .cursor/skills .agents/skills .codex/skills .config/opencode/skills .gemini/skills)
+# No sudo and no system-wide systemctl (the listener's `systemctl --user` is fine).
+no_priv() { [ ! -e "$SP/privileged.log" ] || ! grep -v '^systemctl --user ' "$SP/privileged.log" | grep -q .; }
 notify_hook_count() { jq '[.hooks[]?[]?.hooks[]? | select((.command // "") | test("opsx-notify"))] | length' "$IH/.claude/settings.json" 2>/dev/null || echo 0; }
 
 ok "install --help lists --skip-notify" 'bash "$REPO/install.sh" --help | grep -q -- "--skip-notify"'
@@ -394,7 +600,7 @@ Y=$(CFG)/ntfy-server.yml
 ok "5.2: server.yml: base-url, loopback listen, behind-proxy, deny-all, state under ~/.local/state/tmux-opsx/ntfy" 'grep -qx "base-url: https://ntfy.dev.example.com" "$Y" && grep -qx "listen-http: 127.0.0.1:2586" "$Y" && grep -qx "behind-proxy: true" "$Y" && grep -qx "auth-default-access: deny-all" "$Y" && grep -qx "auth-file: \"$IH/.local/state/tmux-opsx/ntfy/auth.db\"" "$Y" && grep -qx "cache-file: \"$IH/.local/state/tmux-opsx/ntfy/cache.db\"" "$Y"'
 U=$(CFG)/tmux-opsx-ntfy.service
 ok "5.2: unit ExecStart is the installed ntfy with the config" 'grep -qx "ExecStart=\"$FNTFY\" serve --config \"$Y\"" "$U" && grep -q "^User=$(id -un)$" "$U" && grep -q "^WantedBy=multi-user.target" "$U"'
-ok "5.2: non-root: no sudo/systemctl run, prints the enable command" '[ ! -e "$SP/privileged.log" ] && grep -q "sudo install -m 644 .*tmux-opsx-ntfy.service.* $SYSD/ && sudo systemctl daemon-reload && sudo systemctl enable --now tmux-opsx-ntfy" "$IH.out"'
+ok "5.2: non-root: no sudo/systemctl run, prints the enable command" 'no_priv && grep -q "sudo install -m 644 .*tmux-opsx-ntfy.service.* $SYSD/ && sudo systemctl daemon-reload && sudo systemctl enable --now tmux-opsx-ntfy" "$IH.out"'
 ok "5.3: caddy.json has route opsx-ntfy for ntfy.dev.example.com -> 127.0.0.1:2586, streaming" 'J=$(CFG)/caddy.json; [ "$(jq -r ".apps.http.servers.expose.routes[0][\"@id\"]" "$J")" = opsx-ntfy ] && [ "$(jq -r ".apps.http.servers.expose.routes[0].match[0].host[0]" "$J")" = ntfy.dev.example.com ] && [ "$(jq -r ".apps.http.servers.expose.routes[0].handle[0].upstreams[0].dial" "$J")" = 127.0.0.1:2586 ] && [ "$(jq -r ".apps.http.servers.expose.routes[0].handle[0].flush_interval" "$J")" = -1 ]'
 NE=$(CFG)/notify.env
 ok "5.4: notify.env mode 600 with url, opsx-<12 hex> topic and a token" '[ "$(stat -c %a "$NE")" = 600 ] && grep -qx "NTFY_URL=https://ntfy.dev.example.com" "$NE" && grep -qE "^NTFY_TOPIC=opsx-[0-9a-f]{12}$" "$NE" && grep -qE "^NTFY_TOKEN=tk_[0-9a-f]+$" "$NE" && grep -qx "NTFY_USER=opsx" "$NE"'
@@ -408,13 +614,21 @@ ok "5.6: opsx-notify.sh executable in all six opsx-run dirs; verify parses it" '
 ok "5.5: settings.json has the three notify hooks" '[ "$(notify_hook_count)" -eq 3 ] && [ "$(jq -r ".hooks.PreToolUse[-1].matcher" "$IH/.claude/settings.json")" = AskUserQuestion ] && [ "$(jq -r ".hooks.Notification[-1].matcher" "$IH/.claude/settings.json")" = permission_prompt ] && [ "$(jq -r ".hooks.Stop[-1].hooks[0].command" "$IH/.claude/settings.json")" = "$IH/.claude/skills/opsx-run/opsx-notify.sh hook claude-stop" ]'
 out=$(env -u XDG_CONFIG_HOME HOME="$IH" PATH="$SH:$PATH" bash "$IH/.local/bin/opsx" notify info 2>&1); rc=$?
 ok "7.1: installed opsx notify info: url, user, topic; no password or token" '[ $rc -eq 0 ] && [[ "$out" == *"https://ntfy.dev.example.com"* ]] && [[ "$out" == *"opsx"* ]] && [[ "$out" == *"$TP"* ]] && [[ "$out" != *"$PW"* ]] && [[ "$out" != *"$TK"* ]]'
+RT=$(sed -n 's/^NTFY_REPLY_TOPIC=//p' "$NE"); RK=$(sed -n 's/^NTFY_REPLY_TOKEN=//p' "$NE")
+ok "6.1: notify.env has the reply topic <topic>-reply and a reply token" '[ "$RT" = "$TP-reply" ] && [[ $RK =~ ^tk_[0-9a-f]+$ ]] && [ "$RK" != "$TK" ] && grep -q "^opsx-reply $RK$" "$IH.ntfy/tokens"'
+ok "6.1: opsx-reply is granted only wo on the reply topic; opsx gets ro on it" '[ "$(grep -c "^access .* opsx-reply " "$IH.ntfy/calls.log")" -eq 1 ] && grep -q "^access .* opsx-reply $RT wo$" "$IH.ntfy/calls.log" && grep -q "^access .* opsx $RT ro$" "$IH.ntfy/calls.log" && [ "$(grep -c "^user .*add opsx-reply$" "$IH.ntfy/calls.log")" -eq 1 ]'
+ok "6.1: the reply user's password is not stored and the reply token not printed" '! grep -q "pw-opsx-reply\|NTFY_REPLY_PASSWORD" "$NE" && ! grep -qF "$RK" "$IH.out" && [[ "$out" == *"$RT"* ]] && [[ "$out" != *"$RK"* ]]'
+LU=$IH/.config/systemd/user/tmux-opsx-notify-listen.service
+ok "6.2: listener user unit: ExecStart is the installed opsx-notify.sh listen, Restart=always" 'grep -qx "ExecStart=\"$IH/.claude/skills/opsx-run/opsx-notify.sh\" listen" "$LU" && grep -qx "Restart=always" "$LU"'
+ok "6.2: systemctl --user daemon-reload and enable --now tmux-opsx-notify-listen" 'grep -qx "systemctl --user daemon-reload" "$SP/privileged.log" && grep -qx "systemctl --user enable --now tmux-opsx-notify-listen" "$SP/privileged.log"'
 
 # 5.4 rerun keeps the credentials and makes no second user
 sum_before=$(cd "$IH" && find . -path ./.local/state -prune -o -type f -print | sort | xargs md5sum)
 run_install "${DOM[@]}" OPSX_NTFY_BIN="$FNTFY" -- --expose-domain dev.example.com; rc=$?
 sum_after=$(cd "$IH" && find . -path ./.local/state -prune -o -type f -print | sort | xargs md5sum)
-ok "5.4: rerun: exit 0, no second user add, same token and topic" '[ $rc -eq 0 ] && [ "$(grep -c "^user .*add opsx$" "$IH.ntfy/calls.log")" -eq 1 ] && [ "$(grep -c "^token .*add" "$IH.ntfy/calls.log")" -eq 1 ] && grep -qx "NTFY_TOKEN=$TK" "$NE" && grep -qx "NTFY_TOPIC=$TP" "$NE" && grep -qx "NTFY_PASSWORD=$PW" "$NE"'
+ok "5.4: rerun: exit 0, no second user add, same token and topic" '[ $rc -eq 0 ] && [ "$(grep -c "^user .*add opsx$" "$IH.ntfy/calls.log")" -eq 1 ] && [ "$(grep -c "^token .*add opsx$" "$IH.ntfy/calls.log")" -eq 1 ] && grep -qx "NTFY_TOKEN=$TK" "$NE" && grep -qx "NTFY_TOPIC=$TP" "$NE" && grep -qx "NTFY_PASSWORD=$PW" "$NE"'
 ok "5.4: rerun leaves identical files (no .bak, hooks not duplicated)" '[ "$sum_before" = "$sum_after" ] && [ "$(notify_hook_count)" -eq 3 ]'
+ok "6.1: rerun keeps the reply topic and token, no second opsx-reply user or grant" 'grep -qx "NTFY_REPLY_TOPIC=$RT" "$NE" && grep -qx "NTFY_REPLY_TOKEN=$RK" "$NE" && [ "$(grep -c "^user .*add opsx-reply$" "$IH.ntfy/calls.log")" -eq 1 ] && [ "$(grep -c "^access .* opsx-reply " "$IH.ntfy/calls.log")" -eq 1 ] && [ "$(grep -c "^token .*add opsx-reply$" "$IH.ntfy/calls.log")" -eq 1 ]'
 # a token that no longer exists in ntfy is replaced, the topic kept
 : > "$IH.ntfy/tokens"
 run_install "${DOM[@]}" OPSX_NTFY_BIN="$FNTFY" -- --expose-domain dev.example.com
@@ -442,8 +656,9 @@ run_install -- --uninstall; rc=$?
 ok "5.6: uninstall exits 0" '[ $rc -eq 0 ]'
 ok "5.6: uninstall removes the unit file and the opsx-ntfy route" '[ ! -e "$U" ] && ! grep -q opsx-ntfy "$(CFG)/caddy.json"'
 ok "5.6: uninstall leaves no opsx-notify hook command in settings.json" '! grep -q "opsx-notify" "$IH/.claude/settings.json"'
-ok "5.6: uninstall: no sudo run, prints the systemctl disable command for the installed unit" '[ ! -e "$SP/privileged.log" ] && grep -q "sudo systemctl disable --now tmux-opsx-ntfy" "$IH.out"'
+ok "5.6: uninstall: no sudo run, prints the systemctl disable command for the installed unit" 'no_priv && grep -q "sudo systemctl disable --now tmux-opsx-ntfy" "$IH.out"'
 ok "5.6: uninstall keeps the ntfy state dir and removes opsx-notify.sh" '[ -d "$IH/.local/state/tmux-opsx/ntfy" ] && [ ! -e "$IH/.claude/skills/opsx-run/opsx-notify.sh" ]'
+ok "6.2: uninstall disables and removes the listener user unit" '[ ! -e "$LU" ] && grep -qx "systemctl --user disable --now tmux-opsx-notify-listen" "$SP/privileged.log"'
 rm -f "$SYSD/tmux-opsx-ntfy.service"
 
 # --skip-notify in a fresh HOME
@@ -454,6 +669,7 @@ run_install "${DOM[@]}" OPSX_NTFY_BIN="$FNTFY" -- --expose-domain dev.example.co
 ok "rerun without --skip-notify adds route, unit, notify.env, hooks" '[ "$(route_ids)" = opsx-ntfy ] && [ -f "$(CFG)/tmux-opsx-ntfy.service" ] && [ -f "$(CFG)/notify.env" ] && [ "$(notify_hook_count)" -eq 3 ]'
 run_install "${DOM[@]}" OPSX_NTFY_BIN="$FNTFY" -- --expose-domain dev.example.com --skip-notify
 ok "--skip-notify rerun removes route, unit and hooks, keeps the state dir" '[ "$(route_ids)" = "" ] && [ ! -e "$(CFG)/tmux-opsx-ntfy.service" ] && [ "$(notify_hook_count)" -eq 0 ] && [ -d "$IH/.local/state/tmux-opsx/ntfy" ]'
+ok "6.2: --skip-notify rerun removes the listener user unit" '[ ! -e "$IH/.config/systemd/user/tmux-opsx-notify-listen.service" ] && grep -qx "systemctl --user disable --now tmux-opsx-notify-listen" "$SP/privileged.log"'
 # F2: --skip-notify without --expose-domain also takes out the unit and the route
 run_install "${DOM[@]}" OPSX_NTFY_BIN="$FNTFY" -- --expose-domain dev.example.com
 ok "F2: reinstall with the domain adds route and unit again" '[ "$(route_ids)" = opsx-ntfy ] && [ -f "$(CFG)/tmux-opsx-ntfy.service" ] && [ "$(notify_hook_count)" -eq 3 ]'
@@ -461,7 +677,7 @@ cp "$(CFG)/tmux-opsx-ntfy.service" "$SYSD/"
 rm -f "$SP/privileged.log"
 run_install -- --skip-notify; rc=$?
 ok "F2: --skip-notify without --expose-domain removes route, unit and hooks, keeps the state dir" '[ $rc -eq 0 ] && [ "$(route_ids)" = "" ] && [ ! -e "$(CFG)/tmux-opsx-ntfy.service" ] && [ "$(notify_hook_count)" -eq 0 ] && [ -d "$IH/.local/state/tmux-opsx/ntfy" ]'
-ok "F2: no sudo run; prints the systemctl disable command for the installed unit once" '[ ! -e "$SP/privileged.log" ] && [ "$(grep -c "sudo systemctl disable --now tmux-opsx-ntfy" "$IH.out")" -eq 1 ]'
+ok "F2: no sudo run; prints the systemctl disable command for the installed unit once" 'no_priv && [ "$(grep -c "sudo systemctl disable --now tmux-opsx-ntfy" "$IH.out")" -eq 1 ]'
 rm -f "$SYSD/tmux-opsx-ntfy.service"
 
 # 5.5 existing settings.json hooks are kept; two runs, one Stop hook

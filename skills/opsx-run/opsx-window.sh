@@ -23,10 +23,14 @@
 #   opsx-window.sh preview-find  <change>
 #   opsx-window.sh preview-kill  <change>|--all
 #   opsx-window.sh type   <pane-target> --text-file <f>   # type one line + Enter into a pane
+#   opsx-window.sh keys   <pane-target> <key>...      # send tmux key names (Enter, Down, 1) to a pane
 #
 # type (used by opsx-sessions.sh restore): sends the file's text literally
 # (newlines folded to spaces) followed by Enter into an existing pane, e.g. a
 # restored shell. It refuses a target that does not resolve to a pane.
+# keys (used by opsx-notify.sh listen): sends fixed tmux key names to a pane,
+# with the same exact pane resolution; a key that is not ^[A-Za-z0-9-]+$ is
+# refused, so no literal text ever goes through it.
 #
 # Preview windows (used by opsx-preview.sh, never by hand): preview-start opens
 # a window titled `ox ><change>` that runs `bash <file>` (no keys are
@@ -1781,10 +1785,28 @@ cmd_preview_kill() {
   [ "$failed" -eq 0 ]
 }
 
-# ---------- type (driven by opsx-sessions.sh restore) ----------
+# ---------- type / keys (opsx-sessions.sh restore, opsx-notify.sh listen) ----------
+
+# exact_pane <target>: prints the pane id of a pane id or [=]session:window.pane
+# target. display-message -t falls back to another pane for a missing target,
+# so resolve exactly. Returns 1 when the target names no pane.
+exact_pane() {
+  local target=$1 want=${1#=} pane=""
+  if [[ $target =~ ^%[0-9]+$ ]]; then
+    pane=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | awk -v p="$target" '$0 == p { print; exit }')
+  elif [[ $want =~ ^(.+):([0-9]+)\.([0-9]+)$ ]]; then
+    pane=$(tmux list-panes -a -F '#{session_name}	#{window_index}	#{pane_index}	#{pane_id}' 2>/dev/null \
+           | awk -F '\t' -v s="${BASH_REMATCH[1]}" -v w="${BASH_REMATCH[2]}" -v i="${BASH_REMATCH[3]}" \
+               '$1 == s && $2 == w && $3 == i { print $4; exit }')
+  else
+    return 2
+  fi
+  [[ ${pane:-} =~ ^%[0-9]+$ ]] || return 1
+  printf '%s' "$pane"
+}
 
 cmd_type() {
-  local target=${1:-} text_file="" pane text
+  local target=${1:-} text_file="" pane text rc
   shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1798,25 +1820,34 @@ cmd_type() {
   [ -n "$text_file" ] || die "--text-file is required"
   [ -f "$text_file" ] || die "text file not found: $text_file"
   require_tmux
-  # display-message -t falls back to another pane for a missing target, so
-  # resolve exactly: a pane id, or [=]session:window.pane.
-  local want=${target#=}
-  if [[ $target =~ ^%[0-9]+$ ]]; then
-    pane=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | awk -v p="$target" '$0 == p { print; exit }')
-  elif [[ $want =~ ^(.+):([0-9]+)\.([0-9]+)$ ]]; then
-    pane=$(tmux list-panes -a -F '#{session_name}	#{window_index}	#{pane_index}	#{pane_id}' 2>/dev/null \
-           | awk -F '\t' -v s="${BASH_REMATCH[1]}" -v w="${BASH_REMATCH[2]}" -v i="${BASH_REMATCH[3]}" \
-               '$1 == s && $2 == w && $3 == i { print $4; exit }')
-  else
-    die "pane target must be %<id> or <session>:<window>.<pane>, got '$target'."
-  fi
-  [[ ${pane:-} =~ ^%[0-9]+$ ]] || die "no pane '$target'."
+  pane=$(exact_pane "$target"); rc=$?
+  [ "$rc" -ne 2 ] || die "pane target must be %<id> or <session>:<window>.<pane>, got '$target'."
+  [ "$rc" -eq 0 ] || die "no pane '$target'."
   text=$(tr '\n\r' '  ' <"$text_file")
   text=${text%"${text##*[![:space:]]}"}
   [ -n "$text" ] || die "text file is empty: $text_file"
   tmux send-keys -t "$pane" -l -- "$text" || die "failed to send text to $pane"
   tmux send-keys -t "$pane" Enter || die "failed to submit text in $pane"
   printf 'typed %s\n' "$pane"
+}
+
+# keys <pane-target> <key>...: send fixed tmux key names (Enter, Down, 1, ...)
+# to a pane, never literal text. Each key must match ^[A-Za-z0-9-]+$.
+cmd_keys() {
+  local target=${1:-} pane rc k
+  shift || true
+  if [ -z "$target" ] || [ "${target#-}" != "$target" ] || [ $# -eq 0 ]; then
+    die "usage: opsx-window.sh keys <pane-target> <key>..."
+  fi
+  for k in "$@"; do
+    [[ $k =~ ^[A-Za-z0-9-]+$ ]] || die "not a tmux key name: '$k' (letters, digits and '-' only)"
+  done
+  require_tmux
+  pane=$(exact_pane "$target"); rc=$?
+  [ "$rc" -ne 2 ] || die "pane target must be %<id> or <session>:<window>.<pane>, got '$target'."
+  [ "$rc" -eq 0 ] || die "no pane '$target'."
+  tmux send-keys -t "$pane" -- "$@" || die "failed to send keys to $pane"
+  printf 'keys %s %s\n' "$pane" "$*"
 }
 # Sourced (opsx-notify.sh uses recover_tmux_env): define functions only.
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
@@ -1835,8 +1866,9 @@ case "${1:-}" in
   preview-find)  shift; cmd_preview_find "$@" ;;
   preview-kill)  shift; cmd_preview_kill "$@" ;;
   type)          shift; cmd_type "$@" ;;
+  keys)          shift; cmd_keys "$@" ;;
   ""|-h|--help)
     awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"
     ;;
-  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|models|list|preview-start|preview-find|preview-kill|type)" ;;
+  *) die "unknown subcommand: $1 (expected ensure|send|close|status|mark|detect-cli|detect-model|models|list|preview-start|preview-find|preview-kill|type|keys)" ;;
 esac

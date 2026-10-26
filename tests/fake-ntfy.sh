@@ -3,7 +3,8 @@
 # Keeps users, grants and tokens as files under $FAKE_NTFY_DIR, logs every call
 # (argv) to $FAKE_NTFY_DIR/calls.log, and prints what the real ntfy 2.34 prints
 # for the commands install.sh uses: --version, user list|add|change-pass,
-# access <user> <topic> <perm>, token list|add <user>. Never serves anything.
+# access <user> <topic> <perm> (rw/ro/wo, listed with ntfy's wording),
+# token list|add <user>. Never serves anything.
 set -u
 D=${FAKE_NTFY_DIR:?FAKE_NTFY_DIR is not set}
 mkdir -p "$D"
@@ -34,7 +35,7 @@ case "${1:-} ${2:-}" in
     while IFS= read -r u; do
       [ -n "$u" ] || continue
       printf 'user %s (role: user, tier: none)\n' "$u"
-      awk -v u="$u" '$1 == u { print "- read-write access to topic " $2; n++ } END { if (!n) print "- no topic-specific permissions" }' "$D/access"
+      awk -v u="$u" '$1 == u { w = ($3 == "ro" ? "read-only" : ($3 == "wo" ? "write-only" : "read-write")); print "- " w " access to topic " $2; n++ } END { if (!n) print "- no topic-specific permissions" }' "$D/access"
     done < "$D/users"
     printf 'user * (role: anonymous, tier: none)\n- no topic-specific permissions\n- no access to any (other) topics (server config)\n' ;;
   "user add")
@@ -47,10 +48,12 @@ case "${1:-} ${2:-}" in
     u=${3:?}; grep -qx "$u" "$D/users" || { echo "user $u does not exist" >&2; exit 1; }
     read_pw; printf '%s\n' "$PW" > "$D/pw-$u"; echo "changed password for user $u" ;;
   "access "*)
-    u=${2:?} t=${3:?}
+    u=${2:?} t=${3:?} p=${4:-rw}
     grep -qx "$u" "$D/users" || { echo "user $u does not exist" >&2; exit 1; }
-    printf '%s %s\n' "$u" "$t" >> "$D/access"
-    echo "granted read-write access to topic $t" ;;
+    awk -v u="$u" -v t="$t" '!($1 == u && $2 == t)' "$D/access" > "$D/access.tmp" && mv "$D/access.tmp" "$D/access"
+    printf '%s %s %s\n' "$u" "$t" "$p" >> "$D/access"
+    case $p in ro|read-only) w=read-only ;; wo|write-only) w=write-only ;; *) w=read-write ;; esac
+    echo "granted $w access to topic $t" ;;
   "token list")
     u=${3:-}; printf 'user %s\n' "$u"
     awk -v u="$u" '$1 == u { print "- " $2 ", never expires" }' "$D/tokens" ;;

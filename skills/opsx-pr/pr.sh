@@ -11,7 +11,7 @@
 #   pr.sh restack  <pr> [--onto <branch>] [--repo <dir>]
 #   pr.sh push     <pr> [--repo <dir>]
 #   pr.sh rerun    <pr> [--repo <dir>]
-#   pr.sh note     <pr> <question> | --clear [--repo <dir>]
+#   pr.sh note     <pr> <question> [--option <label>]... | --clear [--repo <dir>]
 #   pr.sh prompt   <pr> [--repo <dir>] [--slice <s>] [--poll <s>]
 #   pr.sh list
 #   pr.sh stop     <pr> [--repo <dir>]
@@ -59,7 +59,10 @@
 # note      records (or clears) an open question as an ask= line in the state,
 #           and sends it as a decision push through opsx-notify.sh (next to
 #           opsx-window.sh, or $OPSX_NOTIFY) when notify is configured; a push
-#           failure never fails note.
+#           failure never fails note. --option <label> (1-3 times) offers fixed
+#           answers: the push gets one answer button per option, and a tap
+#           types that label into the PR window (opsx-notify.sh listen). More
+#           than 3 options fail before anything is recorded or sent.
 # prompt    prints the generated window prompt (for inspection).
 # list      one line per PR with a state file: repo pr window-status last-event.
 # stop      closes window pr-<n>; the state file and worktree stay.
@@ -116,6 +119,7 @@ pr_number() {
 # Shared option parsing. Sets ARG1 ARG2 REPO_OPT SLICE POLL AGENT_CLI ONTO
 # TITLE BODY_FILE BASE_OPT CLEAR.
 ARG1="" ARG2="" REPO_OPT="" SLICE=540 POLL=60 AGENT_CLI="" ONTO="" TITLE="" BODY_FILE="" BASE_OPT="" CLEAR=0
+OPTIONS=()
 parse_opts() {
   while [ $# -gt 0 ]; do
     case $1 in
@@ -128,6 +132,7 @@ parse_opts() {
       --body-file) [ $# -ge 2 ] || die "--body-file needs a file"; BODY_FILE=$2; shift 2 ;;
       --base)      [ $# -ge 2 ] || die "--base needs a branch"; BASE_OPT=$2; shift 2 ;;
       --clear)     CLEAR=1; shift ;;
+      --option)    [ $# -ge 2 ] || die "--option needs a label"; OPTIONS+=("$2"); shift 2 ;;
       -h|--help)   usage 0 ;;
       -*) die "unknown option: $1" ;;
       *) if [ -z "$ARG1" ]; then ARG1=$1; elif [ -z "$ARG2" ]; then ARG2=$1; else die "too many arguments"; fi; shift ;;
@@ -456,7 +461,11 @@ Never merge the PR, never approve it, never close it, never delete branches.
 ## Ask the user first (important or ambiguous decisions)
 Ask in this window, run \`$W mark pr-$PR ask\`, record it with \`$SELF note $PR "<question>" --repo $REPO\`,
 keep running the wait loop (other events still get handled), and act on that decision only after the
-user answers (then \`$SELF note $PR --clear --repo $REPO\`). Ask when:
+user answers (then \`$SELF note $PR --clear --repo $REPO\`).
+When the question has 2 or 3 fixed answers, pass each one with \`--option\` so the phone push gets answer
+buttons, e.g. \`$SELF note $PR "rebase onto main or develop?" --option main --option develop --repo $REPO\`.
+A line typed into this window that is exactly one of those option labels is the user's answer (a tapped button).
+Ask when:
 - a conflict where both sides changed behaviour, not just neighbouring lines;
 - a comment asks for a scope or design change, a new dependency, or disabling or deleting tests;
 - reviewers contradict each other, or you disagree with a comment (never argue with a reviewer on your own);
@@ -700,7 +709,13 @@ cmd_note() {
   local f tmp
   f=$(state_file)
   [ -f "$f" ] || die "no state for $SLUG#$PR; run 'pr.sh start $PR' first."
+  if [ "${#OPTIONS[@]}" -gt 3 ]; then die "note takes at most 3 --option values (got ${#OPTIONS[@]})"; fi
+  local o
+  for o in "${OPTIONS[@]+"${OPTIONS[@]}"}"; do
+    [ -n "$(printf '%s' "$o" | tr -d '[:space:]')" ] || die "--option needs a non-empty label"
+  done
   if [ "$CLEAR" -eq 1 ]; then
+    [ "${#OPTIONS[@]}" -eq 0 ] || die "--option cannot be combined with --clear"
     tmp="$f.tmp.$$"; grep -v '^ask=' "$f" >"$tmp" || true; mv "$tmp" "$f"
     printf 'cleared questions for %s#%s\n' "$SLUG" "$PR"
   else
@@ -729,6 +744,11 @@ notify_question() {
   win=$(pr_window)
   args=(send)
   [ -z "$win" ] || args+=(--window "$win")
+  if [ "${#OPTIONS[@]}" -gt 0 ]; then
+    local o
+    args+=(--pr "$PR" --repo "$SLUG")
+    for o in "${OPTIONS[@]}"; do args+=(--option "$o"); done
+  fi
   args+=(decision "pr-$PR" "pr-$PR: needs a decision" "$1")
   bash "$n" "${args[@]}" </dev/null >/dev/null 2>&1 || true
 }

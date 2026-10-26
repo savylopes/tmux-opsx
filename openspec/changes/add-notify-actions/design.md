@@ -45,6 +45,13 @@ The ntfy server is self-hosted behind the static Caddy route `opsx-ntfy`, with d
 
    Task 1 is a spike on a private tmux server with a real `claude` pane. It finds the reliable sequence (candidates: the digit alone, the digit plus Enter, or Down × (n-1) plus Enter) and pins it in `menu_keys`, with the Claude Code version it was checked against recorded in a comment. If no sequence is reliable, `menu_keys` prints nothing and `AskUserQuestion` pushes get no answer buttons. The spec allows that outcome.
 
+   **Spike result (Claude Code 2.1.310, tmux 3.4, private `tmux -L` server, one single-select question with 3 options, 3 runs per option and candidate, checked against the tool results in the session transcript):**
+   - the digit alone (`1`, `2`, `3`): selected exactly option n in 9/9 runs per pass (two passes, 18/18). The digit submits at once; no Enter is needed.
+   - Down × (n-1) + Enter: selected exactly option n in 9/9 runs, but depends on the highlight starting on option 1.
+   - the digit + Enter: selected option n in 9/9 runs, but the digit already submits, so the trailing Enter lands in whatever comes next (the next question's menu, where it would pick option 1, or the prompt). Rejected.
+
+   Pinned: `menu_keys n` prints the digit `n` alone (one tmux key name).
+
 6. **Links.** A `push_links <win> <pane>` helper returns up to 3 `view` actions:
    - **PR:** the window name is `pr-<n>` and `@opsx_pr_repo` is set.
    - **Preview:** `@opsx_change` is set and `opsx-preview.sh url <change>` exits 0. It reads local state only; a 2-second timeout keeps the push fast.
