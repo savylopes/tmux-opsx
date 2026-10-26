@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / A later question without buttons ends the nonce
+# level: L2
+# requirement: Live nonce
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+q1="Which database should we use today?"
+read -r w p < <(typed_win fix-x raw "$q1")
+wait_pane_text "$p" "$q1" 5 || fail "setup: pane never showed the question"
+keys=$(bash "$NOTIFY_SH" menu-keys 1)
+[ -n "$keys" ] || { echo "no known key sequence; no Claude answer buttons by spec"; exit 77; }
+hook() { printf '%s' "$1" | TMUX_PANE=$p bash "$NOTIFY_SH" hook claude-pretool >/dev/null 2>&1; }
+hook "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[{\"question\":\"$q1\",\"multiSelect\":false,\"options\":[{\"label\":\"sqlite\"},{\"label\":\"postgres\"}]}]}}"
+wait_calls 1 10 || fail "no first push"; sleep 1; n1=$(last_nonce); reset_curl
+[ -n "$n1" ] || fail "first question got no nonce"
+hook "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[{\"question\":\"Pick a colour for the logo please?\",\"multiSelect\":false,\"options\":[{\"label\":\"a\"},{\"label\":\"b\"},{\"label\":\"c\"},{\"label\":\"d\"}]}]}}"
+wait_calls 1 10 || fail "no second push"; sleep 1
+echo "second push has actions: $(has_actions_header && echo yes || echo no)"
+reset_curl
+stream_live 1 "$n1:1"
+start_listener 6; sleep 3.5; stop_listener
+[ -d "$SUB_DIR/c1" ] || fail "listener never subscribed"
+t=$(od -An -c < "$EVAL_TMP/typed.fix-x" | tr -d ' \n'); echo "typed=[$t]"
+[ -z "$t" ] || fail "an ended nonce typed into the pane"
+wait_calls 1 3 || fail "no 'already answered' push"
+n=$(curl_calls); echo "pushes after reply: $n"
+[ "$n" = 1 ] || fail "expected exactly one push, got $n"
+curl_all_bodies | grep -qi 'already answered' || { curl_all_bodies; fail "push does not say already answered"; }
+echo OK
