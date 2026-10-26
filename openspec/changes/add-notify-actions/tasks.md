@@ -34,4 +34,4 @@
 ## 7. Docs and checks
 
 - [x] 7.1 Update README: Notifications section (answer and link buttons, which pushes get them, the reply topic/user/token trust model, the listener unit and `loginctl enable-linger`, that preview and page links need the expose owner login once on the phone, check the pane after a Claude answer tap), the component overview rows, and the `opsx-notify.sh` line in `openspec/config.yaml` context
-- [ ] 7.2 Run `bash tests/test-notify.sh`, `bash tests/test-pr.sh`, `bash tests/test-restore.sh`, `bash tests/test-fork.sh`, `bash tests/test-eval.sh`, `shellcheck` on every changed script, and `openspec validate add-notify-actions --strict`; verify all pass
+- [x] 7.2 Run `bash tests/test-notify.sh`, `bash tests/test-pr.sh`, `bash tests/test-restore.sh`, `bash tests/test-fork.sh`, `bash tests/test-eval.sh`, `shellcheck` on every changed script, and `openspec validate add-notify-actions --strict`; verify all pass
