@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / New PR from the user's fork
+# level: L1
+# requirement: Open a PR for a branch
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_fork_env
+$G -C "$F" checkout -q -b feat-o main; commit "$F" o.txt o "O"
+echo body > "$EVAL_TMP/b.md"
+out=$("$PRSH" open feat-o --title T --body-file "$EVAL_TMP/b.md" --repo "$F" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"; cat "$GHD/gh.log"
+[ $rc -eq 0 ] || fail "exit $rc"
+git -C "$FK" rev-parse -q --verify refs/heads/feat-o >/dev/null || fail "feat-o not on origin (fork)"
+git -C "$UP" rev-parse -q --verify refs/heads/feat-o >/dev/null && fail "feat-o pushed to upstream"
+[ "$(grep -c '^pr create' "$GHD/gh.log")" -eq 1 ] || fail "expected one pr create"
+l=$(grep '^pr create' "$GHD/gh.log")
+echo "$l" | grep -q -- "-R acme/app" || fail "no -R acme/app"
+echo "$l" | grep -q -- "me:feat-o" || fail "no head me:feat-o"
+echo OK

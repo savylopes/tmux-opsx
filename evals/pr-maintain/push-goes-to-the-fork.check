@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Push goes to the fork
+# level: L1
+# requirement: Fork PR worktree, restack and push
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_fork_env
+wt=$("$PRSH" worktree 50 --repo "$F" 2>/dev/null | tail -1)
+[ -d "$wt" ] || fail "no worktree"
+# state must exist with head_sha: start records it; use seen if start is not wanted
+fstart 50 >/dev/null 2>&1 || true
+commit "$wt" n.txt n "new commit"
+NEW=$(git -C "$wt" rev-parse HEAD)
+out=$("$PRSH" push 50 --repo "$F" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "push exit $rc"
+[ "$(git -C "$FK" rev-parse refs/heads/feat-f)" = "$NEW" ] || fail "fork feat-f lacks the commit"
+git -C "$UP" rev-parse -q --verify refs/heads/feat-f >/dev/null && fail "upstream has feat-f"
+grep -qx "head_sha=$NEW" "$(fstate 50)" || fail "head_sha not updated: $(cat "$(fstate 50)")"
+"$PRSH" stop 50 --repo "$F" >/dev/null 2>&1
+echo OK

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Teammate's fork refused
+# level: L2
+# requirement: Only the user's own fork is maintained
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+need_tmux
+mk_fork_env
+out=$(fstart 51 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "start 51 exited 0"
+echo "$out" | grep -q dany || fail "message does not name dany"
+echo "$out" | grep -q origin || fail "message does not name origin"
+[ "$(T list-windows -a -F '#{@opsx_change}' | grep -cx pr-51)" -eq 0 ] || fail "window created"
+[ ! -e "$(fstate 51)" ] || fail "state file created"
+for c in worktree restack push; do
+  o=$("$PRSH" $c 51 --repo "$F" 2>&1); r=$?
+  echo "$c: exit $r: $o"
+  [ $r -ne 0 ] || fail "$c 51 exited 0"
+  echo "$o" | grep -q dany || fail "$c message does not name dany"
+done
+echo OK

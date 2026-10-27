@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Restack onto upstream
+# level: L1
+# requirement: Fork PR worktree, restack and push
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_fork_env
+wt=$("$PRSH" worktree 50 --repo "$F" 2>&1); rc=$?; echo "worktree: $wt (exit $rc)"
+[ $rc -eq 0 ] || fail "worktree exit $rc"
+wt=$(echo "$wt" | tail -1)
+commit "$SP/upw" u1.txt u1 "upstream moves"; $G -C "$SP/upw" push -q origin main
+UPM=$(git -C "$UP" rev-parse refs/heads/main)
+out=$("$PRSH" restack 50 --repo "$F" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "restack exit $rc"
+echo "$out" | grep -qx "onto=upstream/main" || fail "no onto=upstream/main"
+git -C "$wt" merge-base --is-ancestor "$UPM" HEAD || fail "worktree branch lacks upstream/main"
+echo OK

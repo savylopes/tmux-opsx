@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Fork main refused
+# level: L2
+# requirement: Only the user's own fork is maintained
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+need_tmux
+mk_fork_env
+out=$(fstart 52 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "start 52 exited 0"
+echo "$out" | grep -qw main || fail "message does not name the branch main"
+[ "$(T list-windows -a -F '#{@opsx_change}' | grep -cx pr-52)" -eq 0 ] || fail "window created"
+echo OK

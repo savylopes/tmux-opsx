@@ -48,7 +48,7 @@ D=$GHD
 printf '%s\n' "\$*" >> "\$D/gh.log"
 opt() { local k=\$1; shift; while [ \$# -gt 0 ]; do [ "\$1" = "\$k" ] && { printf '%s' "\$2"; return; }; shift; done; }
 case "\$1 \$2" in
-  "repo view") echo o/app ;;
+  "repo view") case "\$*" in *defaultBranchRef*) echo main ;; *) echo o/app ;; esac ;;
   "pr view")
     n=\$(printf '%s' "\$3" | grep -Eo '[0-9]+\$')
     jq -c --argjson n "\$n" '.[] | select(.number==\$n)' "\$D/prs.json" | grep . || { echo "no pull requests found" >&2; exit 1; } ;;

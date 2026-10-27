@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Default branch refused
+# level: L1
+# requirement: Open a PR for a branch
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_env
+echo body > "$EVAL_TMP/b.md"
+out=$("$PRSH" open main --title T --body-file "$EVAL_TMP/b.md" --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "exit 0"
+grep -q "^pr create" "$GHD/gh.log" && fail "pr create recorded"
+echo OK

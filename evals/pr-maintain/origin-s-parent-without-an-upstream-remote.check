@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Origin's parent without an upstream remote
+# level: L1
+# requirement: Base repository and user's fork
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_fork_env noupstream
+out=$("$PRSH" resolve 50 --repo "$F" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+echo "$out" | grep -qx "repo=acme/app" || fail "repo != acme/app"
+echo "$out" | grep -qx "base_remote=" || fail "base_remote not empty"
+out=$("$PRSH" restack 50 --repo "$F" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "restack exited 0"
+echo "$out" | grep -q "git remote add" || fail "restack message does not name git remote add"
+echo OK

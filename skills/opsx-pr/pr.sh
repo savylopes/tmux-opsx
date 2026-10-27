@@ -17,14 +17,18 @@
 #   pr.sh stop     <pr> [--repo <dir>]
 #
 # <pr> is a number, #<n> or a PR URL. Output is key=value lines.
-# resolve   pr url repo head head_sha base state author. Exit 2: no such PR.
-# open      pushes <branch> (default: current) to origin and runs gh pr create,
-#           or prints the branch's open PR and creates nothing. Refuses the
-#           default branch and a branch equal to --base.
-# start     refuses a PR that is not OPEN or comes from a fork, writes the state file (kept as is when
+# resolve   pr url repo head head_sha base state author head_repo base_remote
+#           head_remote (empty when no remote may push the head). Exit 2: no such PR.
+# open      pushes <branch> (default: current) to origin and runs gh pr create
+#           on the base repository (head <fork owner>:<branch> in a fork
+#           checkout), or prints the branch's open PR from that head repository
+#           and creates nothing. Refuses the base repository's default branch
+#           and a branch equal to --base.
+# start     refuses a PR that is not OPEN or comes from a fork other than
+#           origin, writes the state file (kept as is when
 #           it exists) and starts or reuses tmux window pr-<n> through
 #           opsx-window.sh ensure with a goal and a prompt (the maintain loop).
-# restart-input  same refusals as start (not OPEN, from a fork), keeps the state
+# restart-input  same refusals as start (not OPEN, from another fork), keeps the state
 #           file (writes one only when missing), rewrites the prompt and goal
 #           files and prints the window's first input: on Claude Code (default,
 #           or --agent-cli claude) `/goal <goal> Dispatcher steps: read
@@ -40,10 +44,11 @@
 #           head or once CI on that head left the fail state (pending or pass)
 #           and failed again, e.g. after rerun.
 # worktree  prints a worktree on the head branch: an existing one, else a new
-#           ../wt-pr-<n> beside the main checkout. Refuses a dirty one.
-# restack   git rebase --onto origin/<new base> <recorded parent tip> in the
+#           ../wt-pr-<n> beside the main checkout tracking <head remote>/<head>.
+#           Refuses a dirty one, and a local <head> tracking another remote.
+# restack   git rebase --onto <base remote>/<new base> <recorded parent tip> in the
 #           worktree. Exit 4 on conflict (conflict=<file> lines, rebase left open).
-# push      pushes the worktree's head branch to origin with
+# push      pushes the worktree's head branch to its head remote with
 #           --force-with-lease=<head>:<head_sha recorded in the state>, so a
 #           commit someone else pushed is never overwritten (exit 5: rejected),
 #           then records the pushed SHA as head_sha.
@@ -69,8 +74,17 @@
 #
 # State: ${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/pr/<owner>-<name>-<n>/state
 # --repo defaults to the git top level of $PWD. Only open and push push
-# (push with an explicit lease). PRs from forks are refused by start, worktree,
-# restack and push. Nothing here merges a PR.
+# (push with an explicit lease). Nothing here merges a PR.
+#
+# Repositories: the base repository (where PRs live, every gh -R) is the
+# `upstream` remote when it names a GitHub repository, else origin's GitHub
+# parent when origin is a fork, else origin (gh repo view when origin is not a
+# GitHub URL). The base remote is the first remote naming the base repository
+# (upstream first); restack fails without one. The user's fork is origin when it
+# differs from the base. Same-repository PRs use the base remote for the head;
+# PRs from the user's fork use origin. PRs from any other fork, and fork PRs
+# whose head is the base's default branch or the PR's base, are refused by
+# start, restart-input, worktree, restack and push.
 set -euo pipefail
 
 die() { printf 'pr: %s\n' "$*" >&2; exit 1; }
@@ -144,16 +158,53 @@ parse_opts() {
 
 # ---------------------------------------------------------------- GitHub reads
 
-PR_FIELDS=number,url,headRefName,headRefOid,baseRefName,state,author,isCrossRepository,headRepositoryOwner
+PR_FIELDS=number,url,headRefName,headRefOid,baseRefName,state,author,isCrossRepository,headRepositoryOwner,headRepository
 
-# A PR from a fork has its head in another repository; its headRefName says
-# nothing about origin (a fork's `main` is not origin/main). Refuse it.
-refuse_fork() {
-  local j=$1 owner
-  if [ "$(jq -r '.isCrossRepository // false' <<<"$j")" != false ]; then
-    owner=$(jq -r '.headRepositoryOwner.login // "a fork"' <<<"$j")
-    die "PR $SLUG#$PR comes from a fork ($owner:$(jq -r .headRefName <<<"$j")); /opsx-pr only maintains PRs whose branch is on origin."
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# Where the PR's head lives. Sets HEAD_NAME, HEAD_REPO and HEAD_REMOTE (empty
+# when no remote may push it) and REFUSE (why, empty when accepted). A PR from
+# a fork has its head in another repository: its headRefName says nothing about
+# the base remote (a fork's `main` is not upstream/main). Only the user's own
+# fork (origin) is accepted, and never with a head named like the base's
+# default branch or the PR's base.
+classify_head() {
+  local j=$1 owner name base default
+  HEAD_NAME=$(jq -r .headRefName <<<"$j")
+  base=$(jq -r .baseRefName <<<"$j")
+  REFUSE=""
+  if [ "$(jq -r '.isCrossRepository // false' <<<"$j")" = false ]; then
+    HEAD_REPO=$SLUG; HEAD_REMOTE=$BASE_REMOTE
+    return 0
   fi
+  owner=$(jq -r '.headRepositoryOwner.login // ""' <<<"$j")
+  name=$(jq -r '.headRepository.name // ""' <<<"$j")
+  HEAD_REPO=""; HEAD_REMOTE=""
+  [ -z "$owner" ] || [ -z "$name" ] || HEAD_REPO=$owner/$name
+  if [ -z "$FORK_SLUG" ] || [ -z "$HEAD_REPO" ] || [ "$(lower "$HEAD_REPO")" != "$(lower "$FORK_SLUG")" ]; then
+    REFUSE="PR $SLUG#$PR comes from a fork (${owner:-a fork}:$HEAD_NAME${HEAD_REPO:+, $HEAD_REPO}) that is not origin (${ORIGIN_SLUG:-no GitHub origin}); /opsx-pr only maintains PRs whose branch is on the base repository or on your own fork (origin)."
+    return 0
+  fi
+  default=$(cd "$REPO" && gh repo view "$SLUG" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null) || default=""
+  if [ -z "$default" ]; then
+    REFUSE="cannot read the default branch of $SLUG (gh repo view); refusing fork PR $SLUG#$PR."
+  elif [ "$HEAD_NAME" = "$default" ] || [ "$HEAD_NAME" = "$base" ]; then
+    REFUSE="PR $SLUG#$PR comes from your fork origin ($owner:$HEAD_NAME), but its branch $HEAD_NAME is the default branch or the base of $SLUG; /opsx-pr never maps a fork's $HEAD_NAME onto a local $HEAD_NAME."
+  else
+    HEAD_REMOTE=origin
+  fi
+}
+
+# classify_head, then fail on a refused PR.
+refuse_fork() {
+  classify_head "$1"
+  [ -z "$REFUSE" ] || die "$REFUSE"
+}
+
+# Commands that read or rebase onto base branches need a remote naming the base.
+need_base_remote() {
+  [ -n "$BASE_REMOTE" ] \
+    || die "no remote names the base repository $SLUG; add the base repository as a remote: git remote add upstream https://github.com/$SLUG.git"
 }
 
 # PR JSON for number $1, run in $REPO. Exit 2 when gh finds no such PR.
@@ -170,16 +221,51 @@ slug_of_url() {
   printf '%s' "$1" | sed -nE 's#^https?://[^/]+/([^/]+)/([^/]+)/pull/[0-9]+.*#\1/\2#p'
 }
 
-repo_slug() {
-  local s
-  s=$(cd "$REPO" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || true
-  [ -n "$s" ] || die "cannot read the GitHub repository of $REPO (gh repo view)."
-  printf '%s' "$s"
+# owner/name from a GitHub remote URL (https, ssh, scp-like, or any path
+# ending in github.com/<owner>/<name>[.git]); empty for anything else.
+slug_of_remote_url() {
+  local u=${1%/}
+  u=${u%.git}
+  printf '%s' "$u" | sed -nE 's#^.*github\.com[:/]+([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$#\1/\2#p'
 }
 
-# Base branch tip on origin, empty when unknown.
+remote_slug() {
+  local u
+  u=$(git -C "$REPO" remote get-url "$1" 2>/dev/null) || return 0
+  slug_of_remote_url "$u"
+}
+
+# SLUG (base repository), BASE_REMOTE, ORIGIN_SLUG and FORK_SLUG for $REPO.
+resolve_repos() {
+  local up parent r
+  ORIGIN_SLUG=$(remote_slug origin)
+  up=$(remote_slug upstream)
+  BASE_REMOTE="" FORK_SLUG=""
+  if [ -n "$up" ]; then
+    SLUG=$up
+  elif [ -n "$ORIGIN_SLUG" ]; then
+    parent=$(cd "$REPO" && gh api "repos/$ORIGIN_SLUG" --jq '.parent.full_name // empty' 2>/dev/null) || parent=""
+    [[ $parent =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || parent=""
+    SLUG=${parent:-$ORIGIN_SLUG}
+  else
+    # origin is not a GitHub URL (a mirror, a local path): ask gh, as before.
+    SLUG=$(cd "$REPO" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || SLUG=""
+    [ -n "$SLUG" ] || die "cannot read the GitHub repository of $REPO (gh repo view)."
+    BASE_REMOTE=origin
+    return 0
+  fi
+  for r in upstream origin $(git -C "$REPO" remote 2>/dev/null); do
+    if [ "$(lower "$(remote_slug "$r")")" = "$(lower "$SLUG")" ]; then BASE_REMOTE=$r; break; fi
+  done
+  if [ -n "$ORIGIN_SLUG" ] && [ "$(lower "$ORIGIN_SLUG")" != "$(lower "$SLUG")" ]; then
+    FORK_SLUG=$ORIGIN_SLUG
+  fi
+}
+
+# Base branch tip on the base remote, empty when unknown or there is none.
 remote_tip() {
-  git -C "$REPO" ls-remote origin "refs/heads/$1" 2>/dev/null | awk 'NR==1 { print $1 }'
+  [ -n "$BASE_REMOTE" ] || return 0
+  git -C "$REPO" ls-remote "$BASE_REMOTE" "refs/heads/$1" 2>/dev/null | awk 'NR==1 { print $1 }'
 }
 
 # Highest id in a gh api list endpoint, 0 when none. Prints nothing and
@@ -336,7 +422,7 @@ setup_pr() {
   [ -n "$ARG1" ] || die "$1 needs a PR number, #<n> or PR URL"
   PR=$(pr_number "$ARG1")
   REPO=$(repo_dir "$REPO_OPT")
-  SLUG=$(repo_slug)
+  resolve_repos
   # A URL must name this repository: the worktree, pushes and state all come
   # from $REPO, so another repository's PR with the same number is refused.
   if [[ $ARG1 == http* ]]; then
@@ -382,8 +468,10 @@ goal_text() {
 }
 
 prompt_text() {
-  local W
+  local W BR HR
   W=$(window_script)
+  BR=${BASE_REMOTE:-<no base remote: git remote add upstream https://github.com/$SLUG.git>}
+  HR=${HEAD_REMOTE:-<no head remote>}
   cat <<EOF
 # /opsx-pr maintain loop: $SLUG#$PR
 
@@ -391,6 +479,7 @@ You keep pull request $SLUG#$PR mergeable until someone else merges it, it is cl
 or the user says stop in this window. You never merge or approve it yourself.
 
 Repository (main checkout): $REPO
+Remotes: base $SLUG from \`$BR\`; head branch $HEAD_NAME on \`$HR\` ($HEAD_REPO)
 State file: $(state_file)
 Helper: $SELF   (below: pr.sh)
 Window marks: $W mark pr-$PR busy|idle|ask|done
@@ -419,9 +508,9 @@ unresolved review threads and recent comments (endpoints under Events), and the 
   (it rebases onto the parent's base with the recorded parent tip), run the gates, push,
   then retarget the base: \`gh pr edit $PR --base <parent's base>\` (parent_base in the state file).
 - parent-moved: the parent PR's head changed. \`$SELF restack $PR --repo $REPO --onto <parent head branch>\`, gates, push.
-- base-moved: \`git fetch origin\` and \`git rebase origin/<base>\` in the worktree, gates, push.
-- head-moved: someone else pushed to the branch. \`git pull --rebase\` (or reset to origin/<head>
-  when you have no local work); never overwrite their commits. Run \`$SELF seen $PR --repo $REPO\`
+- base-moved: \`git fetch $BR\` and \`git rebase $BR/<base>\` in the worktree, gates, push.
+- head-moved: someone else pushed to the branch. \`git fetch $HR\` and \`git rebase $HR/$HEAD_NAME\` (or reset to
+  $HR/$HEAD_NAME when you have no local work); never overwrite their commits. Run \`$SELF seen $PR --repo $REPO\`
   once their commits are in your branch, so the push lease expects their head.
 - ci-failed: CI fails on the current head (a failing or cancelled check; reported once per head).
   Read \`gh pr checks $PR -R $SLUG\` and the failing job's log (\`gh run view <run-id> --log-failed -R $SLUG\`).
@@ -507,12 +596,15 @@ cmd_resolve() {
   setup_pr resolve
   local j
   j=$(pr_json "$PR")
-  jq -r --arg repo "$SLUG" '"pr=\(.number)\nurl=\(.url)\nrepo=\($repo)\nhead=\(.headRefName)\nhead_sha=\(.headRefOid)\nbase=\(.baseRefName)\nstate=\(.state)\nauthor=\(.author.login // "")"' <<<"$j"
+  classify_head "$j"
+  jq -r --arg repo "$SLUG" --arg hr "$HEAD_REPO" --arg br "$BASE_REMOTE" --arg hm "$HEAD_REMOTE" \
+    '"pr=\(.number)\nurl=\(.url)\nrepo=\($repo)\nhead=\(.headRefName)\nhead_sha=\(.headRefOid)\nbase=\(.baseRefName)\nstate=\(.state)\nauthor=\(.author.login // "")\nhead_repo=\($hr)\nbase_remote=\($br)\nhead_remote=\($hm)"' <<<"$j"
 }
 
 cmd_seen() {
   parse_opts "$@"
   setup_pr seen
+  need_base_remote
   snapshot
   write_seen
   printf 'seen %s#%s head_sha=%s base=%s parent=%s\n' "$SLUG" "$PR" "$CUR_head_sha" "$CUR_base" "$CUR_parent"
@@ -521,6 +613,7 @@ cmd_seen() {
 cmd_wait() {
   parse_opts "$@"
   setup_pr wait
+  need_base_remote
   [ -f "$(state_file)" ] || die "no state for $SLUG#$PR; run 'pr.sh start $PR' or 'pr.sh seen $PR' first."
   local deadline ev now
   deadline=$(( $(date +%s) + SLICE ))
@@ -549,10 +642,32 @@ cmd_wait() {
   done
 }
 
+# A local <head> branch must not track another remote (or another branch):
+# reusing it would push or rebase the wrong line. A fork PR's branch without
+# an upstream must hold the head remote's branch.
+check_local_branch() {
+  local head=$1 rem merge rsha
+  git -C "$REPO" show-ref -q --verify "refs/heads/$head" || return 0
+  rem=$(git -C "$REPO" config "branch.$head.remote" 2>/dev/null || true)
+  merge=$(git -C "$REPO" config "branch.$head.merge" 2>/dev/null || true)
+  if [ -n "$rem" ]; then
+    { [ "$rem" = "$HEAD_REMOTE" ] && [ "$merge" = "refs/heads/$head" ]; } \
+      || die "local branch $head tracks $rem ${merge#refs/heads/}, not $HEAD_REMOTE/$head; rename it or set its upstream (git branch -u $HEAD_REMOTE/$head $head) first."
+  elif [ "$HEAD_REMOTE" != "$BASE_REMOTE" ]; then
+    git -C "$REPO" fetch -q "$HEAD_REMOTE" "$head" 2>/dev/null || true
+    rsha=$(git -C "$REPO" rev-parse -q --verify "refs/remotes/$HEAD_REMOTE/$head^{commit}" 2>/dev/null || true)
+    { [ -n "$rsha" ] && git -C "$REPO" merge-base --is-ancestor "$rsha" "refs/heads/$head" 2>/dev/null; } \
+      || die "local branch $head has no upstream and does not hold $HEAD_REMOTE/$head; rename it or set its upstream (git branch -u $HEAD_REMOTE/$head $head) first."
+  fi
+}
+
 # Worktree path on <head>; created when missing.
 ensure_worktree() {
   local head=$1 main wt line path="" branch
+  [ -n "$HEAD_REMOTE" ] \
+    || die "no remote holds the head branch $head of $SLUG#$PR; add the base repository as a remote: git remote add upstream https://github.com/$SLUG.git"
   main=$(main_checkout "$REPO")
+  check_local_branch "$head"
   while IFS= read -r line; do
     case $line in
       "worktree "*) path=${line#worktree } ;;
@@ -571,14 +686,14 @@ ensure_worktree() {
   done < <(git -C "$REPO" worktree list --porcelain)
   wt=$(dirname "$main")/wt-pr-$PR
   [ ! -e "$wt" ] || die "$wt exists but is not a worktree on $head; remove it first."
-  git -C "$REPO" fetch -q origin "$head" 2>/dev/null || true
+  git -C "$REPO" fetch -q "$HEAD_REMOTE" "$head" 2>/dev/null || true
   if git -C "$REPO" show-ref -q --verify "refs/heads/$head"; then
     git -C "$REPO" worktree add -q "$wt" "$head" >&2 || die "git worktree add $wt $head failed."
-  elif git -C "$REPO" show-ref -q --verify "refs/remotes/origin/$head"; then
-    git -C "$REPO" worktree add -q --track -b "$head" "$wt" "origin/$head" >&2 \
-      || die "git worktree add $wt origin/$head failed."
+  elif git -C "$REPO" show-ref -q --verify "refs/remotes/$HEAD_REMOTE/$head"; then
+    git -C "$REPO" worktree add -q --track -b "$head" "$wt" "$HEAD_REMOTE/$head" >&2 \
+      || die "git worktree add $wt $HEAD_REMOTE/$head failed."
   else
-    die "branch $head is neither local nor on origin."
+    die "branch $head is neither local nor on $HEAD_REMOTE."
   fi
   printf 'worktree created %s\n' "$wt" >&2
   printf '%s\n' "$wt"
@@ -599,6 +714,7 @@ cmd_restack() {
   local j pj head base tip pstate pbase target wt
   j=$(pr_json "$PR")
   refuse_fork "$j"
+  need_base_remote
   head=$(jq -r .headRefName <<<"$j"); base=$(jq -r .baseRefName <<<"$j")
   tip=$(sget parent_tip); pstate=$(sget parent_state); pbase=$(sget parent_base)
   # The parent may have merged since the last seen: ask GitHub, not the state.
@@ -613,23 +729,24 @@ cmd_restack() {
   else target=$base
   fi
   wt=$(ensure_worktree "$head")
-  git -C "$wt" fetch -q origin || die "git fetch origin failed in $wt."
-  git -C "$wt" rev-parse -q --verify "origin/$target^{commit}" >/dev/null \
-    || die "origin/$target does not exist."
+  local B=$BASE_REMOTE
+  git -C "$wt" fetch -q "$B" || die "git fetch $B failed in $wt."
+  git -C "$wt" rev-parse -q --verify "$B/$target^{commit}" >/dev/null \
+    || die "$B/$target does not exist."
   if [ -n "$tip" ] && git -C "$wt" merge-base --is-ancestor "$tip" HEAD 2>/dev/null; then
-    printf 'restack %s: git rebase --onto origin/%s %s\n' "$head" "$target" "$tip" >&2
-    git -C "$wt" rebase -q --onto "origin/$target" "$tip" >/dev/null 2>&1 || {
+    printf 'restack %s: git rebase --onto %s/%s %s\n' "$head" "$B" "$target" "$tip" >&2
+    git -C "$wt" rebase -q --onto "$B/$target" "$tip" >/dev/null 2>&1 || {
       git -C "$wt" diff --name-only --diff-filter=U | sed 's/^/conflict=/'
       printf 'pr: rebase stopped with conflicts in %s; resolve, git rebase --continue, or git rebase --abort\n' "$wt" >&2
       exit 4; }
   else
-    printf 'restack %s: git rebase origin/%s (no recorded parent tip)\n' "$head" "$target" >&2
-    git -C "$wt" rebase -q "origin/$target" >/dev/null 2>&1 || {
+    printf 'restack %s: git rebase %s/%s (no recorded parent tip)\n' "$head" "$B" "$target" >&2
+    git -C "$wt" rebase -q "$B/$target" >/dev/null 2>&1 || {
       git -C "$wt" diff --name-only --diff-filter=U | sed 's/^/conflict=/'
       printf 'pr: rebase stopped with conflicts in %s; resolve, git rebase --continue, or git rebase --abort\n' "$wt" >&2
       exit 4; }
   fi
-  printf 'restacked=%s\nonto=origin/%s\nhead_sha=%s\nworktree=%s\n' "$head" "$target" "$(git -C "$wt" rev-parse HEAD)" "$wt"
+  printf 'restacked=%s\nonto=%s/%s\nhead_sha=%s\nworktree=%s\n' "$head" "$B" "$target" "$(git -C "$wt" rev-parse HEAD)" "$wt"
 }
 
 cmd_push() {
@@ -651,8 +768,8 @@ cmd_push() {
 head_sha=%s
 ' "$sha"; return 0
   fi
-  if ! git -C "$wt" push -q --force-with-lease="refs/heads/$head:$lease" origin "HEAD:refs/heads/$head" >&2; then
-    printf 'pr: push rejected: origin/%s is no longer %s (someone pushed). Fetch, integrate their commits, run seen, then push again.\n' "$head" "$lease" >&2
+  if ! git -C "$wt" push -q --force-with-lease="refs/heads/$head:$lease" "$HEAD_REMOTE" "HEAD:refs/heads/$head" >&2; then
+    printf 'pr: push rejected: %s/%s is no longer %s (someone pushed). Fetch, integrate their commits, run seen, then push again.\n' "$HEAD_REMOTE" "$head" "$lease" >&2
     exit 5
   fi
   sset head_sha "$sha"
@@ -757,8 +874,9 @@ cmd_open() {
   parse_opts "$@"
   need gh; need jq
   REPO=$(repo_dir "$REPO_OPT")
-  SLUG=$(repo_slug)
-  local branch=$ARG1 existing url n args
+  resolve_repos
+  local branch=$ARG1 existing url n args head_arg fork_owner=""
+  [ -z "$FORK_SLUG" ] || fork_owner=${FORK_SLUG%%/*}
   [ -z "$ARG2" ] || die "open takes one branch"
   if [ -z "$branch" ]; then
     branch=$(git -C "$REPO" symbolic-ref -q --short HEAD) || die "not on a branch; pass the branch to open."
@@ -769,8 +887,16 @@ cmd_open() {
   [ -n "$default" ] || die "cannot read the default branch of $SLUG (gh repo view)."
   [ "$branch" != "$default" ] || die "$branch is the default branch of $SLUG; open a PR from a feature branch."
   [ -z "$BASE_OPT" ] || [ "$branch" != "$BASE_OPT" ] || die "$branch is also the --base; a PR needs two different branches."
-  existing=$(cd "$REPO" && gh pr list --head "$branch" -R "$SLUG" --state open --limit 1 --json number,url 2>/dev/null \
-             | jq -c '.[0] // empty' 2>/dev/null) || existing=""
+  if [ -n "$fork_owner" ]; then
+    # gh filters --head by branch name only: keep the PRs whose head is on the fork.
+    existing=$(cd "$REPO" && gh pr list --head "$branch" -R "$SLUG" --state open --limit 50 \
+                 --json number,url,headRepositoryOwner 2>/dev/null \
+               | jq -c --arg o "$(lower "$fork_owner")" \
+                   '[.[] | select(((.headRepositoryOwner.login // "") | ascii_downcase) == $o)] | .[0] // empty' 2>/dev/null) || existing=""
+  else
+    existing=$(cd "$REPO" && gh pr list --head "$branch" -R "$SLUG" --state open --limit 1 --json number,url 2>/dev/null \
+               | jq -c '.[0] // empty' 2>/dev/null) || existing=""
+  fi
   if [ -n "$existing" ]; then
     jq -r '"pr=\(.number)\nurl=\(.url)\ncreated=0"' <<<"$existing"
     return 0
@@ -778,8 +904,12 @@ cmd_open() {
   [ -n "$TITLE" ] || die "open needs --title"
   if [ -z "$BODY_FILE" ] || [ ! -f "$BODY_FILE" ]; then die "open needs --body-file <existing file>"; fi
   git -C "$REPO" push -q -u origin "$branch" >&2 || die "git push -u origin $branch failed."
-  args=(pr create --head "$branch" -R "$SLUG" --title "$TITLE" --body-file "$BODY_FILE")
-  [ -z "$BASE_OPT" ] || args+=(--base "$BASE_OPT")
+  head_arg=$branch
+  [ -z "$fork_owner" ] || head_arg=$fork_owner:$branch
+  args=(pr create --head "$head_arg" -R "$SLUG" --title "$TITLE" --body-file "$BODY_FILE")
+  if [ -n "$BASE_OPT" ]; then args+=(--base "$BASE_OPT")
+  elif [ -n "$fork_owner" ]; then args+=(--base "$default")
+  fi
   url=$(cd "$REPO" && gh "${args[@]}" | grep -Eo 'https?://[^ ]+/pull/[0-9]+' | tail -n1) \
     || die "gh pr create failed."
   [ -n "$url" ] || die "gh pr create printed no PR URL."
@@ -790,6 +920,9 @@ cmd_open() {
 cmd_prompt() {
   parse_opts "$@"
   setup_pr prompt
+  local j
+  j=$(pr_json "$PR")
+  classify_head "$j"
   prompt_text
 }
 

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Push never overwrites someone else's commit
+# level: L1
+# requirement: Push with an explicit lease
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_env
+pr_start 42 >/dev/null 2>&1 || true
+wt=$("$PRSH" worktree 42 --repo "$R" 2>/dev/null | tail -1)
+[ -d "$wt" ] || fail "no worktree"
+[ -f "$(state_file 42)" ] || { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1; }
+$G clone -q "$ORIGIN" "$EVAL_TMP/other" 2>/dev/null
+$G -C "$EVAL_TMP/other" checkout -q feat-a; commit "$EVAL_TMP/other" r.txt r "their commit"; $G -C "$EVAL_TMP/other" push -q origin feat-a
+THEIRS=$(git -C "$ORIGIN" rev-parse refs/heads/feat-a)
+git -C "$wt" fetch -q origin
+$G -C "$wt" commit -q --amend -m rewritten
+out=$("$PRSH" push 42 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 5 ] || fail "expected 5, got $rc"
+[ "$(git -C "$ORIGIN" rev-parse refs/heads/feat-a)" = "$THEIRS" ] || fail "their commit overwritten"
+"$PRSH" stop 42 --repo "$R" >/dev/null 2>&1
+echo OK
