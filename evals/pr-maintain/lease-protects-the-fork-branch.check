@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Lease protects the fork branch
+# level: L1
+# requirement: Fork PR worktree, restack and push
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_fork_env
+wt=$("$PRSH" worktree 50 --repo "$F" 2>/dev/null | tail -1)
+[ -d "$wt" ] || fail "no worktree"
+fstart 50 >/dev/null 2>&1 || true
+$G clone -q "$FK" "$SP/other" 2>/dev/null
+$G -C "$SP/other" checkout -q feat-f; commit "$SP/other" r.txt r "their commit"; $G -C "$SP/other" push -q origin feat-f
+THEIRS=$(git -C "$FK" rev-parse refs/heads/feat-f)
+git -C "$wt" fetch -q origin
+$G -C "$wt" commit -q --amend -m "rewritten"
+out=$("$PRSH" push 50 --repo "$F" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 5 ] || fail "expected exit 5, got $rc"
+[ "$(git -C "$FK" rev-parse refs/heads/feat-f)" = "$THEIRS" ] || fail "their commit was overwritten"
+"$PRSH" stop 50 --repo "$F" >/dev/null 2>&1
+echo OK

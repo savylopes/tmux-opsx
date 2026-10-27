@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Fork PR is refused
+# level: L2
+# requirement: Start a maintain window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+need_tmux
+mk_env
+jq '. + [{number:45,url:"https://github.com/o/app/pull/45",headRefName:"main",headRefOid:"1",baseRefName:"main",state:"OPEN",author:{login:"zed"},title:"t",isCrossRepository:true,headRepositoryOwner:{login:"zed"},headRepository:{name:"app"}}]' "$GHD/prs.json" > "$GHD/p.tmp" && mv "$GHD/p.tmp" "$GHD/prs.json"
+out=$(pr_start 45 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "start exit 0"
+echo "$out" | grep -q zed || fail "message does not name the fork"
+[ "$(win_count 45)" -eq 0 ] || fail "window created"
+[ ! -e "$(state_file 45)" ] || fail "state file created"
+for c in worktree restack push; do
+  o=$("$PRSH" $c 45 --repo "$R" 2>&1); r=$?; echo "$c: $r $o"
+  [ $r -ne 0 ] || fail "$c 45 exited 0"
+done
+echo OK

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / PR from the user's fork starts a window
+# level: L2
+# requirement: Only the user's own fork is maintained
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+need_tmux
+mk_fork_env
+out=$(fstart 50 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "start exit $rc"
+[ "$(T list-windows -a -F '#{@opsx_change}' | grep -cx pr-50)" -eq 1 ] || fail "no single pr-50 window"
+[ -f "$(fstate 50)" ] || fail "no state file $(fstate 50)"
+r=$("$PRSH" resolve 50 --repo "$F" 2>&1); echo "$r"
+echo "$r" | grep -qx "head_repo=me/app" || fail "head_repo"
+echo "$r" | grep -qx "head_remote=origin" || fail "head_remote"
+"$PRSH" stop 50 --repo "$F" >/dev/null 2>&1
+echo OK

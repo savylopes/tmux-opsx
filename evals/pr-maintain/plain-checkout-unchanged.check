@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Plain checkout unchanged
+# level: L1
+# requirement: Base repository and user's fork
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_env
+out=$("$PRSH" resolve 42 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+for l in repo=o/app base_remote=origin head_remote=origin; do echo "$out" | grep -qx "$l" || fail "missing $l"; done
+echo OK

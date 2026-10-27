@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Upstream remote names the base repository
+# level: L1
+# requirement: Base repository and user's fork
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/prfork.sh"
+mk_fork_env
+out=$("$PRSH" resolve 50 --repo "$F" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+echo "$out" | grep -qx "repo=acme/app" || fail "repo != acme/app"
+echo "$out" | grep -qx "base_remote=upstream" || fail "base_remote != upstream"
+grep -q -- "-R acme/app" "$GHD/gh.log" || fail "fake gh never saw -R acme/app"
+echo OK
