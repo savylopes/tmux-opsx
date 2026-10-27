@@ -39,6 +39,8 @@ pr.sh rerun <pr> [--repo <dir>]                       # re-run the failed GitHub
 pr.sh restart-input <pr> [--repo <dir>]               # print the window's first input (/goal …), no tmux; used by `opsx sessions restore`
 ```
 
+**Fork checkouts.** When `origin` is the user's fork and `upstream` the project, PRs live on the base repository: the `upstream` remote, else `origin`'s GitHub parent, else `origin`. `pr.sh` runs every `gh` call with `-R <base>`, takes base branches from the base remote and keeps the head of a PR from the user's fork on `origin` (`pr.sh resolve` prints `head_repo=`, `base_remote=`, `head_remote=`). Only PRs whose head is on the base repository or on `origin` are maintained; PRs from teammates' or other forks are refused. When `restack` says no remote names the base repository, relay its `git remote add upstream …` hint. Comments go out as `gh`'s active account, pushes use `origin`'s git credentials.
+
 The window itself uses `pr.sh wait`, `seen`, `worktree`, `restack`, `push`, `rerun` and `note`; `pr.sh prompt <pr>` prints the prompt it gets. `pr.sh --help` lists every command.
 
 ## Steps (the caller)
@@ -46,14 +48,14 @@ The window itself uses `pr.sh wait`, `seen`, `worktree`, `restack`, `push`, `rer
 The caller only runs `pr.sh` and returns. It never waits for the PR, never runs the maintain loop itself and never sends keys to the window.
 
 1. **Preconditions.** `gh auth status` must pass, and the command runs inside the PR's git repository (or pass `--repo`). The window runs in the caller's tmux session (outside tmux: in a session named after the repository).
-2. **`/opsx-pr <pr>`.** Run `"$PRSH" start <pr> [--repo …] [--agent-cli …]` and relay its first line (`created …` or `reused …`) and the `state=` path. It refuses a PR that is not `OPEN` (say which state), a PR from a fork (its branch is not on `origin`, so the window could push to the wrong branch), and a `pr-<n>` window that belongs to another repository.
+2. **`/opsx-pr <pr>`.** Run `"$PRSH" start <pr> [--repo …] [--agent-cli …]` and relay its first line (`created …` or `reused …`) and the `state=` path. It refuses a PR that is not `OPEN` (say which state), a PR from a fork other than the user's own `origin` (its branch is on someone else's repository, so the window could push to the wrong branch; say which fork), a PR from the user's fork whose head is the base repository's default branch or its base, and a `pr-<n>` window that belongs to another repository.
 3. **`/opsx-pr open [<branch>]`.**
    - Write the title and body first, into a temporary body file:
      - branch `opsx/<change>`: from the OpenSpec change (`openspec/changes/<change>/proposal.md` Why and What Changes, or the archived copy under `openspec/changes/archive/*-<change>/`), with the tasks as a short checklist;
      - when the repository has its own PR skill (for example `ztd-pr`), use it to write the title and body in that repository's style instead;
      - otherwise from `git log <base>..<branch>`.
    - Run `"$PRSH" open <branch> --title "<title>" --body-file <file> [--base <b>]`. When it prints `created=0`, the branch already had an open PR and nothing was created. It refuses the repository's default branch and a branch equal to `--base`. Then run `"$PRSH" start <pr>` with the printed `pr=`.
-   - `open` is the only time this skill pushes from the caller. It pushes the branch to `origin` (no force) because the user asked for a PR.
+   - `open` is the only time this skill pushes from the caller. It pushes the branch to `origin` (no force) because the user asked for a PR; in a fork checkout the PR is created on the base repository with head `<fork owner>:<branch>`.
 4. **`/opsx-pr list`** and **`/opsx-pr stop <pr>`**: run the command and relay its output. After a reboot or a CLI exit, `list` shows `none` for the PR: run `/opsx-pr <pr>` again, the kept state file makes the new window report what happened meanwhile. With session restore installed (`opsx sessions`, Claude Code only), a tmux restart brings the window back by itself: restore resumes its conversation with `pr.sh restart-input <pr>` as the first prompt while the PR is open, and only resumes it once the PR is merged or closed. `restart-input` refuses like `start`, keeps the state file and never touches tmux.
 5. **Refresh a running window** after `/opsx-pr` itself was updated: run `"$PRSH" start <pr> --repo <dir>` again. It keeps the state file (`state kept`), rewrites the prompt and goal files and types the new goal into the reused window; the input lands once the current `pr.sh wait` returns. Open `ask=` questions survive.
 

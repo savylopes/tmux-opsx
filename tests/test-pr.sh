@@ -58,11 +58,13 @@ pr_obj() { # n head sha base state
 } | jq -s . > "$SP/gh/prs.json"
 setpr() { jq --argjson n "$1" "map(if .number==\$n then $2 else . end)" "$SP/gh/prs.json" > "$SP/gh/prs.tmp" && mv "$SP/gh/prs.tmp" "$SP/gh/prs.json"; }
 api_file() { printf '%s/gh/api/%s' "$SP" "$(printf '%s' "$1" | tr '/' '_')"; }
+# The fork block (add-pr-forks) serves acme/app from $SP/gh-acme; one log.
 cat > "$SP/fakebin/gh" <<EOF
 #!/usr/bin/env bash
 D=$SP/gh
 printf '%s\n' "\$*" >> "\$D/gh.log"
 opt() { local k=\$1; shift; while [ \$# -gt 0 ]; do [ "\$1" = "\$k" ] && { printf '%s' "\$2"; return; }; shift; done; }
+R=\$(opt -R "\$@"); [ "\$R" = acme/app ] && D=$SP/gh-acme
 case "\$1 \$2" in
   "repo view") case "\$*" in *defaultBranchRef*) echo main ;; *) echo o/app ;; esac ;;
   "pr view")
@@ -71,15 +73,22 @@ case "\$1 \$2" in
     h=\$(opt --head "\$@"); st=\$(opt --state "\$@")
     jq -c --arg h "\$h" --arg st "\$st" '[.[] | select((\$h=="" or .headRefName==\$h) and (\$st!="open" or .state=="OPEN"))]' "\$D/prs.json" ;;
   "pr create")
-    h=\$(opt --head "\$@"); n=\$(jq '[.[].number] | max + 1' "\$D/prs.json")
-    jq --argjson n "\$n" --arg h "\$h" '. + [{number:\$n,url:"https://github.com/o/app/pull/\(\$n)",headRefName:\$h,headRefOid:"0",baseRefName:"main",state:"OPEN",author:{login:"leo"}}]' "\$D/prs.json" > "\$D/prs.tmp" && mv "\$D/prs.tmp" "\$D/prs.json"
-    echo "https://github.com/o/app/pull/\$n" ;;
+    h=\$(opt --head "\$@"); n=\$(jq '[.[].number] | max + 1' "\$D/prs.json"); r=\${R:-o/app}
+    case \$h in
+      *:*) jq --argjson n "\$n" --arg h "\${h#*:}" --arg o "\${h%%:*}" --arg r "\$r" '. + [{number:\$n,url:"https://github.com/\(\$r)/pull/\(\$n)",headRefName:\$h,headRefOid:"0",baseRefName:"main",state:"OPEN",author:{login:"leo"},isCrossRepository:true,headRepositoryOwner:{login:\$o},headRepository:{name:"app"}}]' "\$D/prs.json" > "\$D/prs.tmp" ;;
+      *) jq --argjson n "\$n" --arg h "\$h" --arg r "\$r" '. + [{number:\$n,url:"https://github.com/\(\$r)/pull/\(\$n)",headRefName:\$h,headRefOid:"0",baseRefName:"main",state:"OPEN",author:{login:"leo"}}]' "\$D/prs.json" > "\$D/prs.tmp" ;;
+    esac
+    mv "\$D/prs.tmp" "\$D/prs.json"
+    echo "https://github.com/\$r/pull/\$n" ;;
   "pr checks")
     f="\$D/checks/\$3.json"; [ -f "\$f" ] || { echo "no checks reported" >&2; exit 1; }; cat "\$f" ;;
   "api --paginate")
     [ -e "\$D/api_fail" ] && { echo "HTTP 502" >&2; exit 1; }
     f="\$D/api/\$(printf '%s' "\$3" | tr '/' '_')"; [ -f "\$f" ] || { echo '[]' | jq -r '.[].id'; exit 0; }
     jq -r '.[].id' "\$f" ;;
+  "api repos/"*)
+    f="$SP/gh/repos/\$(printf '%s' "\$2" | tr '/' '_').json"; [ -f "\$f" ] || { echo "HTTP 404: Not Found" >&2; exit 1; }
+    q=\$(opt --jq "\$@"); jq -r "\${q:-.}" "\$f" ;;
   "run rerun")
     [ -e "\$D/rerun_fail" ] && { echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; }
     exit 0 ;;
@@ -483,6 +492,128 @@ out=$(P restart-input 45 2>&1); rc=$?
 ok "restart-input: fork PR refused" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q fork'
 out=$(P restart-input 42 --agent-cli codex 2>/dev/null); rc=$?
 ok "restart-input: other CLIs get the prompt on one line" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | wc -l)" -eq 1 ] && [ "${out#/goal}" = "$out" ] && printf "%s" "$out" | grep -q "maintain loop"'
+
+# ---------------------------------------------------------------- fork checkout (add-pr-forks)
+# origin = the user's fork me/app, upstream = acme/app, plus a teammate's fork
+# remote dany. Paths end in github.com/<owner>/<name>.git so they parse as slugs.
+GHR=$SP/remotes/github.com
+UP=$GHR/acme/app.git FK=$GHR/me/app.git DK=$GHR/dany/app.git
+$G init -q --bare "$UP"
+$G clone -q "$UP" "$SP/upw" 2>/dev/null
+commit "$SP/upw" base.txt base "upstream init"; $G -C "$SP/upw" push -q origin main
+$G clone -q --bare "$UP" "$FK" 2>/dev/null
+$G clone -q --bare "$UP" "$DK" 2>/dev/null
+F=$SP/work2/app
+mkdir -p "$SP/work2"
+$G clone -q "$FK" "$F" 2>/dev/null
+$G -C "$F" remote add upstream "$UP"; $G -C "$F" remote add dany "$DK"
+$G -C "$F" fetch -q upstream; $G -C "$F" fetch -q dany
+$G -C "$F" checkout -q -b feat-f
+commit "$F" f.txt F "F"
+SHA_F=$($G -C "$F" rev-parse HEAD)
+$G -C "$F" push -q origin feat-f
+$G -C "$F" checkout -q main; $G -C "$F" branch -q -D feat-f
+$G clone -q "$DK" "$SP/danyw" 2>/dev/null
+$G -C "$SP/danyw" checkout -q -b feat-d; commit "$SP/danyw" d.txt Dy "Dy"; $G -C "$SP/danyw" push -q origin feat-d
+SHA_D=$($G -C "$SP/danyw" rev-parse HEAD)
+SHA_FM=$($G -C "$F" rev-parse main)
+mkdir -p "$SP/gh-acme/checks" "$SP/gh/repos"
+fork_obj() { # n owner head sha
+  jq -nc --argjson n "$1" --arg o "$2" --arg h "$3" --arg s "$4" \
+    '{number:$n,url:"https://github.com/acme/app/pull/\($n)",headRefName:$h,headRefOid:$s,baseRefName:"main",
+      state:"OPEN",author:{login:$o},title:"t",isCrossRepository:true,headRepositoryOwner:{login:$o},headRepository:{name:"app"}}'
+}
+{
+  fork_obj 50 me feat-f "$SHA_F"
+  fork_obj 51 dany feat-d "$SHA_D"
+  fork_obj 52 me main "$SHA_FM"
+  fork_obj 53 dany feat-o "$SHA_D"
+} | jq -s . > "$SP/gh-acme/prs.json"
+echo '{"full_name":"me/app","fork":true,"parent":{"full_name":"acme/app"}}' > "$SP/gh/repos/repos_me_app.json"
+FP() { "$PRSH" "$@" --repo "$F"; }
+FSD=$SD/acme-app-50; FST=$FSD/state
+
+: > "$SP/gh/gh.log"
+out=$(FP resolve 50); rc=$?
+ok "fork: resolve 50 -> repo=acme/app base_remote=upstream head_repo=me/app head_remote=origin" '[ $rc -eq 0 ] && [ "$(get "$out" repo)" = acme/app ] && [ "$(get "$out" base_remote)" = upstream ] && [ "$(get "$out" head_repo)" = me/app ] && [ "$(get "$out" head_remote)" = origin ]'
+ok "fork: gh saw -R acme/app" 'grep "^pr view 50" "$SP/gh/gh.log" | grep -q -- "-R acme/app"'
+out=$(FP resolve 51); rc=$?
+ok "fork: resolve 51 -> head_repo=dany/app, empty head_remote" '[ $rc -eq 0 ] && [ "$(get "$out" head_repo)" = dany/app ] && printf "%s\n" "$out" | grep -qx "head_remote="'
+out=$(P resolve 42)
+ok "plain checkout unchanged: repo=o/app base_remote=origin head_remote=origin" '[ "$(get "$out" repo)" = o/app ] && [ "$(get "$out" base_remote)" = origin ] && [ "$(get "$out" head_remote)" = origin ] && [ "$(get "$out" head_repo)" = o/app ]'
+
+out=$(FP start 50 --agent-cli claude 2>&1); rc=$?
+ok "fork: start 50 opens window pr-50 and writes state" '[ $rc -eq 0 ] && [ -n "$(winof pr-50)" ] && grep -qx "head_sha=$SHA_F" "$FST" && grep -qx "repo=acme/app" "$FST"'
+ok "fork: start 50 window tagged acme/app" '[ "$(opt "$(winof pr-50)" @opsx_pr_repo)" = acme/app ]'
+out=$(FP start 51 --agent-cli claude 2>&1); rc=$?
+ok "fork: teammate PR 51 refused by start naming dany and origin, no window/state" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q dany && printf "%s" "$out" | grep -q origin && [ -z "$(winof pr-51)" ] && [ ! -e "$SD/acme-app-51" ]'
+for c in worktree restack push restart-input; do
+  out=$(FP $c 51 2>&1); rc=$?
+  ok "fork: teammate PR 51 refused by $c" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "fork (dany:feat-d" && printf "%s" "$out" | grep -q origin'
+done
+ok "fork: PR 51 left no worktree and no state" '[ ! -e "$SP/work2/wt-pr-51" ] && [ ! -e "$SD/acme-app-51" ]'
+out=$(FP start 52 --agent-cli claude 2>&1); rc=$?
+ok "fork: PR 52 (me:main) refused by start naming main, no window" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "branch main" && [ -z "$(winof pr-52)" ] && [ ! -e "$SD/acme-app-52" ]'
+for c in worktree restack push restart-input; do
+  out=$(FP $c 52 2>&1); rc=$?
+  ok "fork: PR 52 (me:main) refused by $c" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "branch main"'
+done
+
+out=$(FP prompt 50)
+ok "fork: prompt 50 rebases on upstream/, resets to origin/feat-f" 'printf "%s" "$out" | grep -q "git fetch upstream" && printf "%s" "$out" | grep -q "git rebase upstream/<base>" && printf "%s" "$out" | grep -q "origin/feat-f"'
+out=$(P prompt 42)
+ok "plain: prompt 42 still says origin" 'printf "%s" "$out" | grep -q "git fetch origin" && printf "%s" "$out" | grep -q "git rebase origin/<base>" && printf "%s" "$out" | grep -q "origin/feat-a" && ! printf "%s" "$out" | grep -q upstream'
+
+out=$(FP worktree 50 2>/dev/null); rc=$?
+WT50=$SP/work2/wt-pr-50
+ok "fork: worktree 50 on feat-f tracking origin/feat-f" '[ $rc -eq 0 ] && [ "$out" = "$WT50" ] && [ "$(git -C "$WT50" rev-parse --abbrev-ref "@{u}")" = origin/feat-f ]'
+commit "$SP/upw" u1.txt u1 "upstream main moves"; $G -C "$SP/upw" push -q origin main
+UPMAIN=$(git -C "$UP" rev-parse refs/heads/main)
+out=$(FP restack 50 2>/dev/null); rc=$?
+ok "fork: restack 50 onto upstream/main" '[ $rc -eq 0 ] && [ "$(get "$out" onto)" = upstream/main ] && git -C "$WT50" merge-base --is-ancestor "$UPMAIN" HEAD'
+out=$(FP push 50 2>/dev/null); rc=$?
+NEW50=$(git -C "$WT50" rev-parse HEAD)
+ok "fork: push 50 updates the fork's feat-f, not upstream, records head_sha" '[ $rc -eq 0 ] && [ "$(get "$out" pushed)" = 1 ] && [ "$(git -C "$FK" rev-parse refs/heads/feat-f)" = "$NEW50" ] && ! git -C "$UP" rev-parse -q --verify refs/heads/feat-f >/dev/null && grep -qx "head_sha=$NEW50" "$FST"'
+$G clone -q "$FK" "$SP/fkother" 2>/dev/null
+$G -C "$SP/fkother" checkout -q feat-f; commit "$SP/fkother" r.txt R "their fork commit"; $G -C "$SP/fkother" push -q origin feat-f
+THEIRS50=$(git -C "$FK" rev-parse refs/heads/feat-f)
+git -C "$WT50" fetch -q origin
+$G -C "$WT50" commit -q --amend -m "F amended"
+out=$(FP push 50 2>&1); rc=$?
+ok "fork: lease protects the fork's feat-f (exit 5, their commit stays)" '[ $rc -eq 5 ] && [ "$(git -C "$FK" rev-parse refs/heads/feat-f)" = "$THEIRS50" ] && grep -qx "head_sha=$NEW50" "$FST"'
+
+# open from the fork: dany's PR 53 on a branch also named feat-o is not ours.
+$G -C "$F" checkout -q -b feat-o main; commit "$F" o.txt O "O"; $G -C "$F" checkout -q main
+: > "$SP/gh/gh.log"
+out=$(FP open feat-o --title T --body-file "$SP/b.md"); rc=$?
+ok "fork: open feat-o -> one pr create -R acme/app --head me:feat-o" '[ $rc -eq 0 ] && [ "$(grep -c "^pr create" "$SP/gh/gh.log")" -eq 1 ] && grep "^pr create" "$SP/gh/gh.log" | grep -q -- "--head me:feat-o -R acme/app" && [ "$(get "$out" created)" = 1 ] && [ "$(get "$out" pr)" = 54 ]'
+ok "fork: open pushed feat-o to origin only" 'git -C "$FK" rev-parse -q --verify refs/heads/feat-o >/dev/null && ! git -C "$UP" rev-parse -q --verify refs/heads/feat-o >/dev/null'
+: > "$SP/gh/gh.log"
+out=$(FP open feat-f --title T --body-file "$SP/b.md"); rc=$?
+ok "fork: open feat-f prints existing PR 50, no pr create" '[ $rc -eq 0 ] && [ "$(get "$out" pr)" = 50 ] && [ "$(get "$out" created)" = 0 ] && ! grep -q "^pr create" "$SP/gh/gh.log"'
+out=$(FP open main --title T --body-file "$SP/b.md" 2>&1); rc=$?
+ok "fork: open main refused, no pr create" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "default branch" && ! grep -q "^pr create" "$SP/gh/gh.log"'
+
+# A local feat-f tracking upstream is refused, not reused.
+FP stop 50 >/dev/null
+git -C "$F" worktree remove --force "$WT50"; $G -C "$F" branch -q -D feat-f
+$G -C "$F" branch -q --track feat-f upstream/main
+out=$(FP worktree 50 2>&1); rc=$?
+ok "fork: local feat-f tracking upstream refused by worktree 50" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "tracks upstream" && [ ! -e "$WT50" ]'
+$G -C "$F" branch -q -D feat-f
+
+# No upstream remote: base from origin's parent, no base remote.
+$G -C "$F" remote remove upstream
+out=$(FP resolve 50); rc=$?
+ok "fork without upstream: repo=acme/app via origin's parent, empty base_remote" '[ $rc -eq 0 ] && [ "$(get "$out" repo)" = acme/app ] && printf "%s\n" "$out" | grep -qx "base_remote=" && [ "$(get "$out" head_remote)" = origin ]'
+out=$(FP restack 50 2>&1); rc=$?
+ok "fork without upstream: restack 50 fails naming git remote add" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "git remote add upstream https://github.com/acme/app.git"'
+for c in seen wait; do
+  out=$(FP $c 50 --slice 1 --poll 1 2>&1); rc=$?
+  ok "fork without upstream: $c 50 fails naming git remote add" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "git remote add upstream https://github.com/acme/app.git"'
+done
+out=$(P prompt 999 2>&1); rc=$?
+ok "prompt of an unknown PR exits 2" '[ $rc -eq 2 ]'
 
 # ---------------------------------------------------------------- skill (4.1)
 SK=$REPO/skills/opsx-pr/SKILL.md
