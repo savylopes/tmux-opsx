@@ -25,4 +25,4 @@
 ## 6. Docs and checks
 
 - [x] 6.1 Update the `pr.sh` header comment, `skills/opsx-pr/SKILL.md` (fork refusal wording, fork checkouts) and README "Forks are refused" paragraph → fork checkouts: base from `upstream`, only `origin` forks maintained, other forks refused, gh active account vs fork push credentials note
-- [ ] 6.2 Add `evals/pr-maintain/` checks for the new and modified scenarios; run `tests/test-pr.sh`, `opsx-eval.sh --change add-pr-forks` and `openspec validate add-pr-forks --strict`, all passing
+- [x] 6.2 Add `evals/pr-maintain/` checks for the new and modified scenarios; run `tests/test-pr.sh`, `opsx-eval.sh --change add-pr-forks` and `openspec validate add-pr-forks --strict`, all passing
