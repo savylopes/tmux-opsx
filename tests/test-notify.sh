@@ -107,6 +107,37 @@ reset_calls
 long=$(head -c 2000 /dev/zero | tr '\0' 'a')
 bash "$N" finished "t" "$long"
 ok "2000-character body: at most 500 characters, no Markdown header" '[ "$(ncalls)" -eq 1 ] && [ "$(body_of | tr -d "\n" | wc -c)" -le 500 ] && ! last_call | grep -qi "^HDR: Markdown" && ! last_call | grep -qi "^HDR: X-Markdown"'
+
+# ---------------------------------------------------------------- plain-text body
+reset_calls
+printf '## Done\n\n**Landed** as `9e08d6b`, see [PR](https://x/1)\n- item\n' | bash "$N" finished "t" -
+ok "Markdown stripped: Done, Landed as 9e08d6b, PR, • item" 'b=$(body_of); [[ $b == *Done* ]] && [[ $b == *"Landed as 9e08d6b"* ]] && [[ $b == *PR* ]] && [[ $b == *"• item"* ]]'
+ok "Markdown stripped: no **, backtick, ## or ](" 'b=$(body_of); [[ $b != *"**"* ]] && [[ $b != *"\`"* ]] && [[ $b != *"##"* ]] && [[ $b != *"]("* ]]'
+reset_calls
+printf 'Gates:\n\n| gate | verdict |\n|---|---|\n| eval | PASS |\n' | bash "$N" finished "t" -
+ok "table becomes lines: eval: PASS, no | and no ---" 'b=$(body_of); [[ $b == *"eval: PASS"* ]] && [[ $b != *"|"* ]] && [[ $b != *"---"* ]]'
+reset_calls
+{ printf 'Before\n```sh\n'; for i in $(seq 1 20); do printf 'codeline-%s\n' "$i"; done; printf '```\nAfter\n'; } | bash "$N" finished "t" -
+ok "20-line fenced block: [code] and none of its lines" 'b=$(body_of); [[ $b == *"[code]"* ]] && [[ $b != *codeline* ]] && [[ $b == *Before* ]] && [[ $b == *After* ]]'
+reset_calls
+bash "$N" send decision pr-29 "pr-29: needs a decision" "pr-29 is waiting for your answer."
+ok "plain text unchanged, no Markdown header" '[ "$(body_of)" = "pr-29 is waiting for your answer." ] && ! last_call | grep -qi "^HDR: \(X-\)\?Markdown"'
+reset_calls
+bash "$N" send finished x '**fix-x**: `done`' "b"
+ok "title loses ** and backticks" '[ "$(hdr Title)" = "fix-x: done" ]'
+reset_calls
+s=""; for i in 0 1 2 3 4 5 6 7 8 9; do s+="Sentence $i says that the work went fine and all is well here. "; done
+bash "$N" finished "t" "$s"
+ok "ten 60-character sentences: cut after a sentence end with …, at most 500 characters" 'b=$(body_of); [[ $b == *".…" ]] && [ "${#b}" -le 500 ] && [[ "${b%…}" == *"all is well here." ]] && [ "${#b}" -gt 160 ]'
+reset_calls
+s=$(printf 'word %.0s' $(seq 1 24)); s=${s% }
+bash "$N" finished "t" "$s"
+ok "120-character body: not cut, no …" 'b=$(body_of); [ "$b" = "$s" ] && [[ $b != *"…"* ]]'
+reset_calls
+s=$(printf '•é%.0s' $(seq 1 400))
+LC_ALL=C bash "$N" finished "t" "$s"
+ok "•/é body: cut on a character boundary, valid UTF-8, ends with …" 'b=$(body_of); printf "%s" "$b" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 && [[ $b == *"…" ]] && [ "$(printf "%s" "$b" | LC_ALL=C.UTF-8 wc -m)" -le 500 ]'
+
 reset_calls
 bash "$N" send finished x $'line one\nline two\r' "b"
 ok "title loses its newlines" '[ "$(hdr Title)" = "line oneline two" ]'
