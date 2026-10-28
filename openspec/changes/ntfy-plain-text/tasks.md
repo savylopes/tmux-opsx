@@ -8,4 +8,4 @@
 ## 2. Docs and checks
 
 - [x] 2.1 Update the `opsx-notify.sh` header comment and the README notifications paragraph (plain text, cut on a boundary, no Markdown on Android)
-- [ ] 2.2 Run `tests/test-notify.sh`, `opsx-eval.sh --change ntfy-plain-text` and `openspec validate ntfy-plain-text --strict`, all passing
+- [x] 2.2 Run `tests/test-notify.sh`, `opsx-eval.sh --change ntfy-plain-text` and `openspec validate ntfy-plain-text --strict`, all passing
