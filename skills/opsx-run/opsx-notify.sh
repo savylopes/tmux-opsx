@@ -28,8 +28,14 @@
 # Sending never breaks the caller: curl gets --max-time 5, errors are
 # swallowed, and send/mark/flush/hook always exit 0. The body goes to curl on
 # stdin and the headers through a file descriptor, so neither the text nor the
-# token appears in `ps`; the body is plain text cut to 500 characters, the
-# title loses its newlines. The token is never printed.
+# token appears in `ps`. The body is sent as plain text, never Markdown (the
+# ntfy Android app shows Markdown symbols raw, so no `Markdown: yes` header):
+# plain_body strips emphasis/code markers and heading `#`s, turns links into
+# their text, bullets into `•`, table rows into `a: b` lines and fenced code
+# blocks into `[code]`; a body over 400 characters is cut at the last sentence
+# or line end (else word boundary) and ends with `…`, 500 characters at most.
+# The title loses its newlines, `**` and backticks. Records matched against
+# the screen keep the raw text. The token is never printed.
 #
 # mark (run by opsx-window.sh mark): done|fail store a pending stamp
 # @opsx_notify_pending=<status>:<epoch> on the window and start a detached
@@ -84,6 +90,7 @@ HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 SELF=$HERE/$(basename -- "${BASH_SOURCE[0]}")
 NOTIFY_ENV=${XDG_CONFIG_HOME:-$HOME/.config}/tmux-opsx/notify.env
 BODY_MAX=500
+CUT_AT=400
 TITLE_MAX=200
 
 NTFY_URL="" NTFY_TOPIC="" NTFY_TOKEN="" NTFY_USER="" NTFY_PASSWORD=""
@@ -134,12 +141,103 @@ headers() {
   [ -z "$NTFY_TOKEN" ] || printf 'Authorization: Bearer %s\n' "$NTFY_TOKEN"
 }
 
+# plain_body: Markdown on stdin -> plain text on stdout, for the ntfy Android
+# app, which shows Markdown symbols raw. Fenced code blocks become one
+# `[code]`, table rows `a: b` lines (separator rows dropped), heading markers
+# and horizontal rules go, bullets become `•`; then `[text](url)` -> text and
+# `**`, `__` and backticks are removed (single `*`/`_` stay: identifiers).
+# Runs of blank lines collapse to one; leading/trailing blank lines go.
+# Portable awk and sed -E only.
+plain_body() {
+  awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^[ \t]*(```|~~~)/ { if (!fence) print "[code]"; fence = !fence; next }
+    fence { next }
+    /^[ \t]*\|.*\|[ \t]*$/ {
+      if ($0 ~ /^[ \t|:-]+$/) next
+      row = trim($0); sub(/^\|/, "", row); sub(/\|$/, "", row)
+      n = split(row, cell, "|"); out = ""
+      for (i = 1; i <= n; i++) { c = trim(cell[i]); out = (i == 1) ? c : out ": " c }
+      print out; next
+    }
+    /^[ \t]*([-*_][ \t]*)+$/ { t = $0; gsub(/[ \t]/, "", t); if (length(t) >= 3) next }
+    /^#+[ \t]/ { match($0, /^#+/); if (RLENGTH <= 6) { sub(/^#+[ \t]+/, ""); print; next } }
+    /^[ \t]*[-*+][ \t]+/ { sub(/^[ \t]*[-*+][ \t]+/, "• "); print; next }
+    { print }
+  ' | sed -E 's/!?\[([^]]*)\]\([^)]*\)/\1/g; s/\*\*//g; s/__//g; s/`//g' | awk '
+    /^[ \t]*$/ { if (seen) blank = 1; next }
+    { if (blank) print ""; blank = 0; seen = 1; print }
+  '
+}
+
+# utf8_locale: sets LC_ALL in the caller (declare it local there) to a UTF-8
+# locale so ${s:0:n} counts characters; returns 1 when none works.
+utf8_locale() {
+  local l probe
+  for l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+    LC_ALL=$l
+    probe='é•'
+    [ "${#probe}" -eq 2 ] && return 0
+  done
+  LC_ALL=C
+  return 1
+}
+
+# trim_utf8 <bytes>: drop an incomplete UTF-8 sequence at the end (byte mode).
+trim_utf8() {
+  local s=$1 i b n
+  for i in 1 2 3 4; do
+    [ "${#s}" -ge "$i" ] || break
+    printf -v b '%d' "'${s:${#s}-$i:1}"
+    b=$(( (b + 256) % 256 ))
+    if [ "$b" -lt 128 ]; then break
+    elif [ "$b" -ge 192 ]; then
+      if [ "$b" -ge 240 ]; then n=4; elif [ "$b" -ge 224 ]; then n=3; else n=2; fi
+      [ "$i" -ge "$n" ] || s=${s:0:${#s}-$i}
+      break
+    fi
+  done
+  printf '%s' "$s"
+}
+
+# cut_body <text>: a text longer than CUT_AT characters is cut at the last
+# sentence end (`. `, `! `, `? `) or line end inside the first CUT_AT
+# characters when that is past 40% of them, else at the last space (else hard),
+# and ends with `…`. Prints the result; never longer than BODY_MAX.
+cut_body() {
+  local LC_ALL s=$1 w a b p=-1 utf8=1
+  utf8_locale || utf8=0
+  if [ "${#s}" -gt "$CUT_AT" ]; then
+    w=${s:0:$((CUT_AT + 1))}
+    a=${w%[.!?][[:space:]]*}; [ "$a" = "$w" ] || p=$(( ${#a} + 1 ))
+    b=${w%$'\n'*}; [ "$b" = "$w" ] || [ "${#b}" -le "$p" ] || p=${#b}
+    [ "$p" -le "$CUT_AT" ] || p=-1
+    if [ "$p" -lt $(( CUT_AT * 2 / 5 )) ]; then
+      w=${s:0:$CUT_AT}
+      a=${w% *}
+      if [ "$a" != "$w" ] && [ -n "${a//[[:space:]]/}" ]; then p=${#a}; else p=$CUT_AT; fi
+    fi
+    s=${s:0:$p}
+    s=${s%"${s##*[![:space:]]}"}
+    [ "$utf8" -eq 1 ] || s=$(trim_utf8 "$s")
+    s="$s…"
+  fi
+  s=${s:0:$BODY_MAX}
+  [ "$utf8" -eq 1 ] || s=$(trim_utf8 "$s")
+  printf '%s' "$s"
+}
+
 # post <title> <body> <tags> <priority>: one POST, prints the HTTP status.
+# The body goes out as plain text (plain_body, then cut_body); callers keep
+# the raw text for their own records.
 post() {
   local title=$1 body=$2 tags=$3 prio=$4
   title=$(printf '%s' "$title" | tr -d '\r\n')
+  title=${title//\*\*/}
+  title=${title//\`/}
   title=${title:0:$TITLE_MAX}
-  body=${body:0:$BODY_MAX}
+  body=$(printf '%s\n' "$body" | plain_body)
+  body=$(cut_body "$body")
   printf '%s' "$body" | curl -fsS --max-time 5 -o /dev/null -w '%{http_code}' \
     -H @<(headers "$title" "$tags" "$prio") \
     --data-binary @- "$NTFY_URL/$NTFY_TOPIC" 2>/dev/null
