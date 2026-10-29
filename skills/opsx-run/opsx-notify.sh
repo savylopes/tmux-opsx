@@ -557,9 +557,10 @@ push_links() {
   local win=$1 pane=${2:-} out change repo cwd url p d fd pd prn
   [ -n "$win" ] || return 0
   out=$(tmux display-message -p -t "$win" '#{@opsx_change}	#{@opsx_pr_repo}	#{@opsx_pr}	#{pane_current_path}' 2>/dev/null) || return 0
-  # cut, not read: IFS tab would merge empty fields.
-  change=$(printf '%s' "$out" | cut -f1); repo=$(printf '%s' "$out" | cut -f2)
-  prn=$(printf '%s' "$out" | cut -f3); cwd=$(printf '%s' "$out" | cut -f4-)
+  # Split by hand: read with IFS tab would merge empty fields.
+  change=${out%%$'\t'*}; out=${out#*$'\t'}
+  repo=${out%%$'\t'*}; out=${out#*$'\t'}
+  prn=${out%%$'\t'*}; cwd=${out#*$'\t'}
   # A change window maintaining a PR (/opsx-pr in a change window) has @opsx_pr.
   [[ $change =~ ^pr-[0-9]+$ ]] && prn=${change#pr-}
   if [[ $prn =~ ^[0-9]+$ ]] && [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then

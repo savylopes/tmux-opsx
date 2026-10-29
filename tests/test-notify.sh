@@ -577,9 +577,9 @@ reset_calls
 bash "$N" send --window "$W_AT" --pr 42 --repo acme/api --option main --option develop decision add-thing "add-thing: needs a decision" "rebase onto main or develop?"
 NAT=$(wopt "$W_AT" @opsx_notify_reply | cut -d' ' -f1)
 ok "4.1 change window with @opsx_pr: answer buttons and the Open PR link" '[[ $NAT =~ ^[0-9a-f]{32}$ ]] && [ "$(labels_of)" = "main,develop,Open PR" ] && [ "$(acts | jq -r ".[2].url")" = "https://github.com/acme/api/pull/42" ]'
-S5=$SP/streams5; mkdir -p "$S5"
-{ msg a1 "$NAT:2"; msg a2 "$NAT:2"; } > "$S5/stream-1"
-start_listen "$S5"; wait_urls "$S5" 2; sleep 1
+SAT=$SP/streams-at; mkdir -p "$SAT"
+{ msg a1 "$NAT:2"; msg a2 "$NAT:2"; } > "$SAT/stream-1"
+start_listen "$SAT"; wait_urls "$SAT" 2; sleep 1
 ok "4.1 reply :2 sent twice types develop + Enter into window add-thing exactly once" '[ "$(grep -c "^GOT:" "$GOTAT" 2>/dev/null)" -eq 1 ] && grep -qx "GOT:develop" "$GOTAT"'
 stop_listen
 reset_calls; $L set-option -wu -t "$W_AT" @opsx_notify_pending

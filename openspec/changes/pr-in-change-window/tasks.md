@@ -22,4 +22,4 @@
 ## 5. Skill, docs, checks
 
 - [x] 5.1 `skills/opsx-pr/SKILL.md`: on exit 8 ask the user (reuse `<change>` (Recommended) / new `pr-<n>` window) and re-run with `--window`/`--new-window`; relay `inline window=` and that the loop starts when this turn ends; README PR maintainer section
-- [ ] 5.2 Run `tests/test-pr.sh`, `tests/test-notify.sh`, the restore suite and `openspec validate pr-in-change-window --strict`, all passing
+- [x] 5.2 Run `tests/test-pr.sh`, `tests/test-notify.sh`, the restore suite and `openspec validate pr-in-change-window --strict`, all passing
