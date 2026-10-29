@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Candidate reported
+# level: L2
+# requirement: Ask before reusing a related change window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_change_env
+out=$(TMUX_PANE=$OP pr_start 42 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 8 ] || fail "expected exit 8, got $rc"
+echo "$out" | grep -q "candidate window=$CW .*change=add-thing\|candidate window=$CW	.*change=add-thing\|candidate window=$CW change=add-thing" || fail "no 'candidate window=$CW change=add-thing' line"
+[ "$(win_count 42)" -eq 0 ] || fail "pr-42 window created"
+[ ! -e "$(state_file 42)" ] || fail "state file written"
+echo OK

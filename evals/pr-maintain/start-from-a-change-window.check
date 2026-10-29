@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Start from a change window
+# level: L2
+# requirement: Maintain inside the caller's change window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_change_env
+out=$(TMUX_PANE=$CP pr_start 42 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+[ "$(win_count 42)" -eq 0 ] || fail "a pr-42 window exists"
+[ "$(wopt "$CW" @opsx_pr)" = 42 ] || fail "@opsx_pr is '$(wopt "$CW" @opsx_pr)'"
+[ "$(wopt "$CW" @opsx_pr_repo)" = o/app ] || fail "@opsx_pr_repo is '$(wopt "$CW" @opsx_pr_repo)'"
+echo "$out" | grep -q "add-thing\|$CW" || fail "output does not name the window"
+[ -f "$(state_file 42)" ] || fail "state file not written"
+echo OK

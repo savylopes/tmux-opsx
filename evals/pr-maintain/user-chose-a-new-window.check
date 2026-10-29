@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / User chose a new window
+# level: L2
+# requirement: Ask before reusing a related change window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_change_env
+out=$(TMUX_PANE=$OP pr_start 42 --new-window 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+[ "$(win_count 42)" -ge 1 ] || fail "no pr-42 window"
+[ -z "$(wopt "$CW" @opsx_pr)" ] || fail "add-thing has @opsx_pr=$(wopt "$CW" @opsx_pr)"
+echo OK

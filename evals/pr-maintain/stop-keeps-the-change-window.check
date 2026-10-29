@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Stop keeps the change window
+# level: L2
+# requirement: List and stop
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_change_env
+TMUX_PANE=$CP pr_start 42 >/dev/null 2>&1 || fail "start failed"
+[ "$(wopt "$CW" @opsx_pr)" = 42 ] || fail "not tagged after start"
+out=$("$PRSH" stop 42 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+T list-windows -a -F '#{window_id}' | grep -qx "$CW" || fail "change window was closed"
+[ -z "$(wopt "$CW" @opsx_pr)" ] || fail "@opsx_pr remains"
+[ -z "$(wopt "$CW" @opsx_pr_repo)" ] || fail "@opsx_pr_repo remains"
+[ -f "$(state_file 42)" ] || fail "state file removed"
+echo OK

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Busy change window refused
+# level: L2
+# requirement: Ask before reusing a related change window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_change_env busy
+out=$(TMUX_PANE=$OP pr_start 42 --window add-thing 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "exit 0"
+echo "$out" | grep -qi busy || fail "output does not say busy"
+sleep 0.5
+[ ! -s "$EVAL_TMP/typed.add-thing" ] || fail "something was typed: $(cat "$EVAL_TMP/typed.add-thing")"
+echo OK

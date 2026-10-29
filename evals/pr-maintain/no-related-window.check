@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / No related window
+# level: L2
+# requirement: Ask before reusing a related change window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_change_env
+T kill-window -t "$CW"
+out=$(TMUX_PANE=$OP pr_start 42 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 8 ] || fail "exit 8"
+[ $rc -eq 0 ] || fail "exit $rc"
+[ "$(win_count 42)" -ge 1 ] || fail "no pr-42 window"
+echo OK

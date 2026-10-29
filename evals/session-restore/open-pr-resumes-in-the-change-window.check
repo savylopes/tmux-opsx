@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Open PR resumes in the change window
+# level: L2
+# requirement: Restore a change window maintaining a PR
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+pr_stub ok
+server a work "$R1"
+claude_win work:2 add-thing "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change add-thing; wopt work:2 @opsx_pr 42; wopt work:2 @opsx_pr_repo o/app; wopt work:2 @opsx_status idle
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 add-thing "$R2"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+stub_args $UUID1; show_args
+[ "${ARGS[0]}" = --resume ] && [ "${ARGS[1]}" = $UUID1 ] || fail "not resumed"
+[ "${ARGS[$((${#ARGS[@]}-1))]}" = '/goal keep PR 16 mergeable' ] || fail "last argument is not the pr.sh output"
+grep -q '^restart-input 42' "$FAKE_LOG/pr.log" || fail "pr.sh not called with restart-input 42: $(cat $FAKE_LOG/pr.log 2>&1)"
+[ "$(wopt work:2 @opsx_pr)" = 42 ] || fail "@opsx_pr is '$(wopt work:2 @opsx_pr)'"
+[ "$(wopt work:2 @opsx_pr_repo)" = o/app ] || fail "@opsx_pr_repo is '$(wopt work:2 @opsx_pr_repo)'"
+echo OK
