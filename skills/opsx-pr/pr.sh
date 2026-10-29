@@ -3,8 +3,8 @@
 #
 #   pr.sh resolve  <pr> [--repo <dir>]
 #   pr.sh open     [<branch>] --title <t> --body-file <f> [--base <b>] [--repo <dir>]
-#   pr.sh start    <pr> [--repo <dir>] [--agent-cli <cmd>] [--slice <s>] [--poll <s>]
-#   pr.sh restart-input <pr> [--repo <dir>] [--agent-cli <cmd>]
+#   pr.sh start    <pr> [--window <change> | --new-window] [--repo <dir>] [--agent-cli <cmd>] [--slice <s>] [--poll <s>]
+#   pr.sh restart-input <pr> [--window <change>] [--repo <dir>] [--agent-cli <cmd>]
 #   pr.sh seen     <pr> [--repo <dir>]
 #   pr.sh wait     <pr> [--slice <s>] [--poll <s>] [--repo <dir>]
 #   pr.sh worktree <pr> [--repo <dir>]
@@ -28,12 +28,27 @@
 #           origin, writes the state file (kept as is when
 #           it exists) and starts or reuses tmux window pr-<n> through
 #           opsx-window.sh ensure with a goal and a prompt (the maintain loop).
+#           Run from an /opsx-run change window (@opsx_change=<change>, not
+#           pr-<n>) it opens no window: it tags that window @opsx_pr=<n> and
+#           @opsx_pr_repo=<repo>, gives it the goal and prompt as its next
+#           input (queued until the caller's turn ends) and prints
+#           `inline window=<id> change=<change>`. A window already tagged with
+#           another PR is refused. Elsewhere, without --window/--new-window,
+#           a window already maintaining the PR is reused; else when the PR's
+#           head is opsx/<change>, or the branch of worktree ../wt-<change>,
+#           and window <change> is open in the session, it starts nothing,
+#           prints `candidate window=<id> change=<change>` and exits 8.
+#           --window <change> maintains the PR in that change window (refused
+#           while it is busy or ask, unless it is the caller's own window);
+#           --new-window always uses pr-<n>.
 # restart-input  same refusals as start (not OPEN, from another fork), keeps the state
 #           file (writes one only when missing), rewrites the prompt and goal
 #           files and prints the window's first input: on Claude Code (default,
 #           or --agent-cli claude) `/goal <goal> Dispatcher steps: read
 #           <prompt> first and follow it.`, else the prompt on one line. Never
 #           touches tmux; opsx-sessions.sh restore types it after a tmux restart.
+#           --window <change>: the prompt marks that window (default: the
+#           window recorded by start, else pr-<n>).
 # seen      records the PR's current head, base, parent, CI and comment ids.
 # wait      polls gh/git every --poll seconds (default 60) for --slice seconds
 #           (default 540) and prints one event=<kind> line, exit 0, kinds in
@@ -66,11 +81,17 @@
 #           opsx-window.sh, or $OPSX_NOTIFY) when notify is configured; a push
 #           failure never fails note. --option <label> (1-3 times) offers fixed
 #           answers: the push gets one answer button per option, and a tap
-#           types that label into the PR window (opsx-notify.sh listen). More
+#           types that label into the PR window, pr-<n> or the change window
+#           tagged @opsx_pr=<n> (opsx-notify.sh listen). More
 #           than 3 options fail before anything is recorded or sent.
 # prompt    prints the generated window prompt (for inspection).
-# list      one line per PR with a state file: repo pr window-status last-event.
-# stop      closes window pr-<n>; the state file and worktree stay.
+# list      one line per PR with a state file: repo pr window-status last-event
+#           (the window is pr-<n> or a change window tagged @opsx_pr=<n>).
+# stop      closes window pr-<n>; the state file and worktree stay. A change
+#           window maintaining the PR is never closed: its @opsx_pr and
+#           @opsx_pr_repo tags are removed, its earlier @opsx_goal comes back,
+#           and `/goal clear` (Claude Code) or a stop line (other CLIs) is
+#           typed into it.
 #
 # State: ${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/pr/<owner>-<name>-<n>/state
 # --repo defaults to the git top level of $PWD. Only open and push push
@@ -133,6 +154,7 @@ pr_number() {
 # Shared option parsing. Sets ARG1 ARG2 REPO_OPT SLICE POLL AGENT_CLI ONTO
 # TITLE BODY_FILE BASE_OPT CLEAR.
 ARG1="" ARG2="" REPO_OPT="" SLICE=540 POLL=60 AGENT_CLI="" ONTO="" TITLE="" BODY_FILE="" BASE_OPT="" CLEAR=0
+WINDOW_OPT="" NEW_WINDOW=0
 OPTIONS=()
 parse_opts() {
   while [ $# -gt 0 ]; do
@@ -146,6 +168,8 @@ parse_opts() {
       --body-file) [ $# -ge 2 ] || die "--body-file needs a file"; BODY_FILE=$2; shift 2 ;;
       --base)      [ $# -ge 2 ] || die "--base needs a branch"; BASE_OPT=$2; shift 2 ;;
       --clear)     CLEAR=1; shift ;;
+      --window)    [ $# -ge 2 ] || die "--window needs a change name"; WINDOW_OPT=$2; shift 2 ;;
+      --new-window) NEW_WINDOW=1; shift ;;
       --option)    [ $# -ge 2 ] || die "--option needs a label"; OPTIONS+=("$2"); shift 2 ;;
       -h|--help)   usage 0 ;;
       -*) die "unknown option: $1" ;;
@@ -154,6 +178,10 @@ parse_opts() {
   done
   if ! [[ $SLICE =~ ^[0-9]+$ ]] || [ "$SLICE" -lt 1 ]; then die "--slice must be a positive number of seconds"; fi
   if ! [[ $POLL =~ ^[0-9]+$ ]] || [ "$POLL" -lt 1 ]; then die "--poll must be a positive number of seconds"; fi
+  if [ -n "$WINDOW_OPT" ] && [ "$NEW_WINDOW" -eq 1 ]; then die "--window and --new-window exclude each other"; fi
+  if [ -n "$WINDOW_OPT" ] && ! [[ $WINDOW_OPT =~ ^[A-Za-z0-9._-]+$ ]]; then die "--window needs a change name, got '$WINDOW_OPT'"; fi
+  if [[ $WINDOW_OPT =~ ^pr-[0-9]+$ ]]; then die "--window takes an /opsx-run change window, not $WINDOW_OPT (use --new-window)"; fi
+  return 0
 }
 
 # ---------------------------------------------------------------- GitHub reads
@@ -454,10 +482,63 @@ window_in_session() {
     | awk -F '\t' -v n="pr-$PR" '$2 == n { print $1 "\t" $3 "\t" $4; exit }'
 }
 
-# Window ids of pr-<n> for this repo across every session of the server.
-windows_for_repo() {
-  tmux list-windows -a -F '#{window_id}	#{@opsx_change}	#{@opsx_pr_repo}	#{@opsx_status}' 2>/dev/null \
-    | awk -F '\t' -v n="pr-$PR" -v r="$SLUG" '$2 == n && $3 == r { print $1 "\t" $4 }'
+# pr_window_ids <n> <repo> [<session>]: "<window id>\t<@opsx_change>\t<status>"
+# of every window maintaining PR <n> of <repo>: pr-<n> (an untagged repo
+# counts, as before), or a change window tagged @opsx_pr=<n> with the same
+# @opsx_pr_repo. Every session of the server, or only <session>.
+pr_window_ids() {
+  local scope=(-a)
+  [ -z "${3:-}" ] || scope=(-t "=$3")
+  tmux list-windows "${scope[@]}" -F '#{window_id}	#{@opsx_change}	#{@opsx_pr}	#{@opsx_pr_repo}	#{@opsx_status}' 2>/dev/null \
+    | awk -F '\t' -v n="$1" -v r="$2" \
+        '($2 == "pr-" n && ($4 == r || $4 == "")) || ($2 !~ /^pr-[0-9]+$/ && $3 == n && $4 == r) { print $1 "\t" $2 "\t" $5 }' || true
+}
+
+# Change windows are /opsx-run windows: @opsx_change set and not pr-<n>.
+is_change_name() { [ -n "$1" ] && ! [[ $1 =~ ^pr-[0-9]+$ ]]; }
+
+# "<window id>\t<@opsx_change>\t<@opsx_pr>\t<@opsx_pr_repo>\t<@opsx_status>" of
+# change window $2 in session $1, empty when none.
+change_window() {
+  tmux list-windows -t "=$1" -F '#{window_id}	#{@opsx_change}	#{@opsx_pr}	#{@opsx_pr_repo}	#{@opsx_status}' 2>/dev/null \
+    | awk -F '\t' -v c="$2" '$2 == c { print; exit }' || true
+}
+
+# The caller's window when it is a change window (same fields), else empty.
+own_change_window() {
+  local out change
+  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
+  out=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}	#{@opsx_change}	#{@opsx_pr}	#{@opsx_pr_repo}	#{@opsx_status}' 2>/dev/null) || return 0
+  change=$(printf '%s' "$out" | cut -f2)
+  is_change_name "$change" || return 0
+  printf '%s' "$out"
+}
+
+# candidate_window <session> <head>: "<window id>\t<change>" of an open change
+# window related to the PR's head: head opsx/<change> with window <change>,
+# else a worktree ../wt-<change> on <head> with window <change>.
+candidate_window() {
+  local sess=$1 head=$2 c found line path=""
+  if [[ $head =~ ^opsx/(.+)$ ]]; then
+    c=${BASH_REMATCH[1]}
+    if is_change_name "$c"; then
+      found=$(change_window "$sess" "$c")
+      [ -z "$found" ] || { printf '%s\t%s' "$(printf '%s' "$found" | cut -f1)" "$c"; return 0; }
+    fi
+  fi
+  while IFS= read -r line; do
+    case $line in
+      "worktree "*) path=${line#worktree } ;;
+      "branch refs/heads/$head")
+        c=$(basename -- "$path")
+        [[ $c == wt-?* ]] || continue
+        c=${c#wt-}
+        is_change_name "$c" || continue
+        found=$(change_window "$sess" "$c")
+        [ -z "$found" ] || { printf '%s\t%s' "$(printf '%s' "$found" | cut -f1)" "$c"; return 0; } ;;
+    esac
+  done < <(git -C "$REPO" worktree list --porcelain 2>/dev/null)
+  return 0
 }
 
 # ---------------------------------------------------------------- goal + prompt
@@ -467,9 +548,18 @@ goal_text() {
   printf 'PR %s#%s is MERGED by someone else, or CLOSED, or the user said stop in this window. Never merge it yourself. A `pr.sh wait` that exits 3 is the expected idle step, not a failure: call it again.\n' "$SLUG" "$PR"
 }
 
+# Window name the prompt marks: --window, else the one start recorded, else pr-<n>.
+mark_label() {
+  local w=${WINDOW_OPT:-}
+  [ -n "$w" ] || w=$(sget window)
+  [[ $w =~ ^[A-Za-z0-9._-]+$ ]] || w=pr-$PR
+  printf '%s' "$w"
+}
+
 prompt_text() {
-  local W BR HR
+  local W BR HR M
   W=$(window_script)
+  M=$(mark_label)
   BR=${BASE_REMOTE:-<no base remote: git remote add upstream https://github.com/$SLUG.git>}
   HR=${HEAD_REMOTE:-<no head remote>}
   cat <<EOF
@@ -482,7 +572,7 @@ Repository (main checkout): $REPO
 Remotes: base $SLUG from \`$BR\`; head branch $HEAD_NAME on \`$HR\` ($HEAD_REPO)
 State file: $(state_file)
 Helper: $SELF   (below: pr.sh)
-Window marks: $W mark pr-$PR busy|idle|ask|done
+Window marks: $W mark $M busy|idle|ask|done
 
 ## First turn
 Before the first wait (also after a restart), look at where the PR stands now, since events from
@@ -491,18 +581,19 @@ unresolved review threads and recent comments (endpoints under Events), and the 
 (\`ask=\` lines) in the state file. Handle what is still open with the rules below, then start the loop.
 
 ## Loop
-1. \`$W mark pr-$PR idle\` (or \`ask\` while a question to the user is open), then run
+1. \`$W mark $M idle\` (or \`ask\` while a question to the user is open), then run
    \`$SELF wait $PR --repo $REPO --slice $SLICE --poll $POLL\` in the FOREGROUND with a Bash tool
    timeout of 600000 ms. Never run it in the background and never sleep separately.
    Exit 3 means nothing changed: run the same wait again at once. Exit 0 prints one event=<kind>.
-2. On an event, \`$W mark pr-$PR busy\` and handle it (below). Get a worktree with
+2. On an event, \`$W mark $M busy\` and handle it (below). Get a worktree with
    \`$SELF worktree $PR --repo $REPO\` (it prints the path; never switch the main checkout's branch).
 3. After handling it (or after asking the user about it), run \`$SELF seen $PR --repo $REPO\`
    so the next wait starts from the new state, then go back to 1.
-4. If the user typed a message, answer it, act on it if it settles an open question, then continue the loop.
+4. Messages the user types in this window come first: they take precedence over the PR loop. Act on them
+   (answer, do what they ask, settle an open question), then go back to \`pr.sh wait\` (step 1).
 
 ## Events
-- merged / closed: the goal holds. \`$W mark pr-$PR done\`, say so in one line, stop.
+- merged / closed: the goal holds. \`$W mark $M done\`, say so in one line, stop.
   Leave the worktree for the user to clean up.
 - parent-merged: the parent PR of this stack merged. \`$SELF restack $PR --repo $REPO\`
   (it rebases onto the parent's base with the recorded parent tip), run the gates, push,
@@ -548,7 +639,7 @@ Never merge the PR, never approve it, never close it, never delete branches.
 - A clean rebase or restack with no conflicts needs only the tests.
 
 ## Ask the user first (important or ambiguous decisions)
-Ask in this window, run \`$W mark pr-$PR ask\`, record it with \`$SELF note $PR "<question>" --repo $REPO\`,
+Ask in this window, run \`$W mark $M ask\`, record it with \`$SELF note $PR "<question>" --repo $REPO\`,
 keep running the wait loop (other events still get handled), and act on that decision only after the
 user answers (then \`$SELF note $PR --clear --repo $REPO\`).
 When the question has 2 or 3 fixed answers, pass each one with \`--option\` so the phone push gets answer
@@ -843,22 +934,25 @@ cmd_note() {
   fi
 }
 
-# The PR window (pr-<n> of this repository, any session), empty when none.
+# The PR window (pr-<n> of this repository, or a change window tagged
+# @opsx_pr=<n>, any session): "<window id>\t<label>", empty when none.
 pr_window() {
-  tmux list-windows -a -F '#{window_id}	#{@opsx_change}	#{@opsx_pr_repo}' 2>/dev/null \
-    | awk -F '\t' -v n="pr-$PR" -v r="$SLUG" '$2 == n && ($3 == r || $3 == "") { print $1; exit }' || true
+  pr_window_ids "$PR" "$SLUG" | awk -F '\t' 'NR == 1 { print $1 "\t" $2 }'
 }
 
 # Decision push with the question as body; records the time on the PR window
 # so a bare `mark pr-<n> ask` push within 30 s collapses into this one.
 notify_question() {
-  local n win args
+  local n win args label
   n=${OPSX_NOTIFY:-}
   if [ -z "$n" ]; then
     n=$(dirname "$(window_script 2>/dev/null)" 2>/dev/null)/opsx-notify.sh
   fi
   [ -f "$n" ] || return 0
   win=$(pr_window)
+  label=$(printf '%s' "$win" | cut -f2)
+  win=$(printf '%s' "$win" | cut -f1)
+  [ -n "$label" ] || label=pr-$PR
   args=(send)
   [ -z "$win" ] || args+=(--window "$win")
   if [ "${#OPTIONS[@]}" -gt 0 ]; then
@@ -866,7 +960,7 @@ notify_question() {
     args+=(--pr "$PR" --repo "$SLUG")
     for o in "${OPTIONS[@]}"; do args+=(--option "$o"); done
   fi
-  args+=(decision "pr-$PR" "pr-$PR: needs a decision" "$1")
+  args+=(decision "$label" "$label: needs a decision" "$1")
   bash "$n" "${args[@]}" </dev/null >/dev/null 2>&1 || true
 }
 
@@ -926,6 +1020,59 @@ cmd_prompt() {
   prompt_text
 }
 
+# Target of start: sets TGT_NAME (window name for ensure), TGT_ID (existing
+# window id, empty for a new pr-<n>), TGT_KIND (pr | own | change). Exit 8 with
+# a candidate line when a related change window needs the user's choice.
+resolve_target() {
+  local sess=$1 own found id change wpr wrepo wstatus
+  TGT_NAME=pr-$PR TGT_ID="" TGT_KIND=pr
+  [ "$NEW_WINDOW" -eq 0 ] || return 0
+  own=$(own_change_window)
+  if [ -n "$WINDOW_OPT" ]; then
+    [ -n "$sess" ] || die "no tmux session to find window $WINDOW_OPT in."
+    found=$(change_window "$sess" "$WINDOW_OPT")
+    [ -n "$found" ] || die "no change window $WINDOW_OPT in session $sess."
+  elif [ -n "$own" ]; then
+    found=$own
+  else
+    [ -n "$sess" ] || return 0
+    # A window already maintaining this PR (pr-<n> or a change window) is reused.
+    found=$(pr_window_ids "$PR" "$SLUG" "$sess" | head -n1)
+    if [ -n "$found" ]; then
+      change=$(printf '%s' "$found" | cut -f2)
+      if is_change_name "$change"; then
+        TGT_NAME=$change TGT_ID=$(printf '%s' "$found" | cut -f1) TGT_KIND=change
+      fi
+      return 0
+    fi
+    [ -z "$(window_in_session "$sess")" ] || return 0
+    found=$(candidate_window "$sess" "$HEAD_NAME")
+    if [ -n "$found" ]; then
+      printf 'candidate window=%s change=%s\n' "$(printf '%s' "$found" | cut -f1)" "$(printf '%s' "$found" | cut -f2)"
+      printf 'pr: PR %s#%s belongs to change window %s; re-run with --window %s or --new-window.\n' \
+        "$SLUG" "$PR" "$(printf '%s' "$found" | cut -f2)" "$(printf '%s' "$found" | cut -f2)" >&2
+      exit 8
+    fi
+    return 0
+  fi
+  # cut, not read: IFS tab would merge empty fields.
+  id=$(printf '%s' "$found" | cut -f1); change=$(printf '%s' "$found" | cut -f2)
+  wpr=$(printf '%s' "$found" | cut -f3); wrepo=$(printf '%s' "$found" | cut -f4)
+  wstatus=$(printf '%s' "$found" | cut -f5)
+  if [ -n "$wpr" ] && { [ "$wpr" != "$PR" ] || [ "$wrepo" != "$SLUG" ]; }; then
+    die "window $change already maintains PR ${wrepo:+$wrepo}#$wpr (PR $wpr); stop it first (pr.sh stop $wpr)."
+  fi
+  if [ -n "$own" ] && [ "$(printf '%s' "$own" | cut -f1)" = "$id" ]; then
+    TGT_KIND=own
+  else
+    case $wstatus in
+      busy|ask) die "window $change is $wstatus; wait until it is idle (or use --new-window)." ;;
+    esac
+    TGT_KIND=change
+  fi
+  TGT_NAME=$change TGT_ID=$id
+}
+
 cmd_start() {
   parse_opts "$@"
   setup_pr start
@@ -937,7 +1084,10 @@ cmd_start() {
   need tmux
   W=$(window_script)
   sess=$(tmux_session)
-  if [ -n "$sess" ]; then
+  # Everything is decided before the state file is written: a candidate
+  # (exit 8) or a refused window leaves nothing behind.
+  resolve_target "$sess"
+  if [ "$TGT_KIND" = pr ] && [ -n "$sess" ]; then
     found=$(window_in_session "$sess")
     if [ -n "$found" ]; then
       other=$(printf '%s' "$found" | cut -f2)
@@ -957,17 +1107,36 @@ cmd_start() {
     CUR_ci=""
     write_seen
   fi
+  sset window "$TGT_NAME"
+  WINDOW_OPT=""
   write_prompt_files
+  if [ "$TGT_KIND" != pr ]; then
+    # Tag first, so notify, list and stop find the window at once; keep the
+    # change's own goal to put back on stop.
+    if [ -z "$(tmux show-options -wqv -t "$TGT_ID" @opsx_pr 2>/dev/null)" ]; then
+      local g
+      g=$(tmux show-options -wqv -t "$TGT_ID" @opsx_goal 2>/dev/null || true)
+      if [ -n "$g" ]; then tmux set-option -w -t "$TGT_ID" @opsx_pr_prev_goal "$g" >/dev/null 2>&1 || true
+      else tmux set-option -wu -t "$TGT_ID" @opsx_pr_prev_goal >/dev/null 2>&1 || true
+      fi
+    fi
+    tmux set-option -w -t "$TGT_ID" @opsx_pr "$PR" >/dev/null 2>&1 || die "cannot tag window $TGT_NAME."
+    tmux set-option -w -t "$TGT_ID" @opsx_pr_repo "$SLUG" >/dev/null 2>&1 || true
+  fi
   # The window runs in the main checkout, so ensure names a session created
   # outside tmux after it, the same name tmux_session looked in above.
   local main
   main=$(main_checkout "$REPO")
-  local args=(ensure "pr-$PR" --prompt-file "$(state_dir)/prompt.md" --goal-file "$(state_dir)/goal.txt" --cwd "$main")
+  local args=(ensure "$TGT_NAME" --prompt-file "$(state_dir)/prompt.md" --goal-file "$(state_dir)/goal.txt" --cwd "$main")
   [ -z "$AGENT_CLI" ] || args+=(--agent-cli "$AGENT_CLI")
-  out=$(cd "$main" && "$W" "${args[@]}") || { printf '%s\n' "$out"; die "opsx-window.sh ensure pr-$PR failed."; }
+  out=$(cd "$main" && "$W" "${args[@]}") || { printf '%s\n' "$out"; die "opsx-window.sh ensure $TGT_NAME failed."; }
   printf '%s\n' "$out"
   win=$(printf '%s\n' "$out" | awk '$1 == "created" || $1 == "reused" { print $2; exit }')
   [ -z "$win" ] || tmux set-option -w -t "$win" @opsx_pr_repo "$SLUG" >/dev/null 2>&1 || true
+  case $TGT_KIND in
+    own)    printf 'inline window=%s change=%s\n' "$TGT_ID" "$TGT_NAME" ;;
+    change) printf 'change window=%s change=%s\n' "$TGT_ID" "$TGT_NAME" ;;
+  esac
   printf 'state=%s\n' "$(state_file)"
 }
 
@@ -1009,28 +1178,63 @@ cmd_list() {
   [ $# -eq 0 ] || die "list takes no arguments"
   local f repo pr status last wins
   [ -d "$STATE_ROOT" ] || return 0
-  wins=$(tmux list-windows -a -F '#{@opsx_change}	#{@opsx_pr_repo}	#{@opsx_status}' 2>/dev/null || true)
   for f in "$STATE_ROOT"/*/state; do
     [ -f "$f" ] || continue
     repo=$(sget repo "$f"); pr=$(sget pr "$f"); last=$(sget last_event "$f")
-    status=$(printf '%s\n' "$wins" | awk -F '\t' -v n="pr-$pr" -v r="$repo" \
-      '$1 == n && ($2 == r || $2 == "") { print ($3 == "" ? "unknown" : $3); exit }')
+    wins=$(pr_window_ids "$pr" "$repo")
+    status=$(printf '%s\n' "$wins" | awk -F '\t' 'NF { print ($3 == "" ? "unknown" : $3); exit }')
     printf '%s\t%s\t%s\t%s\n' "$repo" "$pr" "${status:-none}" "${last:--}"
   done
+}
+
+# stop_change_window <id> <change>: end the maintain goal in a change window
+# and drop its PR tags; the window stays.
+stop_change_window() {
+  local id=$1 change=$2 W pane cli prev tf
+  W=$(window_script)
+  prev=$(tmux show-options -wqv -t "$id" @opsx_pr_prev_goal 2>/dev/null || true)
+  tmux set-option -wu -t "$id" @opsx_pr >/dev/null 2>&1 || true
+  tmux set-option -wu -t "$id" @opsx_pr_repo >/dev/null 2>&1 || true
+  tmux set-option -wu -t "$id" @opsx_pr_prev_goal >/dev/null 2>&1 || true
+  # The maintain goal must not come back on a session restore.
+  if [ -n "$prev" ]; then tmux set-option -w -t "$id" @opsx_goal "$prev" >/dev/null 2>&1 || true
+  else tmux set-option -wu -t "$id" @opsx_goal >/dev/null 2>&1 || true
+  fi
+  pane=$(tmux list-panes -t "$id" -F '#{pane_id}' 2>/dev/null | head -n1)
+  cli=$(tmux show-options -wqv -t "$id" @opsx_agent_cli 2>/dev/null || true)
+  if [ -n "$pane" ]; then
+    tf=$(umask 077; mktemp "${TMPDIR:-/tmp}/opsx-pr-stop.XXXXXX") || tf=""
+    if [ -n "$tf" ]; then
+      case ${cli:-claude} in
+        claude|*/claude) printf '/goal clear\n' >"$tf" ;;
+        *) printf 'Stop maintaining PR %s#%s: the user ran pr.sh stop. Do not run pr.sh wait for it again.\n' "$SLUG" "$PR" >"$tf" ;;
+      esac
+      "$W" type "$pane" --text-file "$tf" >/dev/null 2>&1 || printf 'pr: could not type the stop into %s\n' "$change" >&2
+      rm -f "$tf"
+    fi
+  fi
+  printf 'stopped %s %s (PR %s; window kept)\n' "$id" "$change" "$PR"
 }
 
 cmd_stop() {
   parse_opts "$@"
   setup_pr stop
-  local wins id n=0
-  wins=$(windows_for_repo)
-  while IFS=$'\t' read -r id _; do
+  local wins id change n=0
+  wins=$(pr_window_ids "$PR" "$SLUG")
+  while IFS=$'\t' read -r id change _; do
     [ -n "$id" ] || continue
+    if is_change_name "$change"; then
+      stop_change_window "$id" "$change"; n=$((n + 1))
+      continue
+    fi
+    # pr-<n> with an untagged repo is left alone, as before.
+    [ "$(tmux show-options -wqv -t "$id" @opsx_pr_repo 2>/dev/null)" = "$SLUG" ] || continue
     tmux kill-window -t "$id" 2>/dev/null && { printf 'stopped %s pr-%s\n' "$id" "$PR"; n=$((n + 1)); }
   done <<<"$wins"
   [ "$n" -gt 0 ] || printf 'no window pr-%s for %s\n' "$PR" "$SLUG"
   if [ -f "$(state_file)" ]; then
     sset last_event stopped
+    sset window ""
     printf 'state kept %s\n' "$(state_file)"
   fi
 }

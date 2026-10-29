@@ -493,6 +493,103 @@ ok "restart-input: fork PR refused" '[ $rc -ne 0 ] && printf "%s" "$out" | grep 
 out=$(P restart-input 42 --agent-cli codex 2>/dev/null); rc=$?
 ok "restart-input: other CLIs get the prompt on one line" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | wc -l)" -eq 1 ] && [ "${out#/goal}" = "$out" ] && printf "%s" "$out" | grep -q "maintain loop"'
 
+# ---------------------------------------------------------------- change window (pr-in-change-window)
+# Window add-thing is an /opsx-run change window; worktree ../wt-add-thing is on
+# feat-b (PR 43's head). PR 47's head is opsx/add-thing.
+setpr_add() { jq --argjson o "$1" '. + [$o]' "$SP/gh/prs.json" > "$SP/gh/prs.tmp" && mv "$SP/gh/prs.tmp" "$SP/gh/prs.json"; }
+setpr_add "$(pr_obj 47 opsx/add-thing "$SHA_A" main OPEN)"
+$L new-window -d -t app: -n add-thing -c "$R" 'exec sleep 3000'
+AT=$($L list-windows -t app -F '#{window_id} #{window_name}' | awk '$2=="add-thing"{print $1}')
+ATP=$($L list-panes -t "$AT" -F '#{pane_id}' | head -n1)
+$L set-option -w -t "$AT" @opsx_change add-thing
+$L set-option -w -t "$AT" @opsx_status idle
+$L set-option -w -t "$AT" @opsx_agent_cli claude
+$L set-option -w -t "$AT" @opsx_goal "all gates PASS"
+screen() { $L capture-pane -p -J -t "$1" -S -200; }
+ngoal() { screen "$1" | grep -o '/goal ' | wc -l | tr -d ' '; }
+ST47=$SD/o-app-47/state; PROMPT47=$SD/o-app-47/prompt.md
+
+# 1.1 list finds a change window tagged @opsx_pr.
+$L set-option -w -t "$AT" @opsx_pr 42; $L set-option -w -t "$AT" @opsx_pr_repo o/app
+out=$("$PRSH" list)
+ok "change window: list shows PR 42 maintained in add-thing with its status" 'printf "%s\n" "$out" | grep -P "^o/app\t42\tidle\t" >/dev/null'
+$L set-option -w -t "$AT" @opsx_pr_repo x/other
+out=$("$PRSH" list)
+ok "change window: a change window of another repo is not PR 42's window" 'printf "%s\n" "$out" | grep -P "^o/app\t42\tnone\t" >/dev/null'
+$L set-option -wu -t "$AT" @opsx_pr; $L set-option -wu -t "$AT" @opsx_pr_repo
+
+# 2.2 candidates (caller in session app's first window, not a change window).
+rm -rf "$SD/o-app-43" "$SD/o-app-47"
+out=$(P start 43 --agent-cli claude 2>/dev/null); rc=$?
+ok "candidate: worktree ../wt-add-thing on PR 43's head -> exit 8, candidate line, no window, no state" '[ $rc -eq 8 ] && printf "%s\n" "$out" | grep -qx "candidate window=$AT change=add-thing" && [ -z "$(winof pr-43)" ] && [ ! -e "$SD/o-app-43" ]'
+out=$(P start 47 --agent-cli claude 2>/dev/null); rc=$?
+ok "candidate: head opsx/add-thing -> exit 8, candidate line, no window, no state" '[ $rc -eq 8 ] && printf "%s\n" "$out" | grep -qx "candidate window=$AT change=add-thing" && [ -z "$(winof pr-47)" ] && [ ! -e "$SD/o-app-47" ] && [ -z "$(opt "$AT" @opsx_pr)" ]'
+out=$(P start 47 --window no-such --agent-cli claude 2>&1); rc=$?
+ok "--window of a missing change window fails, no state" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "no change window no-such" && [ ! -e "$SD/o-app-47" ]'
+out=$(P start 47 --window add-thing --new-window 2>&1); rc=$?
+ok "--window with --new-window refused" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "exclude each other"'
+for st in busy ask; do
+  $L set-option -w -t "$AT" @opsx_status $st
+  out=$(P start 47 --window add-thing --agent-cli claude 2>&1); rc=$?
+  ok "--window refuses a $st change window, types nothing" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "add-thing is $st" && [ "$(ngoal "$ATP")" -eq 0 ] && [ -z "$(opt "$AT" @opsx_pr)" ] && [ ! -e "$SD/o-app-47" ]'
+done
+$L set-option -w -t "$AT" @opsx_status idle
+out=$(P start 47 --window add-thing --agent-cli claude 2>/dev/null); rc=$?
+sleep 1
+ok "--window add-thing: tags @opsx_pr=47 and o/app, no pr-47 window, state written" '[ $rc -eq 0 ] && [ "$(opt "$AT" @opsx_pr)" = 47 ] && [ "$(opt "$AT" @opsx_pr_repo)" = o/app ] && [ -z "$(winof pr-47)" ] && grep -q "^head_sha=" "$ST47" && printf "%s\n" "$out" | grep -qx "change window=$AT change=add-thing"'
+ok "--window add-thing: its pane got the maintain /goal once" '[ "$(ngoal "$ATP")" -eq 1 ] && screen "$ATP" | grep -q "o/app#47"'
+ok "--window add-thing: the prompt marks add-thing, not pr-47" 'grep -q "mark add-thing busy" "$PROMPT47" && ! grep -q "mark pr-47" "$PROMPT47"'
+ok "--window add-thing: the change goal is kept for stop" '[ "$(opt "$AT" @opsx_pr_prev_goal)" = "all gates PASS" ]'
+out=$("$PRSH" list)
+ok "list shows PR 47 with add-thing's status" 'printf "%s\n" "$out" | grep -P "^o/app\t47\tbusy\t" >/dev/null'
+out=$(P restart-input 47 --window add-thing 2>/dev/null); rc=$?
+ok "restart-input --window add-thing: prompt marks add-thing" '[ $rc -eq 0 ] && grep -q "mark add-thing idle" "$PROMPT47"'
+
+# 3.1 stop keeps the change window.
+out=$(P stop 47); rc=$?
+sleep 1
+ok "stop on a change window: window kept, no PR tags, state kept" '[ $rc -eq 0 ] && $L list-windows -a -F "#{window_id}" | grep -qx "$AT" && [ -z "$(opt "$AT" @opsx_pr)" ] && [ -z "$(opt "$AT" @opsx_pr_repo)" ] && [ -f "$ST47" ] && printf "%s" "$out" | grep -q "window kept"'
+ok "stop on a change window: /goal clear typed, change goal back" 'screen "$ATP" | grep -q "/goal clear" && [ "$(opt "$AT" @opsx_goal)" = "all gates PASS" ] && [ -z "$(opt "$AT" @opsx_pr_prev_goal)" ]'
+out=$("$PRSH" list)
+ok "list after stop of a change window shows none" 'printf "%s\n" "$out" | grep -P "^o/app\t47\tnone\tstopped" >/dev/null'
+
+# --new-window: pr-47 as before.
+$L set-option -w -t "$AT" @opsx_status idle
+out=$(P start 47 --new-window --agent-cli claude 2>/dev/null); rc=$?
+ok "--new-window: pr-47 created, add-thing untagged" '[ $rc -eq 0 ] && [ -n "$(winof pr-47)" ] && [ -z "$(opt "$AT" @opsx_pr)" ]'
+ok "--new-window: the prompt marks pr-47 again" 'grep -q "mark pr-47 busy" "$PROMPT47"'
+P stop 47 >/dev/null
+ok "stop after --new-window closes pr-47" '[ -z "$(winof pr-47)" ]'
+
+# 2.1 start from inside the change window (it is busy: its own window is exempt).
+$L clear-history -t "$ATP"; $L send-keys -t "$ATP" C-l
+$L set-option -w -t "$AT" @opsx_status busy
+out=$(TMUX_PANE=$ATP "$PRSH" start 47 --repo "$R" --agent-cli claude 2>/dev/null); rc=$?
+sleep 1
+ok "start inside add-thing: no pr-47, tags set, inline window= line, state" '[ $rc -eq 0 ] && [ -z "$(winof pr-47)" ] && [ "$(opt "$AT" @opsx_pr)" = 47 ] && [ "$(opt "$AT" @opsx_pr_repo)" = o/app ] && printf "%s\n" "$out" | grep -qx "inline window=$AT change=add-thing" && [ -f "$ST47" ]'
+ok "start inside add-thing: its pane got the /goal line" 'screen "$ATP" | grep -q "/goal PR o/app#47"'
+# 4.1 note routes the answer buttons to the change window.
+printf 'NTFY_URL=https://ntfy.dev.example.com\nNTFY_TOPIC=opsx-0123456789ab\nNTFY_TOKEN=tk_t\nNTFY_REPLY_TOPIC=opsx-0123456789ab-reply\nNTFY_REPLY_TOKEN=tk_r\n' > "$NENV"; chmod 600 "$NENV"
+printf '#!/bin/sh\ncat >/dev/null\nprintf 200\n' > "$SP/fakebin/curl"; chmod +x "$SP/fakebin/curl"
+out=$(P note 47 "rebase onto main or develop?" --option main --option develop); rc=$?
+ok "note 47 --option: the reply nonce is recorded on add-thing for its pane" '[ $rc -eq 0 ] && set -- $(opt "$AT" @opsx_notify_reply) && [ "$3" = pr ] && [ "$4" = "$ATP" ] && [ "$(opt "$AT" @opsx_notify_reply_q | sed -n 1,2p | tr "\n" " ")" = "47 o/app " ]'
+P note 47 --clear >/dev/null
+rm -f "$NENV" "$SP/fakebin/curl"
+out=$(TMUX_PANE=$ATP "$PRSH" start 42 --repo "$R" --agent-cli claude 2>&1); rc=$?
+ok "start 42 inside a window already on PR 47: non-zero naming 47, tag kept" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "PR 47" && [ "$(opt "$AT" @opsx_pr)" = 47 ] && [ -z "$(winof pr-42)" ]'
+out=$(P start 47 --agent-cli claude 2>/dev/null); rc=$?
+ok "start 47 from elsewhere reuses the change window maintaining it (no exit 8)" '[ $rc -eq 0 ] && [ -z "$(winof pr-47)" ] && printf "%s\n" "$out" | grep -qx "change window=$AT change=add-thing"'
+P stop 47 >/dev/null
+
+# No related window: pr-42 as before.
+out=$(P start 42 --agent-cli claude 2>/dev/null); rc=$?
+ok "no related change window: start 42 creates pr-42, no exit 8" '[ $rc -eq 0 ] && [ -n "$(winof pr-42)" ] && [ -z "$(opt "$AT" @opsx_pr)" ]'
+P stop 42 >/dev/null
+
+# 2.3 prompt line.
+ok "prompt: user messages in this window come first, then back to pr.sh wait" 'P prompt 42 | grep -q "Messages the user types in this window come first" && P prompt 42 | grep -q "then go back to .pr.sh wait."'
+$L kill-window -t "$AT"
+
 # ---------------------------------------------------------------- fork checkout (add-pr-forks)
 # origin = the user's fork me/app, upstream = acme/app, plus a teammate's fork
 # remote dany. Paths end in github.com/<owner>/<name>.git so they parse as slugs.

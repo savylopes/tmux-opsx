@@ -320,6 +320,23 @@ ok "merged PR window only resumed, output names pr-17 and MERGED" '[ "$(nargs "$
 ok "done PR window: pr.sh not called, only resumed" '! grep -q "restart-input 18" "$SP/log/pr" && [ "$(nargs "$V10")" -eq 4 ]'
 ok "idle window keeps idle, colours back (ox ·feat-c)" '[ "$($L list-windows -t work -F "#{@opsx_change}|#{@opsx_status}|#{window_name}" | grep "^feat-c|")" = "feat-c|idle|ox ·feat-c" ]'
 
+# ---- pr-in-change-window 4.2: change windows maintaining a PR
+V11=$(uuid 45); V12=$(uuid 46)
+{
+  entry 45 "$V11" @opsx_change=add-thing @opsx_pr=16 @opsx_pr_repo=o/app @opsx_status=idle "@opsx_goal=keep PR 16" "@opsx_pr_prev_goal=all gates PASS"
+  entry 46 "$V12" @opsx_change=add-other @opsx_pr=17 @opsx_pr_repo=o/app @opsx_status=busy "@opsx_goal=keep PR 17" "@opsx_pr_prev_goal=ship it"
+} > "$ST/snapshot.tsv"
+rm -f "$SP/log/pr"
+out=$(bash "$S" restore 2>&1); rc=$?
+for u in "$V11" "$V12"; do wait_for 10 'grep -qx -- "$u" "$SP/log/claude"'; done
+sleep 0.3
+AW=$($L list-windows -t work -F '#{window_id} #{@opsx_change}' | awk '$2=="add-thing"{print $1}')
+OW=$($L list-windows -t work -F '#{window_id} #{@opsx_change}' | awk '$2=="add-other"{print $1}')
+ok "change window on open PR 16: tags back, first input is restart-input's line" '[ $rc -eq 0 ] && [ "$($L show-options -wqv -t "$AW" @opsx_pr)" = 16 ] && [ "$($L show-options -wqv -t "$AW" @opsx_pr_repo)" = o/app ] && [ "$(nargs "$V11")" -eq 5 ] && [ "$(last_arg "$V11")" = "/goal keep PR 16 mergeable" ] && grep -qx "restart-input 16 --window add-thing --repo $SP/r" "$SP/log/pr"'
+ok "change window on open PR 16: marked busy" '[ "$($L show-options -wqv -t "$AW" @opsx_status)" = busy ]'
+ok "change window on merged PR 17: no @opsx_pr/@opsx_pr_repo, change goal back" '[ -n "$OW" ] && [ -z "$($L show-options -wqv -t "$OW" @opsx_pr)" ] && [ -z "$($L show-options -wqv -t "$OW" @opsx_pr_repo)" ] && [ "$($L show-options -wqv -t "$OW" @opsx_goal)" = "ship it" ] && printf "%s" "$out" | grep "add-other" | grep -q "plain change window"'
+ok "change window on merged PR 17: normal change resume (/goal <change goal> + restart message)" '[ "$(nargs "$V12")" -eq 5 ] && [[ "$(last_arg "$V12")" == "/goal ship it tmux restarted"* ]] && ! last_arg "$V12" | grep -q "PR 17"'
+
 # ---- --no-nudge
 W1=$(uuid 41); W2=$(uuid 42)
 {
