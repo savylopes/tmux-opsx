@@ -565,6 +565,34 @@ start_listen "$S3"; wait_urls "$S3" 2; sleep 1
 ok "3.1/5.2 a reply with the replaced nonce does not act" '[ "$(grep -c "^GOT:" "$GOTPR")" -eq 1 ] && [ -n "$(wopt "$W_L" @opsx_notify_reply)" ]'
 stop_listen
 
+# pr-in-change-window 4.1: PR 42 maintained in change window add-thing.
+GOTAT=$SP/got-at
+$L new-window -d -t nt -n at "$(reader "$GOTAT")"
+W_AT=$($L display -p -t nt:at '#{window_id}')
+$L set-option -w -t "$W_AT" @opsx_change add-thing; $L set-option -w -t "$W_AT" @opsx_pr 42; $L set-option -w -t "$W_AT" @opsx_pr_repo acme/api
+ST42=$XDG_STATE_HOME/tmux-opsx/pr/acme-api-42/state; mkdir -p "${ST42%/*}"
+printf 'head_sha=x\nask=rebase onto main or develop?\n' > "$ST42"
+sleep 0.5
+reset_calls
+bash "$N" send --window "$W_AT" --pr 42 --repo acme/api --option main --option develop decision add-thing "add-thing: needs a decision" "rebase onto main or develop?"
+NAT=$(wopt "$W_AT" @opsx_notify_reply | cut -d' ' -f1)
+ok "4.1 change window with @opsx_pr: answer buttons and the Open PR link" '[[ $NAT =~ ^[0-9a-f]{32}$ ]] && [ "$(labels_of)" = "main,develop,Open PR" ] && [ "$(acts | jq -r ".[2].url")" = "https://github.com/acme/api/pull/42" ]'
+SAT=$SP/streams-at; mkdir -p "$SAT"
+{ msg a1 "$NAT:2"; msg a2 "$NAT:2"; } > "$SAT/stream-1"
+start_listen "$SAT"; wait_urls "$SAT" 2; sleep 1
+ok "4.1 reply :2 sent twice types develop + Enter into window add-thing exactly once" '[ "$(grep -c "^GOT:" "$GOTAT" 2>/dev/null)" -eq 1 ] && grep -qx "GOT:develop" "$GOTAT"'
+stop_listen
+reset_calls; $L set-option -wu -t "$W_AT" @opsx_notify_pending
+OPSX_NOTIFY_FLUSH_AFTER=1 TMUX_PANE=$P_PLAIN bash "$W" mark add-thing "done" >/dev/null
+wait_calls 1 6; sleep 0.5
+ok "4.1 mark add-thing done with @opsx_pr=42 @opsx_pr_repo=acme/api: Open PR view action" '[ "$(acts | jq -r ".[0].action")" = view ] && [ "$(acts | jq -r ".[0].label")" = "Open PR" ] && [ "$(acts | jq -r ".[0].url")" = "https://github.com/acme/api/pull/42" ]'
+$L set-option -wu -t "$W_AT" @opsx_pr
+reset_calls; $L set-option -wu -t "$W_AT" @opsx_notify_pending
+OPSX_NOTIFY_FLUSH_AFTER=1 TMUX_PANE=$P_PLAIN bash "$W" mark add-thing "done" >/dev/null
+wait_calls 1 6; sleep 0.5
+ok "4.1 change window without @opsx_pr (repo tag only): no Open PR link" '[ "$(ncalls)" -eq 1 ] && ! last_call | grep -q "Open PR"'
+$L kill-window -t "$W_AT"
+
 # F1: a later question without buttons, or a permission prompt, ends a Claude nonce
 GOTC2=$SP/got-c2
 $L new-window -d -t nt -n cq2 "bash -c 'echo \"Keep theirs or ours in api.ts?\"; stty -icanon -echo; while IFS= read -r -s -n1 -d \"\" c; do printf \"%s\" \"\$c\" | od -An -tx1 >> \"$GOTC2\"; done'"

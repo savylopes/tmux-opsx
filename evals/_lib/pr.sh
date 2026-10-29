@@ -92,3 +92,35 @@ EOF
 state_file() { printf '%s/tmux-opsx/pr/o-app-%s/state' "$XDG_STATE_HOME" "$1"; }
 pr_start() { "$PRSH" start "$1" --repo "$R" --agent-cli "$SP/fakebin/agent" "${@:2}"; }
 win_count() { T list-windows -a -F '#{@opsx_change}' 2>/dev/null | grep -cx "pr-$1" || true; }
+
+# ---- change-window helpers (pr-in-change-window) -----------------------------
+# mk_change_env: mk_env, PR 42's head becomes opsx/add-thing (branch pushed), and an
+# open change window add-thing exists whose pane logs what is typed into it
+# ($EVAL_TMP/typed.add-thing). CW = window id, CP = its pane id, OP = the pane of
+# the setup window (a caller outside any change window).
+mk_change_env() {
+  OP=$TMUX_PANE
+  clean_windows; trap clean_windows EXIT
+  mk_env
+  $G -C "$R" branch opsx/add-thing feat-a; $G -C "$R" push -q origin opsx/add-thing
+  setpr 42 '.headRefName="opsx/add-thing"'
+  mk_change_win add-thing "${1:-idle}"
+}
+# clean_windows: the eval tmux server is shared by all checks; drop every window
+# except the setup window so a leftover add-thing / pr-42 never gets picked.
+clean_windows() {
+  local w keep; keep=$(T display -p -t "${OP:-$TMUX_PANE}" '#{window_id}' 2>/dev/null) || return 0
+  for w in $(T list-windows -a -F '#{window_id}'); do [ "$w" = "$keep" ] || T kill-window -t "$w" 2>/dev/null; done
+}
+# mk_change_win <change> [status]: window tagged like an /opsx-run window
+mk_change_win() {
+  local f="$EVAL_TMP/typed.$1"; : > "$f"
+  CW=$(T new-window -d -t "$EVAL_TMUX_SESSION:" -n "$1" -P -F '#{window_id}' "stty -echo; exec cat > '$f'") || fail "new-window $1"
+  CP=$(T display -p -t "$CW" '#{pane_id}')
+  T set-option -w -t "$CW" @opsx_change "$1"
+  T set-option -w -t "$CW" @opsx_agent_cli claude
+  T set-option -w -t "$CW" @opsx_status "${2:-idle}"
+}
+wopt() { T show-options -wqv -t "$1" "$2"; }
+# wait_typed <change> <text> [secs]
+wait_typed() { local i; for i in $(seq $(( ${3:-5} * 10 ))); do grep -qF -- "$2" "$EVAL_TMP/typed.$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }

@@ -63,7 +63,8 @@
 #   pane (and its turn end) forgets a claude record first. An empty label
 #   means no answer buttons. Without both reply keys: no answer buttons.
 # - link buttons (`view` actions) after them on decision and finished pushes:
-#   Open PR (window @opsx_change pr-<n> with @opsx_pr_repo), Open preview
+#   Open PR (window @opsx_change pr-<n>, or a change window tagged
+#   @opsx_pr=<n>, with @opsx_pr_repo), Open preview
 #   (opsx-preview.sh url <change> within 2 s), Open page (a /fork page pane
 #   whose page .meta has url=).
 #
@@ -553,12 +554,17 @@ forget_pane_reply() {
 # push_links <window> [<pane>]: "v<TAB>label<TAB>url" lines for the links that
 # exist: Open PR, Open preview, Open page.
 push_links() {
-  local win=$1 pane=${2:-} out change repo cwd url p d fd pd
+  local win=$1 pane=${2:-} out change repo cwd url p d fd pd prn
   [ -n "$win" ] || return 0
-  out=$(tmux display-message -p -t "$win" '#{@opsx_change}	#{@opsx_pr_repo}	#{pane_current_path}' 2>/dev/null) || return 0
-  IFS=$'\t' read -r change repo cwd <<<"$out"
-  if [[ $change =~ ^pr-[0-9]+$ ]] && [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-    printf 'v\tOpen PR\thttps://github.com/%s/pull/%s\n' "$repo" "${change#pr-}"
+  out=$(tmux display-message -p -t "$win" '#{@opsx_change}	#{@opsx_pr_repo}	#{@opsx_pr}	#{pane_current_path}' 2>/dev/null) || return 0
+  # Split by hand: read with IFS tab would merge empty fields.
+  change=${out%%$'\t'*}; out=${out#*$'\t'}
+  repo=${out%%$'\t'*}; out=${out#*$'\t'}
+  prn=${out%%$'\t'*}; cwd=${out#*$'\t'}
+  # A change window maintaining a PR (/opsx-pr in a change window) has @opsx_pr.
+  [[ $change =~ ^pr-[0-9]+$ ]] && prn=${change#pr-}
+  if [[ $prn =~ ^[0-9]+$ ]] && [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    printf 'v\tOpen PR\thttps://github.com/%s/pull/%s\n' "$repo" "$prn"
   elif [[ $change =~ ^[A-Za-z0-9._-]+$ ]] && [ -f "$HERE/opsx-preview.sh" ] && [ -d "$cwd" ]; then
     url=$(cd -- "$cwd" 2>/dev/null && OPSX_EXPOSE_NO_COPY=1 timeout 2 bash "$HERE/opsx-preview.sh" url "$change" </dev/null 2>/dev/null \
           | awk 'NF { l = $0 } END { print l }')

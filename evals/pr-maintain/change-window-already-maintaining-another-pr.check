@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Change window already maintaining another PR
+# level: L2
+# requirement: Maintain inside the caller's change window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_change_env
+T set-option -w -t "$CW" @opsx_pr 41; T set-option -w -t "$CW" @opsx_pr_repo o/app
+out=$(TMUX_PANE=$CP pr_start 42 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "exit 0"
+echo "$out" | grep -q 41 || fail "output does not name PR 41"
+[ "$(wopt "$CW" @opsx_pr)" = 41 ] || fail "@opsx_pr changed to '$(wopt "$CW" @opsx_pr)'"
+echo OK

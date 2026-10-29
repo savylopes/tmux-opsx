@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / User chose the change window
+# level: L2
+# requirement: Ask before reusing a related change window
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_change_env idle
+out=$(TMUX_PANE=$OP pr_start 42 --window add-thing 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+[ "$(wopt "$CW" @opsx_pr)" = 42 ] || fail "@opsx_pr is '$(wopt "$CW" @opsx_pr)'"
+wait_typed add-thing "/goal" 8 || fail "no /goal typed into the change window: $(cat "$EVAL_TMP/typed.add-thing")"
+grep -q "42" "$EVAL_TMP/typed.add-thing" || fail "typed goal does not mention PR 42"
+[ "$(win_count 42)" -eq 0 ] || fail "pr-42 window exists"
+echo OK

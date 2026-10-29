@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt names user messages
+# level: L1
+# requirement: User feedback in the window overrides the loop
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --repo "$R" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -i "messages\|message" | grep -qi "user" || fail "prompt has no line about the user's messages"
+echo "$out" | grep -i "message" | grep -qiE "first|before|precedence|priority" || fail "message line does not give precedence"
+echo "$out" | grep -q "pr.sh wait" || fail "prompt does not name pr.sh wait"
+echo OK

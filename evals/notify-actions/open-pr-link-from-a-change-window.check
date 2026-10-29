@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: notify-actions / Open PR link from a change window
+# level: L2
+# requirement: PR buttons for a change window maintaining a PR
+set -u
+. "$EVAL_ROOT/evals/_lib/actions.sh"
+need_json; write_notify_env_reply; start_tmux
+read -r w p < <(new_win add-thing change)
+TM set-option -w -t "$w" @opsx_pr 42; TM set-option -w -t "$w" @opsx_pr_repo acme/api
+export OPSX_NOTIFY_FLUSH_AFTER=1
+TMUX_PANE=$p bash "$WINSH" mark add-thing done >/dev/null 2>&1; echo "mark rc=$?"
+wait_calls 1 20 || fail "no push"; sleep 1
+actions_tsv
+actions_tsv | awk -F'\t' '$1=="view" && $2=="Open PR" && $3=="https://github.com/acme/api/pull/42"{f=1} END{exit !f}' || fail "no view action 'Open PR' -> https://github.com/acme/api/pull/42"
+echo OK

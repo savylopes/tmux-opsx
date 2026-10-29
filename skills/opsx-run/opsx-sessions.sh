@@ -42,6 +42,12 @@
 #            - PR window (@opsx_pr_repo, @opsx_change=pr-<n>) not marked done:
 #              the output of `pr.sh restart-input <n> --repo <cwd>`; when that
 #              fails the pane is resumed with no prompt and the reason printed.
+#            - change window maintaining a PR (@opsx_pr=<n>, @opsx_pr_repo):
+#              the output of `pr.sh restart-input <n> --window <change> --repo
+#              <cwd>`; when that fails (PR merged or closed) the PR tags are
+#              removed, the change's earlier @opsx_goal comes back, and the
+#              window is restored as a plain change window (as below).
+#              With --no-nudge pr.sh is not called and the tags stay.
 #            - anything else: no prompt.
 #          Change windows get their status colours back through
 #          `opsx-window.sh mark` (a busy window that is not continued is
@@ -574,6 +580,8 @@ restore_one() {
   change=$(opt_get @opsx_change) || change=""
   status=$(opt_get @opsx_status) || status=""
   pr_repo=$(opt_get @opsx_pr_repo) || pr_repo=""
+  local pr_n prev_goal
+  pr_n=$(opt_get @opsx_pr) || pr_n=""
   if [ -n "$change" ]; then
     tmux set-window-option -t "$win" automatic-rename off >/dev/null 2>&1
     tmux set-window-option -t "$win" allow-rename off >/dev/null 2>&1
@@ -588,8 +596,37 @@ restore_one() {
   esac
 
   # First prompt for unfinished work.
-  if [ "$NUDGE" -eq 1 ] && [ -n "$change" ]; then
-    if [ -n "$pr_repo" ] && [[ $change =~ ^pr-([0-9]+)$ ]]; then
+  # A change window maintaining a PR resumes the loop while the PR is open;
+  # otherwise it goes back to a plain change window without the PR tags.
+  if [ "$NUDGE" -eq 1 ] && [ -n "$change" ] && ! [[ $change =~ ^pr-[0-9]+$ ]] && [ -n "$pr_n" ]; then
+    rc=1 out="pr.sh not found"
+    if [[ $pr_n =~ ^[0-9]+$ ]] && [ -n "$pr_repo" ] && [[ $change =~ ^[A-Za-z0-9._-]+$ ]] && out=$(pr_script); then
+      out=$(umask "$ORIG_UMASK"; cd "$wcwd" && timeout 120 bash "$out" restart-input "$pr_n" --window "$change" --repo "$cwd" 2>&1); rc=$?
+    fi
+    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+      prompt=$(one_line "$out")
+    else
+      say "note $label: PR $pr_n not continued in $change: $(one_line "$out") (pr.sh restart-input exit $rc); restored as a plain change window"
+      prev_goal=$(opt_get @opsx_pr_prev_goal) || prev_goal=""
+      for o in @opsx_pr @opsx_pr_repo @opsx_pr_prev_goal; do
+        tmux set-option -wu -t "$win" "$o" >/dev/null 2>&1
+      done
+      if [ -n "$prev_goal" ]; then tmux set-option -w -t "$win" @opsx_goal "$prev_goal" >/dev/null 2>&1
+      else tmux set-option -wu -t "$win" @opsx_goal >/dev/null 2>&1
+      fi
+      local kept=()
+      for o in "${OPTS[@]}"; do
+        case "${o%%=*}" in @opsx_pr|@opsx_pr_repo|@opsx_pr_prev_goal|@opsx_goal) ;; *) kept+=("$o") ;; esac
+      done
+      [ -z "$prev_goal" ] || kept+=("@opsx_goal=$prev_goal")
+      OPTS=("${kept[@]+"${kept[@]}"}")
+      pr_repo="" pr_n=""
+    fi
+  fi
+  if [ "$NUDGE" -eq 1 ] && [ -n "$change" ] && [ -z "$prompt" ]; then
+    if [ -n "$pr_n" ]; then
+      :
+    elif [ -n "$pr_repo" ] && [[ $change =~ ^pr-([0-9]+)$ ]]; then
       n=${BASH_REMATCH[1]}
       if [ "$status" = "done" ]; then
         :

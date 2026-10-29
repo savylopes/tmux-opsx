@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: session-restore / Merged PR restores a plain change window
+# level: L2
+# requirement: Restore a change window maintaining a PR
+set -u
+. "$EVAL_ROOT/evals/_lib/sessions.sh"
+pr_stub merged
+server a work "$R1"
+claude_win work:2 add-thing "$R1" "$(hook_json $UUID1 "$R1" bypassPermissions)"
+wopt work:2 @opsx_change add-thing; wopt work:2 @opsx_pr 42; wopt work:2 @opsx_pr_repo o/app; wopt work:2 @opsx_status busy
+sess_run save; [ $RC -eq 0 ] || fail "save exit $RC"
+restart b work "$R2"
+bash_win work:2 add-thing "$R2"
+sess_run restore; [ $RC -eq 0 ] || fail "restore exit $RC"
+stub_args $UUID1; show_args
+last="${ARGS[$((${#ARGS[@]}-1))]}"
+[ "$last" != '/goal keep PR 16 mergeable' ] || fail "the PR input was used for a merged PR"
+echo "$last" | grep -qi 'restart' || fail "no normal change-window resume prompt (last arg: $last)"
+echo "$last" | grep -qi 'continue' || fail "resume prompt does not say to continue"
+[ -z "$(wopt work:2 @opsx_pr)" ] || fail "@opsx_pr restored: $(wopt work:2 @opsx_pr)"
+echo OK
