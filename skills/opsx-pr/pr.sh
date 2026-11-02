@@ -6,13 +6,13 @@
 #   pr.sh start    <pr> [--window <change> | --new-window] [--repo <dir>] [--agent-cli <cmd>] [--slice <s>] [--poll <s>]
 #   pr.sh restart-input <pr> [--window <change>] [--repo <dir>] [--agent-cli <cmd>]
 #   pr.sh seen     <pr> [--repo <dir>]
-#   pr.sh wait     <pr> [--slice <s>] [--poll <s>] [--repo <dir>]
+#   pr.sh wait     <pr> [--slice <s>] [--poll <s>] [--gen <n>] [--repo <dir>]
 #   pr.sh worktree <pr> [--repo <dir>]
 #   pr.sh restack  <pr> [--onto <branch>] [--repo <dir>]
 #   pr.sh push     <pr> [--repo <dir>]
 #   pr.sh rerun    <pr> [--repo <dir>]
 #   pr.sh note     <pr> <question> [--option <label>]... | --clear [--repo <dir>]
-#   pr.sh prompt   <pr> [--repo <dir>] [--slice <s>] [--poll <s>]
+#   pr.sh prompt   <pr> [--repo <dir>] [--agent-cli <cmd>] [--slice <s>] [--poll <s>]
 #   pr.sh list
 #   pr.sh stop     <pr> [--repo <dir>]
 #
@@ -41,6 +41,13 @@
 #           --window <change> maintains the PR in that change window (refused
 #           while it is busy or ask, unless it is the caller's own window);
 #           --new-window always uses pr-<n>.
+#           Every start (also a refresh of a running window) increases
+#           monitor_gen in the state file; the prompt's wait carries it as
+#           --gen <n>, so a monitor left from an older prompt ends (exit 4).
+#           The prompt's loop depends on the window's agent CLI (--agent-cli,
+#           else the window's @opsx_agent_cli, else the CLI a new window gets):
+#           Claude Code runs the wait in a background ops-pr-monitor subagent,
+#           other CLIs run it in the foreground.
 # restart-input  same refusals as start (not OPEN, from another fork), keeps the state
 #           file (writes one only when missing), rewrites the prompt and goal
 #           files and prints the window's first input: on Claude Code (default,
@@ -48,7 +55,8 @@
 #           <prompt> first and follow it.`, else the prompt on one line. Never
 #           touches tmux; opsx-sessions.sh restore types it after a tmux restart.
 #           --window <change>: the prompt marks that window (default: the
-#           window recorded by start, else pr-<n>).
+#           window recorded by start, else pr-<n>). Increases monitor_gen.
+#           The loop follows --agent-cli (default claude), as the first input.
 # seen      records the PR's current head, base, parent, CI and comment ids.
 # wait      polls gh/git every --poll seconds (default 60) for --slice seconds
 #           (default 540) and prints one event=<kind> line, exit 0, kinds in
@@ -58,6 +66,10 @@
 #           is reported once per head (ci_reported=<sha>), again only for a new
 #           head or once CI on that head left the fail state (pending or pass)
 #           and failed again, e.g. after rerun.
+#           Every poll records last_wait_at=<epoch>. --gen <n>: on every poll,
+#           exit 4 with a `pr: superseded` line on stderr (and no event) once
+#           the state's monitor_gen is not <n> (start, restart-input and stop
+#           increase it). Without --gen the generation is not checked.
 # worktree  prints a worktree on the head branch: an existing one, else a new
 #           ../wt-pr-<n> beside the main checkout tracking <head remote>/<head>.
 #           Refuses a dirty one, and a local <head> tracking another remote.
@@ -84,14 +96,18 @@
 #           types that label into the PR window, pr-<n> or the change window
 #           tagged @opsx_pr=<n> (opsx-notify.sh listen). More
 #           than 3 options fail before anything is recorded or sent.
-# prompt    prints the generated window prompt (for inspection).
+# prompt    prints the generated window prompt (for inspection); the loop is
+#           chosen like start's (--agent-cli, else the PR window's CLI, else claude).
 # list      one line per PR with a state file: repo pr window-status last-event
-#           (the window is pr-<n> or a change window tagged @opsx_pr=<n>).
+#           watch (the window is pr-<n> or a change window tagged @opsx_pr=<n>).
+#           watch is watch=<age>s since the last poll of a wait, watch=stale
+#           when that is more than slice + poll + 30 s, watch=- before any wait.
 # stop      closes window pr-<n>; the state file and worktree stay. A change
 #           window maintaining the PR is never closed: its @opsx_pr and
 #           @opsx_pr_repo tags are removed, its earlier @opsx_goal comes back,
 #           and `/goal clear` (Claude Code) or a stop line (other CLIs) is
-#           typed into it.
+#           typed into it. stop also increases monitor_gen, so a running
+#           monitor ends (wait --gen exits 4).
 #
 # State: ${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/pr/<owner>-<name>-<n>/state
 # --repo defaults to the git top level of $PWD. Only open and push push
@@ -154,7 +170,7 @@ pr_number() {
 # Shared option parsing. Sets ARG1 ARG2 REPO_OPT SLICE POLL AGENT_CLI ONTO
 # TITLE BODY_FILE BASE_OPT CLEAR.
 ARG1="" ARG2="" REPO_OPT="" SLICE=540 POLL=60 AGENT_CLI="" ONTO="" TITLE="" BODY_FILE="" BASE_OPT="" CLEAR=0
-WINDOW_OPT="" NEW_WINDOW=0
+WINDOW_OPT="" NEW_WINDOW=0 GEN=""
 OPTIONS=()
 parse_opts() {
   while [ $# -gt 0 ]; do
@@ -171,6 +187,7 @@ parse_opts() {
       --window)    [ $# -ge 2 ] || die "--window needs a change name"; WINDOW_OPT=$2; shift 2 ;;
       --new-window) NEW_WINDOW=1; shift ;;
       --option)    [ $# -ge 2 ] || die "--option needs a label"; OPTIONS+=("$2"); shift 2 ;;
+      --gen)       [ $# -ge 2 ] || die "--gen needs a number"; GEN=$2; shift 2 ;;
       -h|--help)   usage 0 ;;
       -*) die "unknown option: $1" ;;
       *) if [ -z "$ARG1" ]; then ARG1=$1; elif [ -z "$ARG2" ]; then ARG2=$1; else die "too many arguments"; fi; shift ;;
@@ -178,6 +195,7 @@ parse_opts() {
   done
   if ! [[ $SLICE =~ ^[0-9]+$ ]] || [ "$SLICE" -lt 1 ]; then die "--slice must be a positive number of seconds"; fi
   if ! [[ $POLL =~ ^[0-9]+$ ]] || [ "$POLL" -lt 1 ]; then die "--poll must be a positive number of seconds"; fi
+  if [ -n "$GEN" ] && ! [[ $GEN =~ ^[0-9]+$ ]]; then die "--gen must be a non-negative number"; fi
   if [ -n "$WINDOW_OPT" ] && [ "$NEW_WINDOW" -eq 1 ]; then die "--window and --new-window exclude each other"; fi
   if [ -n "$WINDOW_OPT" ] && ! [[ $WINDOW_OPT =~ ^[A-Za-z0-9._-]+$ ]]; then die "--window needs a change name, got '$WINDOW_OPT'"; fi
   if [[ $WINDOW_OPT =~ ^pr-[0-9]+$ ]]; then die "--window takes an /opsx-run change window, not $WINDOW_OPT (use --new-window)"; fi
@@ -328,15 +346,50 @@ sget() { # key [file]
   awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { printf "%s", v }' "$f"
 }
 
-# Rewrite one key (or append it), keeping every other line.
-sset() { # key value
+# Run "$@" holding the state file's lock (flock on <state>.lock) when flock(1)
+# exists; unlocked otherwise. A background wait writes the state on every poll
+# while the window runs seen, push or note, so read-modify-write must not
+# interleave (a lost write could drop a monitor_gen bump or a head_sha).
+with_state_lock() {
+  local f
+  f=$(state_file)
+  mkdir -p "$(dirname "$f")"
+  if command -v flock >/dev/null 2>&1; then
+    { flock -w 10 9 || true; "$@"; } 9>"$f.lock"
+  else
+    "$@"
+  fi
+}
+
+sset_unlocked() { # key value
   local f tmp
   f=$(state_file); tmp="$f.tmp.$$"
-  mkdir -p "$(dirname "$f")"
   touch "$f"
   awk -v k="$1" -v v="$2" '
     index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
     { print } END { if (!done) print k "=" v }' "$f" >"$tmp" && mv "$tmp" "$f"
+}
+
+# Rewrite one key (or append it), keeping every other line.
+sset() { # key value
+  with_state_lock sset_unlocked "$1" "$2"
+}
+
+# Current monitor generation (0 when unset).
+cur_gen() {
+  local g
+  g=$(sget monitor_gen)
+  [[ $g =~ ^[0-9]+$ ]] || g=0
+  printf '%s' "$g"
+}
+
+bump_gen_unlocked() {
+  sset_unlocked monitor_gen "$(( $(cur_gen) + 1 ))"
+}
+
+# Increase monitor_gen: a monitor started for an older prompt then exits 4.
+bump_gen() {
+  with_state_lock bump_gen_unlocked
 }
 
 # Current values into CUR_* variables (read indirectly by write_seen/detect_event).
@@ -543,9 +596,37 @@ candidate_window() {
 
 # ---------------------------------------------------------------- goal + prompt
 
-goal_text() {
+# True for Claude Code (claude, or a path ending in /claude).
+is_claude_cli() {
+  case $1 in
+    claude|*/claude) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Agent CLI of the window the prompt is for: --agent-cli, else PROMPT_CLI
+# (set by start for a new window), else the @opsx_agent_cli of PROMPT_WIN_ID
+# or of the PR's window (unless NO_TMUX=1), else claude.
+PROMPT_CLI="" PROMPT_WIN_ID="" NO_TMUX=0
+prompt_cli() {
+  local c=${AGENT_CLI:-$PROMPT_CLI} id
+  if [ -z "$c" ] && [ "$NO_TMUX" -eq 0 ] && command -v tmux >/dev/null 2>&1; then
+    id=$PROMPT_WIN_ID
+    [ -n "$id" ] || id=$(pr_window 2>/dev/null | cut -f1)
+    [ -z "$id" ] || c=$(tmux show-options -wqv -t "$id" @opsx_agent_cli 2>/dev/null || true)
+  fi
+  printf '%s' "${c:-claude}"
+}
+
+goal_text() { # [cli]
+  local cli=${1:-}
+  [ -n "$cli" ] || cli=$(prompt_cli)
   # shellcheck disable=SC2016  # the backticks are literal Markdown
-  printf 'PR %s#%s is MERGED by someone else, or CLOSED, or the user said stop in this window. Never merge it yourself. A `pr.sh wait` that exits 3 is the expected idle step, not a failure: call it again.\n' "$SLUG" "$PR"
+  if is_claude_cli "$cli"; then
+    printf 'PR %s#%s is MERGED by someone else, or CLOSED, or the user said stop in this window. Never merge it yourself. A background `ops-pr-monitor` that returns `idle` is the expected idle step, not a failure: start the next monitor in the background and end the turn.\n' "$SLUG" "$PR"
+  else
+    printf 'PR %s#%s is MERGED by someone else, or CLOSED, or the user said stop in this window. Never merge it yourself. A `pr.sh wait` that exits 3 is the expected idle step, not a failure: call it again.\n' "$SLUG" "$PR"
+  fi
 }
 
 # Window name the prompt marks: --window, else the one start recorded, else pr-<n>.
@@ -556,8 +637,66 @@ mark_label() {
   printf '%s' "$w"
 }
 
-prompt_text() {
-  local W BR HR M
+# The Loop section: a background ops-pr-monitor on Claude Code, the
+# foreground wait elsewhere. $1 cli, $2 window script, $3 mark label.
+loop_text() {
+  local cli=$1 W=$2 M=$3 WAITCMD
+  WAITCMD="$SELF wait $PR --repo $REPO --slice $SLICE --poll $POLL --gen $(cur_gen)"
+  if is_claude_cli "$cli"; then
+    cat <<EOF
+## Loop (Claude Code: background monitor)
+The waiting runs in a background subagent, so this window stays idle and reads the user's messages at
+once. Never run \`pr.sh wait\` in this window yourself, and never sleep to wait.
+1. \`$W mark $M idle\` (or \`ask\` while a question to the user is open), then start the \`ops-pr-monitor\`
+   subagent in the BACKGROUND (Agent tool, \`subagent_type: "ops-pr-monitor"\`, \`run_in_background: true\`
+   where the tool has that parameter) with this exact command as its whole prompt:
+   \`$WAITCMD\`
+   Then end your turn: do not wait for it, poll it or check on it. Start only one: do not start a second
+   monitor while one you started is still running (see your background tasks). When unsure, start one:
+   \`--gen\` lets only the current prompt's monitors report, and an extra one is only a cheap poller.
+2. The monitor's result arrives as a new turn, as exactly one line:
+   - \`event=<kind>\`: \`$W mark $M busy\` and handle the event (below). Get a worktree with
+     \`$SELF worktree $PR --repo $REPO\` (it prints the path; never switch the main checkout's branch).
+     After handling it (or after asking the user about it), run \`$SELF seen $PR --repo $REPO\`
+     so the next wait starts from the new state, then go back to 1.
+   - \`idle\`: nothing changed for about 27 minutes. This is the expected idle step: go back to 1 at once.
+   - \`superseded\`: a newer prompt (a refresh or a restart) or \`pr.sh stop\` owns the loop now. Do nothing
+     more for it and start no monitor.
+   - \`error: <message>\`: \`wait\` counts failed polls as no change, so this is a setup failure (no state
+     file, no base remote, a gh or auth problem). Read the message; fix what is clearly local and go back
+     to 1, otherwise ask the user (see Ask the user first).
+   - anything else: treat it as \`error:\`.
+3. Events you caused yourself: the monitor keeps watching while you work on a user message, so it can
+   report your own push or your own replies. Before acting on \`head-moved\` or \`comments\`, compare with
+   what this window just did: when the new head is the SHA your \`pr.sh push\` printed, or the only new
+   comments are your own replies, acknowledge it with \`$SELF seen $PR --repo $REPO\`, do nothing else,
+   and go back to 1.
+4. Messages the user types in this window come first: they take precedence over the PR loop. Act on them
+   (answer, do what they ask, settle an open question), then make sure one \`ops-pr-monitor\` is running
+   (step 1) and end your turn.
+5. A turn that starts while no monitor of yours is running (a goal check-in, a lost result): start one (step 1).
+EOF
+  else
+    cat <<EOF
+## Loop
+1. \`$W mark $M idle\` (or \`ask\` while a question to the user is open), then run
+   \`$WAITCMD\` in the FOREGROUND with a Bash tool
+   timeout of 600000 ms. Never run it in the background and never sleep separately.
+   Exit 3 means nothing changed: run the same wait again at once. Exit 0 prints one event=<kind>.
+   Exit 4 (\`superseded\`): a newer prompt or \`pr.sh stop\` owns the loop; stop waiting for this one.
+2. On an event, \`$W mark $M busy\` and handle it (below). Get a worktree with
+   \`$SELF worktree $PR --repo $REPO\` (it prints the path; never switch the main checkout's branch).
+3. After handling it (or after asking the user about it), run \`$SELF seen $PR --repo $REPO\`
+   so the next wait starts from the new state, then go back to 1.
+4. Messages the user types in this window come first: they take precedence over the PR loop. Act on them
+   (answer, do what they ask, settle an open question), then go back to \`pr.sh wait\` (step 1).
+EOF
+  fi
+}
+
+prompt_text() { # [cli]
+  local W BR HR M cli=${1:-}
+  [ -n "$cli" ] || cli=$(prompt_cli)
   W=$(window_script)
   M=$(mark_label)
   BR=${BASE_REMOTE:-<no base remote: git remote add upstream https://github.com/$SLUG.git>}
@@ -575,22 +714,12 @@ Helper: $SELF   (below: pr.sh)
 Window marks: $W mark $M busy|idle|ask|done
 
 ## First turn
-Before the first wait (also after a restart), look at where the PR stands now, since events from
+Before starting the loop (also after a restart), look at where the PR stands now, since events from
 before the watch started are not all reported: \`gh pr view $PR -R $SLUG\`, \`gh pr checks $PR -R $SLUG\`,
 unresolved review threads and recent comments (endpoints under Events), and the open questions
 (\`ask=\` lines) in the state file. Handle what is still open with the rules below, then start the loop.
 
-## Loop
-1. \`$W mark $M idle\` (or \`ask\` while a question to the user is open), then run
-   \`$SELF wait $PR --repo $REPO --slice $SLICE --poll $POLL\` in the FOREGROUND with a Bash tool
-   timeout of 600000 ms. Never run it in the background and never sleep separately.
-   Exit 3 means nothing changed: run the same wait again at once. Exit 0 prints one event=<kind>.
-2. On an event, \`$W mark $M busy\` and handle it (below). Get a worktree with
-   \`$SELF worktree $PR --repo $REPO\` (it prints the path; never switch the main checkout's branch).
-3. After handling it (or after asking the user about it), run \`$SELF seen $PR --repo $REPO\`
-   so the next wait starts from the new state, then go back to 1.
-4. Messages the user types in this window come first: they take precedence over the PR loop. Act on them
-   (answer, do what they ask, settle an open question), then go back to \`pr.sh wait\` (step 1).
+$(loop_text "$cli" "$W" "$M")
 
 ## Events
 - merged / closed: the goal holds. \`$W mark $M done\`, say so in one line, stop.
@@ -640,7 +769,7 @@ Never merge the PR, never approve it, never close it, never delete branches.
 
 ## Ask the user first (important or ambiguous decisions)
 Ask in this window, run \`$W mark $M ask\`, record it with \`$SELF note $PR "<question>" --repo $REPO\`,
-keep running the wait loop (other events still get handled), and act on that decision only after the
+keep the PR loop running (other events still get handled), and act on that decision only after the
 user answers (then \`$SELF note $PR --clear --repo $REPO\`).
 When the question has 2 or 3 fixed answers, pass each one with \`--option\` so the phone push gets answer
 buttons, e.g. \`$SELF note $PR "rebase onto main or develop?" --option main --option develop --repo $REPO\`.
@@ -674,10 +803,11 @@ EOF
 }
 
 write_prompt_files() {
-  local d
+  local d cli
   d=$(state_dir); mkdir -p "$d"
-  prompt_text >"$d/prompt.md"
-  goal_text >"$d/goal.txt"
+  cli=$(prompt_cli)
+  prompt_text "$cli" >"$d/prompt.md"
+  goal_text "$cli" >"$d/goal.txt"
 }
 
 # ---------------------------------------------------------------- commands
@@ -708,7 +838,11 @@ cmd_wait() {
   [ -f "$(state_file)" ] || die "no state for $SLUG#$PR; run 'pr.sh start $PR' or 'pr.sh seen $PR' first."
   local deadline ev now
   deadline=$(( $(date +%s) + SLICE ))
+  # For list's watch column: how long a healthy watcher may go between polls.
+  sset wait_slice "$SLICE"; sset wait_poll "$POLL"
   while :; do
+    check_gen
+    sset last_wait_at "$(date +%s)"
     ev=""
     # A failed poll (network, rate limit) counts as no change; try next poll.
     CUR_state=""
@@ -717,6 +851,8 @@ cmd_wait() {
       ev=$(detect_event)
     fi
     if [ -n "$ev" ]; then
+      # The snapshot takes a while: a superseded wait reports nothing.
+      check_gen
       [ "$ev" != ci-failed ] || sset ci_reported "$CUR_head_sha"
       sset last_event "$ev"
       sset last_event_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -726,11 +862,26 @@ cmd_wait() {
     now=$(date +%s)
     if [ $((now + POLL)) -gt "$deadline" ]; then
       [ "$now" -lt "$deadline" ] && sleep $((deadline - now))
+      check_gen
       printf 'pr: no event for %s#%s in %ss; run wait again\n' "$SLUG" "$PR" "$SLICE" >&2
       exit 3
     fi
     sleep "$POLL"
   done
+}
+
+# wait --gen <n>: exit 4 once the state's monitor_gen is no longer <n>.
+check_gen() {
+  [ -n "$GEN" ] || return 0
+  local cur
+  cur=$(cur_gen)
+  [ "$cur" != "$GEN" ] || return 0
+  if [ "$cur" -gt "$GEN" ]; then
+    printf 'pr: superseded (gen %s < %s): a newer prompt or pr.sh stop owns the loop of %s#%s\n' "$GEN" "$cur" "$SLUG" "$PR" >&2
+  else
+    printf 'pr: superseded (gen %s, state has %s): another prompt owns the loop of %s#%s\n' "$GEN" "$cur" "$SLUG" "$PR" >&2
+  fi
+  exit 4
 }
 
 # A local <head> branch must not track another remote (or another branch):
@@ -924,11 +1075,14 @@ cmd_note() {
   done
   if [ "$CLEAR" -eq 1 ]; then
     [ "${#OPTIONS[@]}" -eq 0 ] || die "--option cannot be combined with --clear"
-    tmp="$f.tmp.$$"; grep -v '^ask=' "$f" >"$tmp" || true; mv "$tmp" "$f"
+    tmp="$f.tmp.$$"
+    # shellcheck disable=SC2016  # expanded by the inner bash
+    with_state_lock bash -c 'grep -v "^ask=" "$1" >"$2" || true; mv "$2" "$1"' _ "$f" "$tmp"
     printf 'cleared questions for %s#%s\n' "$SLUG" "$PR"
   else
     [ -n "$ARG2" ] || die "note needs a question, or --clear"
-    printf 'ask=%s\n' "$(printf '%s' "$ARG2" | tr '\n' ' ')" >>"$f"
+    # shellcheck disable=SC2016  # expanded by the inner bash
+    with_state_lock bash -c 'printf "ask=%s\n" "$2" >>"$1"' _ "$f" "$(printf '%s' "$ARG2" | tr '\n' ' ')"
     printf 'noted question for %s#%s\n' "$SLUG" "$PR"
     notify_question "$ARG2" || true
   fi
@@ -1017,7 +1171,7 @@ cmd_prompt() {
   local j
   j=$(pr_json "$PR")
   classify_head "$j"
-  prompt_text
+  prompt_text "$(prompt_cli)"
 }
 
 # Target of start: sets TGT_NAME (window name for ensure), TGT_ID (existing
@@ -1108,7 +1262,18 @@ cmd_start() {
     write_seen
   fi
   sset window "$TGT_NAME"
+  # A refresh too: the monitor of the older prompt ends (wait --gen exits 4).
+  bump_gen
   WINDOW_OPT=""
+  # The prompt's loop follows the target window's CLI; a new pr-<n> gets the
+  # CLI opsx-window.sh ensure will launch.
+  PROMPT_WIN_ID=$TGT_ID
+  if [ "$TGT_KIND" = pr ] && [ -n "$sess" ]; then
+    PROMPT_WIN_ID=$(window_in_session "$sess" | cut -f1)
+  fi
+  if [ -z "$AGENT_CLI" ] && [ -z "$PROMPT_WIN_ID" ]; then
+    PROMPT_CLI=$("$W" detect-cli 2>/dev/null) || PROMPT_CLI=""
+  fi
   write_prompt_files
   if [ "$TGT_KIND" != pr ]; then
     # Tag first, so notify, list and stop find the window at once; keep the
@@ -1157,6 +1322,10 @@ cmd_restart_input() {
     CUR_ci=""
     write_seen
   fi
+  bump_gen
+  # Never touches tmux: the loop follows --agent-cli (default claude), like
+  # the first input below.
+  NO_TMUX=1
   write_prompt_files
   dir=$(cd "$(state_dir)" && pwd) || die "cannot resolve $(state_dir)"
   case "${AGENT_CLI:-claude}" in
@@ -1174,6 +1343,19 @@ cmd_restart_input() {
   esac
 }
 
+# watch column of list for state file $1: watch=<age>s since the last poll of
+# a wait, watch=stale past slice + poll + 30 s, watch=- before any wait.
+watch_col() {
+  local at sl po age
+  at=$(sget last_wait_at "$1")
+  [[ $at =~ ^[0-9]+$ ]] || { printf 'watch=-'; return; }
+  sl=$(sget wait_slice "$1"); [[ $sl =~ ^[0-9]+$ ]] || sl=540
+  po=$(sget wait_poll "$1"); [[ $po =~ ^[0-9]+$ ]] || po=60
+  age=$(( $(date +%s) - at ))
+  [ "$age" -ge 0 ] || age=0
+  if [ "$age" -gt $((sl + po + 30)) ]; then printf 'watch=stale'; else printf 'watch=%ss' "$age"; fi
+}
+
 cmd_list() {
   [ $# -eq 0 ] || die "list takes no arguments"
   local f repo pr status last wins
@@ -1183,7 +1365,7 @@ cmd_list() {
     repo=$(sget repo "$f"); pr=$(sget pr "$f"); last=$(sget last_event "$f")
     wins=$(pr_window_ids "$pr" "$repo")
     status=$(printf '%s\n' "$wins" | awk -F '\t' 'NF { print ($3 == "" ? "unknown" : $3); exit }')
-    printf '%s\t%s\t%s\t%s\n' "$repo" "$pr" "${status:-none}" "${last:--}"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$repo" "$pr" "${status:-none}" "${last:--}" "$(watch_col "$f")"
   done
 }
 
@@ -1220,6 +1402,8 @@ cmd_stop() {
   parse_opts "$@"
   setup_pr stop
   local wins id change n=0
+  # First, so a running monitor ends (wait --gen exits 4) and reports nothing.
+  [ ! -f "$(state_file)" ] || bump_gen
   wins=$(pr_window_ids "$PR" "$SLUG")
   while IFS=$'\t' read -r id change _; do
     [ -n "$id" ] || continue

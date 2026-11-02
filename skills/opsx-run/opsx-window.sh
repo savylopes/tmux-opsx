@@ -9,7 +9,7 @@
 # Usage:
 #   opsx-window.sh ensure <change> --prompt-file <f> [--goal-file <f>] [--cwd <dir>] [--agent-cli <cmd>] [--model <id>] [--<agent>-model <m>]...
 #   opsx-window.sh send   <change> --prompt-file <f> [--<agent>-model <m>]...   # send, or create the window if missing
-#   opsx-window.sh models [<change>] [--agent-cli <cli>] [--<agent>-model <m>]...
+#   opsx-window.sh models [<change>] [--agent-cli <cli>] [--<agent>-model <m>]... [--all]
 #   opsx-window.sh close  <change> [--force] [--keep-session]
 #   opsx-window.sh close  --all    [--force] [--keep-session]
 #   opsx-window.sh status <change> [--lines N]
@@ -108,6 +108,8 @@
 #                         sonnet, haiku, fable or claude-*; Cursor: listed by
 #                         `agent models` (any when unavailable); OpenCode:
 #                         provider/model, listed by `opencode models` when available.
+#                         --all: on Claude also the Claude-only agents
+#                         (pr-monitor, config only), for install.sh.
 #
 # Inside tmux the window goes in the caller's session. Codex (and some
 # sandboxes) strip $TMUX from the child environment; opsx-window.sh recovers
@@ -623,6 +625,9 @@ resolve_model() {
 # unknown CLIs) do the work without sub-agents: every agent is `inherit inherit`.
 
 OPSX_AGENTS="applier eval reviewer security qa"
+# Claude Code only agents: config key only (no --<agent>-model flag, no window
+# memory); `models --all` adds them for claude (install.sh writes their model).
+OPSX_CLAUDE_ONLY_AGENTS="pr-monitor"
 
 # Shipped defaults: $OPSX_MODELS_CONF > <script dir>/models.conf (installed) >
 # <script dir>/../../agents/models.conf (running from the repo). Empty if none.
@@ -1504,10 +1509,11 @@ cmd_status() {
 # Prints "<agent> <model> <source>" for every agent. With a change whose window
 # exists, the window's CLI and remembered models are used.
 cmd_models() {
-  local change="" agent_cli="" win="" cli="" key a v remembered
+  local change="" agent_cli="" win="" cli="" key a v remembered all=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent-cli) agent_cli=${2:-}; [ -n "$agent_cli" ] || die "--agent-cli needs a value"; shift 2 ;;
+      --all)       all=1; shift ;;
       --*-model)   parse_agent_model_flag "$@" || die "unknown option: $1"; shift 2 ;;
       -*) die "unknown option: $1" ;;
       *)  [ -z "$change" ] || die "models takes one change name (got '$change' and '$1')"
@@ -1541,6 +1547,12 @@ cmd_models() {
     resolve_agent_model "$key" "$a" "${!v}" "$remembered"
     printf '%s %s %s\n' "$a" "$RES_MODEL" "$RES_SOURCE"
   done
+  if [ "$all" -eq 1 ] && [ "$key" = claude ]; then
+    for a in $OPSX_CLAUDE_ONLY_AGENTS; do
+      resolve_agent_model "$key" "$a" "" ""
+      printf '%s %s %s\n' "$a" "$RES_MODEL" "$RES_SOURCE"
+    done
+  fi
 }
 
 cmd_detect_cli() {

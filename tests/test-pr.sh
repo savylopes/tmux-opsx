@@ -136,6 +136,26 @@ ok "stacked PR records its parent and parent tip" 'grep -qx "parent=42" "$ST43" 
 # ---------------------------------------------------------------- wait (2.3)
 t0=$(date +%s); out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?; dt=$(( $(date +%s) - t0 ))
 ok "nothing changes: exit 3 within a few seconds, no event" '[ $rc -eq 3 ] && [ $dt -le 8 ] && ! printf "%s" "$out" | grep -q "^event="'
+
+# pr-monitor-subagent 1.1: --gen (exit 4 superseded), last_wait_at.
+setstate() { # file key value
+  awk -v k="$2" -v v="$3" 'index($0, k "=") == 1 { if (!d) print k "=" v; d = 1; next } { print } END { if (!d) print k "=" v }' "$1" > "$1.t" && mv "$1.t" "$1"
+}
+ok "wait records last_wait_at (epoch seconds)" 'at=$(sed -n "s/^last_wait_at=//p" "$ST42"); [[ $at =~ ^[0-9]+$ ]] && [ $(( $(date +%s) - at )) -le 10 ]'
+setstate "$ST42" monitor_gen 1
+t0=$(date +%s)
+P wait 42 --gen 1 --slice 30 --poll 1 >"$SP/gen.out" 2>"$SP/gen.err" & gpid=$!
+sleep 2; setstate "$ST42" monitor_gen 2
+wait "$gpid"; rc=$?; dt=$(( $(date +%s) - t0 ))
+ok "wait --gen: gen bumped mid-wait exits 4 within a few seconds, says superseded, no event" '[ $rc -eq 4 ] && [ $dt -le 8 ] && grep -q superseded "$SP/gen.err" && ! grep -q "^event=" "$SP/gen.out"'
+t0=$(date +%s); out=$(P wait 42 --gen 1 --slice 30 --poll 1 2>"$SP/gen.err"); rc=$?; dt=$(( $(date +%s) - t0 ))
+ok "wait --gen: an older gen exits 4 at the first poll" '[ $rc -eq 4 ] && [ $dt -le 3 ] && grep -q "superseded (gen 1 < 2)" "$SP/gen.err" && [ -z "$out" ]'
+out=$(P wait 42 --gen 2 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "wait --gen: the current gen waits as before (exit 3)" '[ $rc -eq 3 ] && [ -z "$out" ]'
+out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "wait without --gen ignores monitor_gen (exit 3)" '[ $rc -eq 3 ] && grep -qx "monitor_gen=2" "$ST42"'
+out=$(P wait 42 --gen x --slice 2 --poll 1 2>&1); rc=$?
+ok "wait --gen rejects a non-number" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q -- "--gen"'
 echo '[{"id":5},{"id":7},{"id":12}]' > "$api42c"
 out=$(P wait 42 --slice 5 --poll 1); rc=$?
 ok "new review comment -> event=comments" '[ $rc -eq 0 ] && [ "$out" = "event=comments" ] && grep -qx "last_event=comments" "$ST42"'
@@ -389,8 +409,12 @@ ok "prompt: gates (tests, ops-reviewer for comment and CI fixes)" 'grep -q "test
 ok "prompt: ci-failed step triages before a re-run (rerun 42, not caused by the PR, repeat failure is real)" 'sed -n "/^- ci-failed:/,/^- comments:/p" "$PROMPT" > "$SP/cistep" && grep -q "rerun 42" "$SP/cistep" && grep -q "not clearly caused by this PR" "$SP/cistep" && grep -q "fails again on the same head" "$SP/cistep" && grep -q "exits 6" "$SP/cistep" && grep -q "untrusted input" "$SP/cistep" && grep -q "Never re-run it again on the same head" "$SP/cistep"'
 ok "prompt: on its own list includes one CI re-run per head with rerun 42" 'sed -n "/^## You may do on your own/,/^## Gates/p" "$PROMPT" | grep -q "re-run a failed CI once per head with .*rerun 42"'
 ok "prompt: resolveReviewThread, retarget, repo PR skill" 'grep -q resolveReviewThread "$PROMPT" && grep -q "gh pr edit 42 --base" "$PROMPT" && grep -q "own PR skill" "$PROMPT"'
+ok "start: prompt wait carries the state's --gen" 'g=$(sed -n "s/^monitor_gen=//p" "$ST42"); [ -n "$g" ] && grep -q -- "wait 42 .*--gen $g\`" "$PROMPT"'
+ok "start --agent-cli claude: background monitor loop and monitor goal" 'grep -q "ops-pr-monitor" "$PROMPT" && grep -q "ops-pr-monitor" "$GOAL" && grep -q "returns .idle." "$GOAL" && ! grep -q "exits 3" "$GOAL"'
+g0=$(sed -n 's/^monitor_gen=//p' "$ST42")
 out=$(P start 42 --agent-cli claude 2>/dev/null); rc=$?
 ok "second start reuses the window" '[ $rc -eq 0 ] && [ "${out%% *}" = reused ] && [ "$(winof pr-42 | wc -l)" -eq 1 ]'
+ok "refresh (second start) increases monitor_gen and the prompt's --gen" '[ "$(sed -n "s/^monitor_gen=//p" "$ST42")" = $((g0 + 1)) ] && grep -q -- "--gen $((g0 + 1))\`" "$PROMPT"'
 out=$(P start 41 --agent-cli claude 2>&1); rc=$?
 ok "merged PR refused, no window" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q MERGED && [ -z "$(winof pr-41)" ]'
 out=$(P start 45 --agent-cli claude 2>&1); rc=$?
@@ -463,17 +487,29 @@ ok "note without options: unchanged (push without http actions)" '[ $rc -eq 0 ] 
 P note 42 --clear >/dev/null
 ok "prompt: note example with --option and the typed label is the answer" 'P prompt 42 | grep -q "note 42 \"rebase onto main or develop?\" --option main --option develop" && P prompt 42 | grep -q "exactly one of those option labels is the user.s answer"'
 rm -f "$NENV" "$SP/fakebin/curl"
+# pr-monitor-subagent 1.3: watch column (fresh, stale, never waited).
+P wait 42 --slice 2 --poll 1 >/dev/null 2>&1
+setstate "$ST43" last_wait_at $(( $(date +%s) - 3600 ))
+mkdir -p "$SD/o-app-99"; printf 'repo=o/app\npr=99\n' > "$SD/o-app-99/state"
 out=$("$PRSH" list)
 ok "list shows the running PR with its window status" 'printf "%s\n" "$out" | grep -P "^o/app\t42\task\t" >/dev/null'
 ok "list shows a PR without a window as none" 'printf "%s\n" "$out" | grep -P "^o/app\t43\tnone\t" >/dev/null'
+ok "list: fresh watcher shows watch=<n>s under 60" 'n=$(printf "%s\n" "$out" | grep -P "^o/app\t42\t" | awk -F "\t" "{print \$5}" | sed -n "s/^watch=\([0-9]*\)s$/\1/p"); [ -n "$n" ] && [ "$n" -lt 60 ]'
+ok "list: last_wait_at an hour old shows watch=stale" 'printf "%s\n" "$out" | grep -P "^o/app\t43\t.*\twatch=stale$" >/dev/null'
+ok "list: never waited shows watch=-" 'printf "%s\n" "$out" | grep -P "^o/app\t99\tnone\t-\twatch=-$" >/dev/null'
+rm -rf "$SD/o-app-99"
 out=$(P stop 42); rc=$?
 ok "stop closes the window, keeps the state file" '[ $rc -eq 0 ] && [ -z "$(winof pr-42)" ] && [ -f "$ST42" ]'
 ok "stop keeps the worktree" '[ -d "$WT42" ]'
 out=$("$PRSH" list)
 ok "list after stop shows none" 'printf "%s\n" "$out" | grep -P "^o/app\t42\tnone\tstopped" >/dev/null'
+# pr-monitor-subagent 1.2: start and stop advance the generation.
+setstate "$ST42" monitor_gen 3
 out=$(P start 42 --agent-cli claude 2>&1); rc=$?
 ok "restart after stop keeps the state file" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "state kept" && [ -n "$(winof pr-42)" ]'
+ok "start on monitor_gen=3 writes monitor_gen=4 and --gen 4 in the prompt" 'grep -qx "monitor_gen=4" "$ST42" && grep -q -- "--gen 4\`" "$PROMPT"'
 P stop 42 >/dev/null
+ok "stop then writes monitor_gen=5" 'grep -qx "monitor_gen=5" "$ST42"'
 
 # ---------------------------------------------------------------- restart-input (session restore 4.2)
 # No tmux at all: a failing tmux stub first on PATH records any call.
@@ -485,6 +521,7 @@ ok "restart-input: open PR prints one /goal line naming PR 42" '[ $rc -eq 0 ] &&
 ok "restart-input: within the 4000-character /goal cap" '[ $(( ${#out} - 6 )) -le 4000 ]'
 ok "restart-input: state file kept (same last_comment_id)" '[ -n "$LCID" ] && [ "$(sed -n "s/^last_comment_id=//p" "$ST42")" = "$LCID" ]'
 ok "restart-input: prompt and goal files rewritten" '[ -s "$PROMPT" ] && [ -s "$GOAL" ]'
+ok "restart-input: increases monitor_gen (5 -> 6), prompt has --gen 6, Claude loop by default" 'grep -qx "monitor_gen=6" "$ST42" && grep -q -- "--gen 6\`" "$PROMPT" && grep -q "ops-pr-monitor" "$PROMPT" && grep -q "ops-pr-monitor" "$GOAL"'
 ok "restart-input: no tmux call, no window" '[ ! -e "$SP/notmux/calls" ] && [ -z "$(winof pr-42)" ]'
 out=$(env -u TMUX -u TMUX_PANE PATH="$SP/notmux:$PATH" "$PRSH" restart-input 41 --repo "$R" 2>"$SP/ri.err"); rc=$?
 ok "restart-input: merged PR refused, names MERGED, prints no input" '[ $rc -ne 0 ] && grep -q MERGED "$SP/ri.err" && [ -z "$out" ]'
@@ -492,6 +529,7 @@ out=$(P restart-input 45 2>&1); rc=$?
 ok "restart-input: fork PR refused" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q fork'
 out=$(P restart-input 42 --agent-cli codex 2>/dev/null); rc=$?
 ok "restart-input: other CLIs get the prompt on one line" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | wc -l)" -eq 1 ] && [ "${out#/goal}" = "$out" ] && printf "%s" "$out" | grep -q "maintain loop"'
+ok "restart-input --agent-cli codex: foreground loop, exit-3 goal, no monitor" 'grep -q FOREGROUND "$PROMPT" && ! grep -q "ops-pr-monitor" "$PROMPT" && grep -q "exits 3" "$GOAL" && ! grep -q "ops-pr-monitor" "$GOAL"'
 
 # ---------------------------------------------------------------- change window (pr-in-change-window)
 # Window add-thing is an /opsx-run change window; worktree ../wt-add-thing is on
@@ -513,6 +551,11 @@ ST47=$SD/o-app-47/state; PROMPT47=$SD/o-app-47/prompt.md
 $L set-option -w -t "$AT" @opsx_pr 42; $L set-option -w -t "$AT" @opsx_pr_repo o/app
 out=$("$PRSH" list)
 ok "change window: list shows PR 42 maintained in add-thing with its status" 'printf "%s\n" "$out" | grep -P "^o/app\t42\tidle\t" >/dev/null'
+# pr-monitor-subagent 3.1: without --agent-cli the prompt follows the window's CLI.
+ok "prompt follows the window's @opsx_agent_cli (claude): background monitor" 'P prompt 42 | grep -q "ops-pr-monitor"'
+$L set-option -w -t "$AT" @opsx_agent_cli codex
+ok "prompt follows the window's @opsx_agent_cli (codex): foreground wait" 'P prompt 42 > "$SP/p.codex"; grep -q FOREGROUND "$SP/p.codex" && ! grep -q "ops-pr-monitor" "$SP/p.codex"'
+$L set-option -w -t "$AT" @opsx_agent_cli claude
 $L set-option -w -t "$AT" @opsx_pr_repo x/other
 out=$("$PRSH" list)
 ok "change window: a change window of another repo is not PR 42's window" 'printf "%s\n" "$out" | grep -P "^o/app\t42\tnone\t" >/dev/null'
@@ -587,7 +630,15 @@ ok "no related change window: start 42 creates pr-42, no exit 8" '[ $rc -eq 0 ] 
 P stop 42 >/dev/null
 
 # 2.3 prompt line.
-ok "prompt: user messages in this window come first, then back to pr.sh wait" 'P prompt 42 | grep -q "Messages the user types in this window come first" && P prompt 42 | grep -q "then go back to .pr.sh wait."'
+ok "prompt: user messages in this window come first, then back to pr.sh wait (foreground CLIs)" 'P prompt 42 --agent-cli codex | grep -q "Messages the user types in this window come first" && P prompt 42 --agent-cli codex | grep -q "then go back to .pr.sh wait."'
+# pr-monitor-subagent 3.1: the prompt per CLI.
+P prompt 42 --agent-cli claude > "$SP/p.claude"; P prompt 42 --agent-cli codex > "$SP/p.codex"
+ok "prompt claude: user messages first, then make sure one monitor runs and end the turn" 'grep -q "Messages the user types in this window come first" "$SP/p.claude" && grep -q "make sure one .ops-pr-monitor. is running" "$SP/p.claude"'
+ok "prompt claude: ops-pr-monitor in the background, end the turn, never wait in the window, --gen" 'grep -q "start the .ops-pr-monitor." "$SP/p.claude" && grep -q "BACKGROUND" "$SP/p.claude" && grep -q "run_in_background: true" "$SP/p.claude" && grep -q "end your turn" "$SP/p.claude" && grep -q "Never run .pr.sh wait. in this window" "$SP/p.claude" && grep -q -- "wait 42 --repo .* --gen [0-9][0-9]*\`" "$SP/p.claude"'
+ok "prompt claude: names the idle, superseded and error: results; no second monitor" 'grep -q "^   - .idle.:" "$SP/p.claude" && grep -q "^   - .superseded.:" "$SP/p.claude" && grep -q "^   - .error: <message>.:" "$SP/p.claude" && grep -q "do not start a second" "$SP/p.claude" && grep -q "start no monitor" "$SP/p.claude"'
+ok "prompt claude: self-caused head-moved and comments are acknowledged with seen" 'sed -n "/^3\. Events you caused yourself/,/^4\./p" "$SP/p.claude" > "$SP/p.self" && grep -q "head-moved" "$SP/p.self" && grep -q "comments" "$SP/p.self" && grep -q "pr.sh push" "$SP/p.self" && grep -q "own replies" "$SP/p.self" && grep -q "seen 42" "$SP/p.self"'
+ok "prompt codex: foreground wait with --gen, exit 4, no ops-pr-monitor" 'grep -q FOREGROUND "$SP/p.codex" && grep -q -- "wait 42 --repo .* --gen [0-9][0-9]*\`" "$SP/p.codex" && grep -q "Exit 4" "$SP/p.codex" && ! grep -q "ops-pr-monitor" "$SP/p.codex"'
+ok "prompt: both CLIs keep the shared sections" 'for f in "$SP/p.claude" "$SP/p.codex"; do for h in "## First turn" "## Events" "## Gates before a push" "## Untrusted input"; do grep -q "^$h" "$f" || exit 1; done; done'
 $L kill-window -t "$AT"
 
 # ---------------------------------------------------------------- fork checkout (add-pr-forks)
@@ -734,8 +785,16 @@ ok "install: opsx-pr in all six skill folders, pr.sh executable" '[ $rc -eq 0 ] 
 ok "install: installed pr.sh has the rerun command" '"$IH/.claude/skills/opsx-pr/pr.sh" --help | grep -qE "pr\.sh rerun "'
 ok "install: verify step checks opsx-pr" 'printf "%s" "$out" | grep -q "opsx-pr/{SKILL.md,pr.sh}" && printf "%s" "$out" | grep -q "pr.sh parses"'
 ok "installed pr.sh finds the installed opsx-window.sh" '[ -f "$IH/.claude/skills/opsx-pr/../opsx-run/opsx-window.sh" ]'
+# pr-monitor-subagent 2.2: ops-pr-monitor, Claude Code only.
+PM=$IH/.claude/agents/opsx-pr-monitor.md
+fmpm() { awk '/^---$/{n++; next} n==1' "$PM"; }
+ok "install: ops-pr-monitor in ~/.claude/agents, Bash only, model haiku" '[ -f "$PM" ] && fmpm | grep -qx "name: \"ops-pr-monitor\"" && fmpm | grep -qx "tools: \[Bash\]" && fmpm | grep -qx "model: haiku" && [ "$(fmpm | grep -c "^model:")" -eq 1 ]'
+ok "install: ops-pr-monitor is Claude Code only" '[ ! -e "$IH/.cursor/agents/opsx-pr-monitor.md" ] && [ ! -e "$IH/.codex/agents/ops-pr-monitor.toml" ] && [ ! -e "$IH/.config/opencode/agents/ops-pr-monitor.md" ] && [ ! -e "$IH/.gemini/agents/opsx-pr-monitor.md" ]'
+ok "install: verify step checks ops-pr-monitor" 'printf "%s" "$out" | grep -q "\.claude/agents/opsx-pr-monitor.md"'
+ok "monitor agent: one-line return contract, at most three calls" 'for t in "event=<kind>" "idle" "superseded" "error: <" "600000" "at most 3 calls" "Never read GitHub content"; do grep -qF "$t" "$REPO/agents/opsx-pr-monitor.md" || { echo "missing: $t"; exit 1; }; done'
 out=$(run_install --uninstall); rc=$?
 ok "uninstall removes all six opsx-pr folders" '[ $rc -eq 0 ] && [ "$(n_pr_dirs)" -eq 0 ]'
+ok "uninstall removes ops-pr-monitor" '[ ! -e "$PM" ]'
 rm -rf "$IH"; mkdir -p "$IH"
 out=$(run_install --skip-pr); rc=$?
 ok "--skip-pr installs no opsx-pr folder" '[ $rc -eq 0 ] && [ "$(n_pr_dirs)" -eq 0 ] && [ -d "$IH/.claude/skills/opsx-review" ]'

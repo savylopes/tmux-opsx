@@ -19,6 +19,8 @@
 #                                   -> ~/.codex/agents/ops-{applier,qa,reviewer,security,eval}.toml
 #                                   -> ~/.config/opencode/agents/ops-{applier,qa,reviewer,security,eval}.md
 #                                   -> ~/.gemini/agents/opsx-{applier,qa,reviewer,security,eval}.md
+#      + ops-pr-monitor (Claude Code only, the /opsx-pr background watcher)
+#                                   -> ~/.claude/agents/opsx-pr-monitor.md
 #      Claude Code, Cursor and OpenCode files get their frontmatter `model:` from
 #      agents/models.conf merged with ~/.config/tmux-opsx/models.conf (never
 #      written here); a model the CLI does not accept warns and becomes inherit.
@@ -2251,7 +2253,7 @@ load_agent_models() {
   local cli=$1 out errf line rc
   errf=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
   out=$(OPSX_MODELS_CONF="$SRC/agents/models.conf" \
-        bash "$SRC/skills/opsx-run/opsx-window.sh" models --agent-cli "$cli" 2>"$errf" </dev/null)
+        bash "$SRC/skills/opsx-run/opsx-window.sh" models --agent-cli "$cli" --all 2>"$errf" </dev/null)
   rc=$?
   while IFS= read -r line; do
     line=$(printf '%s' "$line" | LC_ALL=C tr '\000-\037\177' '?')
@@ -2265,7 +2267,8 @@ load_agent_models() {
   printf -v "AGENT_MODELS_$cli" '%s' "$out"
 }
 
-# Resolved model for agent $2 (applier|eval|reviewer|security|qa) on CLI $1.
+# Resolved model for agent $2 (applier|eval|reviewer|security|qa, and on claude
+# pr-monitor) on CLI $1.
 agent_model_for() {
   local var="AGENT_MODELS_$1" m
   m=$(printf '%s\n' "${!var}" | awk -v a="$2" '$1==a { print $2; exit }')
@@ -2562,6 +2565,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -f  "$CODEX_AGENTS_DIR/ops-eval.toml" && ok "removed ~/.codex/agents/ops-eval.toml (Codex)"
   rm -f  "$OPENCODE_AGENTS_DIR/ops-eval.md" && ok "removed ~/.config/opencode/agents/ops-eval.md (OpenCode)"
   rm -f  "$GEMINI_AGENTS_DIR/opsx-eval.md" && ok "removed ~/.gemini/agents/opsx-eval.md (Gemini CLI)"
+  rm -f  "$PREFIX/agents/opsx-pr-monitor.md" && ok "removed agents/opsx-pr-monitor.md (Claude Code)"
   remove_openspec_skills "$PREFIX/skills" "Claude Code"
   remove_openspec_skills "$HOME/.cursor/skills" "Cursor CLI"
   remove_openspec_skills "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
@@ -2866,12 +2870,13 @@ fi
 info ""
 
 # ---------- 4. ops-applier + ops-qa + ops-reviewer + ops-security + ops-eval subagents ----------
-step "Installing the ops-applier, ops-qa, ops-reviewer, ops-security, and ops-eval subagents"
+step "Installing the ops-applier, ops-qa, ops-reviewer, ops-security, ops-eval (and ops-pr-monitor) subagents"
 [ -f "$SRC/agents/opsx-applier.md" ] || die "missing $SRC/agents/opsx-applier.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-qa.md" ] || die "missing $SRC/agents/opsx-qa.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-reviewer.md" ] || die "missing $SRC/agents/opsx-reviewer.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-security.md" ] || die "missing $SRC/agents/opsx-security.md — run this script from the repo checkout"
 [ -f "$SRC/agents/opsx-eval.md" ] || die "missing $SRC/agents/opsx-eval.md — run this script from the repo checkout"
+[ -f "$SRC/agents/opsx-pr-monitor.md" ] || die "missing $SRC/agents/opsx-pr-monitor.md — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-eval.sh" ] || die "missing $SRC/skills/opsx-run/opsx-eval.sh — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-preview.sh" ] || die "missing $SRC/skills/opsx-run/opsx-preview.sh — run this script from the repo checkout"
 [ -f "$SRC/skills/opsx-run/opsx-dev.sh" ] || die "missing $SRC/skills/opsx-run/opsx-dev.sh — run this script from the repo checkout"
@@ -2895,6 +2900,11 @@ for a in applier qa reviewer security eval; do
   install_file "$SRC/agents/opsx-$a.md" "$GEMINI_AGENTS_DIR/opsx-$a.md"
   ok "ops-$a -> $GEMINI_AGENTS_DIR/opsx-$a.md (Gemini CLI)"
 done
+# The /opsx-pr background watcher: Claude Code only (other CLIs keep the
+# foreground pr.sh wait).
+m=$(agent_model_for claude pr-monitor)
+install_claude_agent "$SRC/agents/opsx-pr-monitor.md" "$PREFIX/agents/opsx-pr-monitor.md" "$m"
+ok "ops-pr-monitor -> $PREFIX/agents/opsx-pr-monitor.md (Claude Code, model: $m)"
 note "agent models: agents/models.conf, overridden by ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/models.conf (re-run install after editing)"
 note "applier implements in opsx/<change>; eval/reviewer/security/qa verify after apply (eval owns evals/)"
 info ""
@@ -3259,7 +3269,8 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$CURSOR_AGENTS_DIR/opsx-eval.md" \
          "$CODEX_AGENTS_DIR/ops-eval.toml" \
          "$OPENCODE_AGENTS_DIR/ops-eval.md" \
-         "$GEMINI_AGENTS_DIR/opsx-eval.md"; do
+         "$GEMINI_AGENTS_DIR/opsx-eval.md" \
+         "$PREFIX/agents/opsx-pr-monitor.md"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
 if [ "$SKIP_GRAPHIFY" -eq 0 ]; then
