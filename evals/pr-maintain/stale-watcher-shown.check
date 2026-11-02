@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Stale watcher shown
+# level: L1
+# requirement: Watcher liveness in list
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+sf=$(state_file 42); sed -i '/^last_wait_at=/d' "$sf"; echo "last_wait_at=$(( $(date +%s) - 3600 ))" >> "$sf"
+out=$("$PRSH" list 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+l=$(echo "$out" | grep -w 42 | head -1); [ -n "$l" ] || fail "no line for 42"
+case "$l" in *watch=stale) echo OK;; *) fail "line does not end with watch=stale";; esac

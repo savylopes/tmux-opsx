@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Monitor agent installed
+# level: L2
+# requirement: PR monitor agent
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install); rc=$?
+echo "install exit $rc"; [ $rc -eq 0 ] || { echo "$out" | tail -20; fail "install exit $rc"; }
+f="$HOME/.claude/agents/opsx-pr-monitor.md"
+[ -f "$f" ] || fail "$f missing"
+grep -q "ops-pr-monitor" "$f" || fail "does not name ops-pr-monitor"
+t=$(grep -m1 '^tools:' "$f"); echo "$t"
+echo "$t" | grep -q "Bash" || fail "no Bash tool"
+echo "$t" | grep -qiE "Read|Write|Edit|Grep|Glob|Agent|Web" && fail "more than Bash listed"
+out=$(run_install --uninstall); rc=$?
+echo "uninstall exit $rc"
+[ -e "$f" ] && fail "agent file still present after --uninstall"
+echo OK

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Other CLIs keep the foreground wait
+# level: L1
+# requirement: Background PR monitor on Claude Code
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli codex --repo "$R" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -q "ops-pr-monitor" && fail "prompt names ops-pr-monitor for codex"
+echo "$out" | grep -qE "pr\.sh wait.*--gen [0-9]+" || fail "wait command has no --gen <n>"
+echo "$out" | grep -i "foreground" | grep -qi "wait" || fail "prompt does not say to run pr.sh wait in the foreground"
+echo OK

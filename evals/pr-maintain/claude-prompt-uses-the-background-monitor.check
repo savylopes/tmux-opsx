@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Claude prompt uses the background monitor
+# level: L1
+# requirement: Background PR monitor on Claude Code
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli claude --repo "$R" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -q "ops-pr-monitor" || fail "prompt does not name ops-pr-monitor"
+echo "$out" | grep -qi "background" || fail "prompt does not say background"
+echo "$out" | grep -qiE "end (your|the) turn" || fail "prompt does not say to end the turn"
+echo "$out" | grep -qiE "never run .?pr\.sh wait|not run .?pr\.sh wait|do not run .?pr\.sh wait|never .*pr\.sh wait" || fail "prompt does not forbid running pr.sh wait in the window"
+echo "$out" | grep -qE "pr\.sh wait.*--gen [0-9]+" || fail "wait command has no --gen <n>"
+for w in idle superseded "error:"; do echo "$out" | grep -qF "$w" || fail "prompt does not name $w"; done
+echo OK

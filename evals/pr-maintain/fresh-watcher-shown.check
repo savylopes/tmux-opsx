@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Fresh watcher shown
+# level: L1
+# requirement: Watcher liveness in list
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+"$PRSH" wait 42 --slice 2 --poll 1 --repo "$R" >/dev/null 2>&1
+out=$("$PRSH" list 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+l=$(echo "$out" | grep -w 42 | head -1); [ -n "$l" ] || fail "no line for 42"
+n=$(echo "$l" | grep -Eo 'watch=[0-9]+s' | grep -Eo '[0-9]+')
+[ -n "$n" ] || fail "no watch=<n>s column"
+[ "$n" -lt 60 ] || fail "age $n not under 60"
+echo OK
