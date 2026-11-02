@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Start and stop advance the generation
+# level: L2
+# requirement: One live monitor per PR
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+sf=$(state_file 42); sed -i '/^monitor_gen=/d' "$sf"; echo "monitor_gen=3" >> "$sf"
+pr_start 42 >/dev/null 2>&1 || fail "start failed"
+g=$(grep '^monitor_gen=' "$sf"); echo "after start: $g"
+[ "$g" = "monitor_gen=4" ] || fail "expected monitor_gen=4 after start"
+"$PRSH" stop 42 --repo "$R" >/dev/null 2>&1 || fail "stop failed"
+g=$(grep '^monitor_gen=' "$sf"); echo "after stop: $g"
+[ "$g" = "monitor_gen=5" ] || fail "expected monitor_gen=5 after stop"
+echo OK

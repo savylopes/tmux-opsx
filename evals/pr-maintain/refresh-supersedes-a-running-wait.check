@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Refresh supersedes a running wait
+# level: L1
+# requirement: One live monitor per PR
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+sf=$(state_file 42); echo "monitor_gen=1" >> "$sf"
+( sleep 3; sed -i 's/^monitor_gen=.*/monitor_gen=2/' "$sf" ) &
+s=$(date +%s)
+out=$("$PRSH" wait 42 --gen 1 --slice 30 --poll 1 --repo "$R" 2>&1); rc=$?
+e=$(( $(date +%s) - s ))
+echo "$out"; echo "exit $rc after ${e}s"
+[ $rc -eq 4 ] || fail "expected exit 4, got $rc"
+[ $e -le 12 ] || fail "took ${e}s"
+echo "$out" | grep -q superseded || fail "no superseded line"
+echo "$out" | grep -q "^event=" && fail "printed event="
+echo OK

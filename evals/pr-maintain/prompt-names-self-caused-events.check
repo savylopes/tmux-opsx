@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt names self-caused events
+# level: L1
+# requirement: User feedback in the window overrides the loop
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli claude --repo "$R" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -q "head-moved" || fail "no head-moved"
+echo "$out" | grep -qi "own push" || fail "no own push"
+echo "$out" | grep -qi "own repl" || fail "no own replies"
+echo "$out" | grep -qE "pr\.sh seen|seen" || fail "no seen"
+echo OK

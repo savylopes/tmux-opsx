@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Wait without gen is unchanged
+# level: L1
+# requirement: One live monitor per PR
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+out=$("$PRSH" wait 42 --slice 2 --poll 1 --repo "$R" 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 3 ] || fail "expected exit 3, got $rc"
+echo OK
