@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Restart after stop shows the new watcher
+# level: L2
+# requirement: Watcher liveness in list
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+sf=$(state_file 42)
+line42() { "$PRSH" list 2>&1 | grep -w 42 | head -1; }
+for how in start restart-input; do
+  echo "== stop, then $how"
+  "$PRSH" stop 42 --repo "$R" >/dev/null 2>&1 || fail "stop failed"
+  l=$(line42); echo "after stop: $l"
+  case "$l" in *watch=off) ;; *) fail "after stop the line does not end with watch=off";; esac
+  if [ "$how" = start ]; then pr_start 42 >/dev/null 2>&1 || fail "start failed"
+  else "$PRSH" restart-input 42 --repo "$R" >/dev/null 2>&1 || fail "restart-input failed"; fi
+  "$PRSH" wait 42 --slice 2 --poll 1 --repo "$R" >/dev/null 2>&1
+  l=$(line42); echo "after $how+wait: $l"
+  echo "$l" | grep -qE 'watch=[0-9]+s$' || fail "after $how the line does not end with watch=<n>s"
+  sed -i '/^last_wait_at=/d' "$sf"; echo "last_wait_at=$(( $(date +%s) - 3600 ))" >> "$sf"
+  l=$(line42); echo "aged: $l"
+  case "$l" in *watch=stale) ;; *) fail "aged watcher does not end with watch=stale";; esac
+  clean_windows
+done
+echo OK

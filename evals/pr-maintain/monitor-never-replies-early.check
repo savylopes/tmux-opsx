@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Monitor never replies early
+# level: L1
+# requirement: PR monitor agent
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+f="$EVAL_ROOT/agents/opsx-pr-monitor.md"
+[ -f "$f" ] || fail "$f missing"
+flat=$(tr "\n" " " < "$f" | tr -s " ")
+chk() { echo "$flat" | grep -qiE -- "$1" || fail "agent text lacks: $2"; }
+chk 'never end (your|the) turn before' "never end the turn before the final line"
+chk 'moved to the background' "'moved to the background' case"
+chk '<task-notification>' "<task-notification>"
+chk 'exit code' "exit code from the notification"
+chk 'output-file|output file' "output file"
+chk '`waiting`' "the waiting line"
+chk 'not a new prompt|never a new prompt' "notification is not a new prompt"
+grep -qF 'error: not a pr.sh wait command' "$f" || fail "does not mention error: not a pr.sh wait command"
+grep -iE 'never yields .?error: not a pr' "$f" >/dev/null || grep -iE 'never yields' "$f" | grep -q 'not a pr.sh wait command' || fail "does not say a notification never yields that error"
+echo OK

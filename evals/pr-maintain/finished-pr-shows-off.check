@@ -7,11 +7,18 @@ set -u
 mk_env
 "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
 sf=$(state_file 42)
-for ev in stopped merged closed; do
+for ev in merged closed; do
   sed -i '/^last_wait_at=/d;/^last_event=/d' "$sf"
   echo "last_wait_at=$(( $(date +%s) - 3600 ))" >> "$sf"; echo "last_event=$ev" >> "$sf"
   out=$("$PRSH" list 2>&1); echo "$out"
   l=$(echo "$out" | grep -w 42 | head -1); [ -n "$l" ] || fail "no line for 42 ($ev)"
   case "$l" in *watch=off) echo "ok $ev";; *) fail "last_event=$ev: line does not end with watch=off";; esac
 done
+# a real pr.sh stop after an old wait
+sed -i '/^last_wait_at=/d;/^last_event=/d' "$sf"
+echo "last_wait_at=$(( $(date +%s) - 3600 ))" >> "$sf"
+"$PRSH" stop 42 --repo "$R" >/dev/null 2>&1 || fail "stop failed"
+out=$("$PRSH" list 2>&1); echo "$out"
+l=$(echo "$out" | grep -w 42 | head -1); [ -n "$l" ] || fail "no line for 42 (stop)"
+case "$l" in *watch=off) echo "ok stop";; *) fail "after pr.sh stop: line does not end with watch=off";; esac
 echo OK

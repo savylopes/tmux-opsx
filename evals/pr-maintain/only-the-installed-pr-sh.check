@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Only the installed pr.sh
+# level: L1
+# requirement: Monitor command guard
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tools
+G_=$EVAL_ROOT/skills/opsx-pr/monitor-guard.sh
+[ -x "$G_" ] || fail "monitor-guard.sh missing or not executable"
+P=$EVAL_ROOT/skills/opsx-pr/pr.sh
+tail="wait 42 --repo /r --slice 5 --poll 1 --gen 1"
+jq -nc --arg c "$P $tail" '{tool_input:{command:$c}}' | "$G_" >/dev/null 2>&1 || fail "installed pr.sh command denied (sanity)"
+mkdir -p "$EVAL_TMP/other/env"; cp "$P" "$EVAL_TMP/other/pr.sh"; cp "$P" "$EVAL_TMP/other/env/pr.sh"
+cd "$EVAL_TMP/other"
+bad=("env/pr.sh $tail" "PATH=/x/pr.sh $tail" "FOO=1 $P $tail" "$EVAL_TMP/other/pr.sh $tail")
+for c in "${bad[@]}"; do
+  err=$(jq -nc --arg c "$c" '{tool_input:{command:$c}}' | "$G_" 2>&1 >/dev/null); rc=$?
+  echo "[$c] -> exit $rc: $err"
+  [ $rc -eq 2 ] || fail "expected exit 2 for: $c"
+done
+echo OK

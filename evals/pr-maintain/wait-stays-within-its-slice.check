@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Wait stays within its slice
+# level: L1
+# requirement: Slice fits the monitor
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+# slow the poll round to about one second: delay the gh call that reads the PR
+real_gh=$(command -v gh)
+mkdir -p "$EVAL_TMP/slow"
+cat > "$EVAL_TMP/slow/gh" <<EOS
+#!/usr/bin/env bash
+case "\$1 \$2" in "pr view") sleep 1 ;; esac
+exec "$real_gh" "\$@"
+EOS
+chmod +x "$EVAL_TMP/slow/gh"
+export PATH="$EVAL_TMP/slow:$PATH"
+s=$(date +%s.%N)
+out=$("$PRSH" wait 42 --slice 5 --poll 3 --repo "$R" 2>&1); rc=$?
+e=$(awk -v a="$s" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1f", b-a}')
+echo "$out"; echo "exit $rc after ${e}s"
+[ $rc -eq 3 ] || fail "expected exit 3, got $rc"
+awk -v e="$e" 'BEGIN{exit !(e<=6.0)}' || fail "took ${e}s, more than 6s"
+echo OK
