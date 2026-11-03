@@ -2282,16 +2282,26 @@ agent_model_for() {
 }
 
 # Claude Code agent: the source file with its frontmatter `model:` set to $3.
+# $4 (optional): absolute path of monitor-guard.sh, written into the
+# frontmatter hook `command:` that names monitor-guard.sh (shell-quoted, inside
+# a YAML single-quoted string).
 install_claude_agent() {
-  local src=$1 dest=$2 model=${3:-inherit} tmp
+  local src=$1 dest=$2 model=${3:-inherit} guard=${4:-} gq="" tmp
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  if [ -n "$guard" ]; then
+    local sq="'"
+    gq=$(printf '%q' "$guard")
+    gq="$sq${gq//$sq/$sq$sq}$sq"
+  fi
   # ENVIRON, not -v: awk -v would expand backslash escapes in the value.
-  OPSX_AGENT_MODEL="$model" awk '
-    BEGIN { m = ENVIRON["OPSX_AGENT_MODEL"] }
+  OPSX_AGENT_MODEL="$model" OPSX_AGENT_GUARD="$gq" awk '
+    BEGIN { m = ENVIRON["OPSX_AGENT_MODEL"]; g = ENVIRON["OPSX_AGENT_GUARD"] }
     /^---$/ { n++
               if (n == 2 && !done) { print "model: " m; done=1 }
               print; next }
     n == 1 && /^model:/ { if (!done) { print "model: " m; done=1 }; next }
+    n == 1 && g != "" && /^ *command: .*monitor-guard\.sh.?$/ {
+      match($0, /^ *command: /); print substr($0, 1, RLENGTH) g; next }
     { print }
   ' "$src" > "$tmp"
   install_file "$tmp" "$dest"
@@ -2566,6 +2576,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -f  "$OPENCODE_AGENTS_DIR/ops-eval.md" && ok "removed ~/.config/opencode/agents/ops-eval.md (OpenCode)"
   rm -f  "$GEMINI_AGENTS_DIR/opsx-eval.md" && ok "removed ~/.gemini/agents/opsx-eval.md (Gemini CLI)"
   rm -f  "$PREFIX/agents/opsx-pr-monitor.md" && ok "removed agents/opsx-pr-monitor.md (Claude Code)"
+  rm -f  "$PREFIX/skills/opsx-pr/monitor-guard.sh" && ok "removed skills/opsx-pr/monitor-guard.sh (Claude Code)"
   remove_openspec_skills "$PREFIX/skills" "Claude Code"
   remove_openspec_skills "$HOME/.cursor/skills" "Cursor CLI"
   remove_openspec_skills "$AGENTS_OPENSPEC_SKILLS_DIR" "Agent Skills"
@@ -2901,10 +2912,14 @@ for a in applier qa reviewer security eval; do
   ok "ops-$a -> $GEMINI_AGENTS_DIR/opsx-$a.md (Gemini CLI)"
 done
 # The /opsx-pr background watcher: Claude Code only (other CLIs keep the
-# foreground pr.sh wait).
-m=$(agent_model_for claude pr-monitor)
-install_claude_agent "$SRC/agents/opsx-pr-monitor.md" "$PREFIX/agents/opsx-pr-monitor.md" "$m"
-ok "ops-pr-monitor -> $PREFIX/agents/opsx-pr-monitor.md (Claude Code, model: $m)"
+# foreground pr.sh wait), part of /opsx-pr (--skip-pr skips it). Its
+# PreToolUse hook runs the installed monitor-guard.sh (step 8d).
+if [ "$SKIP_PR" -eq 0 ]; then
+  m=$(agent_model_for claude pr-monitor)
+  install_claude_agent "$SRC/agents/opsx-pr-monitor.md" "$PREFIX/agents/opsx-pr-monitor.md" "$m" \
+    "$PREFIX/skills/opsx-pr/monitor-guard.sh"
+  ok "ops-pr-monitor -> $PREFIX/agents/opsx-pr-monitor.md (Claude Code, model: $m, guard: monitor-guard.sh)"
+fi
 note "agent models: agents/models.conf, overridden by ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/models.conf (re-run install after editing)"
 note "applier implements in opsx/<change>; eval/reviewer/security/qa verify after apply (eval owns evals/)"
 info ""
@@ -3069,6 +3084,11 @@ else
   [ -f "$SRC/skills/opsx-pr/SKILL.md" ] || die "missing $SRC/skills/opsx-pr/SKILL.md — run this script from the repo checkout"
   [ -f "$SRC/skills/opsx-pr/pr.sh" ] || die "missing $SRC/skills/opsx-pr/pr.sh — run this script from the repo checkout"
   install_pr_skill "$PREFIX/skills/opsx-pr" "Claude Code"
+  # The ops-pr-monitor PreToolUse hook (Claude Code only).
+  [ -f "$SRC/skills/opsx-pr/monitor-guard.sh" ] || die "missing $SRC/skills/opsx-pr/monitor-guard.sh — run this script from the repo checkout"
+  install_file "$SRC/skills/opsx-pr/monitor-guard.sh" "$PREFIX/skills/opsx-pr/monitor-guard.sh"
+  chmod +x "$PREFIX/skills/opsx-pr/monitor-guard.sh" || die "cannot chmod +x $PREFIX/skills/opsx-pr/monitor-guard.sh"
+  ok "monitor-guard.sh -> $PREFIX/skills/opsx-pr/monitor-guard.sh (ops-pr-monitor hook)"
   install_pr_skill "$CURSOR_PR_SKILLS_DIR" "Cursor CLI"
   install_pr_skill "$AGENTS_PR_SKILLS_DIR" "Codex/Agent Skills (~/.agents/skills)"
   if [ "$CODEX_PR_SKILLS_DIR" != "$AGENTS_PR_SKILLS_DIR" ]; then
@@ -3269,8 +3289,7 @@ for f in "$PREFIX/skills/opsx-run/SKILL.md" \
          "$CURSOR_AGENTS_DIR/opsx-eval.md" \
          "$CODEX_AGENTS_DIR/ops-eval.toml" \
          "$OPENCODE_AGENTS_DIR/ops-eval.md" \
-         "$GEMINI_AGENTS_DIR/opsx-eval.md" \
-         "$PREFIX/agents/opsx-pr-monitor.md"; do
+         "$GEMINI_AGENTS_DIR/opsx-eval.md"; do
   if [ -f "$f" ]; then ok "$(printf '%s' "$f" | sed "s|$HOME|~|")"; else warn "missing: $f"; FAIL=1; fi
 done
 if [ "$SKIP_GRAPHIFY" -eq 0 ]; then
@@ -3417,6 +3436,16 @@ if [ "$SKIP_PR" -eq 0 ]; then
     ok "pr.sh parses"
   else
     warn "pr.sh failed to parse"; FAIL=1
+  fi
+  pm="$PREFIX/agents/opsx-pr-monitor.md"; pg="$PREFIX/skills/opsx-pr/monitor-guard.sh"
+  if [ -f "$pm" ]; then ok "$(printf '%s' "$pm" | sed "s|$HOME|~|")"; else warn "missing: $pm"; FAIL=1; fi
+  if [ -x "$pg" ] && bash -n "$pg" 2>/dev/null; then
+    ok "$(printf '%s' "$pg" | sed "s|$HOME|~|")"
+  else
+    warn "missing, not executable or not parsing: $pg"; FAIL=1
+  fi
+  if [ -f "$pm" ] && ! grep -qF "monitor-guard.sh" "$pm"; then
+    warn "$pm has no monitor-guard.sh hook"; FAIL=1
   fi
 fi
 if [ "$SKIP_TASK" -eq 0 ]; then

@@ -67,9 +67,11 @@
 #           head or once CI on that head left the fail state (pending or pass)
 #           and failed again, e.g. after rerun.
 #           Every poll records last_wait_at=<epoch>. --gen <n>: on every poll,
-#           exit 4 with a `pr: superseded` line on stderr (and no event) once
-#           the state's monitor_gen is not <n> (start, restart-input and stop
-#           increase it). Without --gen the generation is not checked.
+#           exit 4 (and no event) once the state's monitor_gen is not <n>
+#           (start, restart-input and stop increase it), with a `pr: stopped`
+#           line on stderr when pr.sh stop made the bump (stopped_gen in the
+#           state), else a `pr: superseded` line. Without --gen the generation
+#           is not checked.
 # worktree  prints a worktree on the head branch: an existing one, else a new
 #           ../wt-pr-<n> beside the main checkout tracking <head remote>/<head>.
 #           Refuses a dirty one, and a local <head> tracking another remote.
@@ -100,14 +102,15 @@
 #           chosen like start's (--agent-cli, else the PR window's CLI, else claude).
 # list      one line per PR with a state file: repo pr window-status last-event
 #           watch (the window is pr-<n> or a change window tagged @opsx_pr=<n>).
-#           watch is watch=<age>s since the last poll of a wait, watch=stale
-#           when that is more than slice + poll + 30 s, watch=- before any wait.
+#           watch is watch=off when the last event is merged, closed or stopped,
+#           else watch=<age>s since the last poll of a wait, watch=stale when
+#           that is more than slice + poll + 30 s, watch=- before any wait.
 # stop      closes window pr-<n>; the state file and worktree stay. A change
 #           window maintaining the PR is never closed: its @opsx_pr and
 #           @opsx_pr_repo tags are removed, its earlier @opsx_goal comes back,
 #           and `/goal clear` (Claude Code) or a stop line (other CLIs) is
-#           typed into it. stop also increases monitor_gen, so a running
-#           monitor ends (wait --gen exits 4).
+#           typed into it. stop also increases monitor_gen and records it as
+#           stopped_gen, so a running monitor ends (wait --gen exits 4, stopped).
 #
 # State: ${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/pr/<owner>-<name>-<n>/state
 # --repo defaults to the git top level of $PWD. Only open and push push
@@ -346,19 +349,50 @@ sget() { # key [file]
   awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { printf "%s", v }' "$f"
 }
 
-# Run "$@" holding the state file's lock (flock on <state>.lock) when flock(1)
-# exists; unlocked otherwise. A background wait writes the state on every poll
-# while the window runs seen, push or note, so read-modify-write must not
-# interleave (a lost write could drop a monitor_gen bump or a head_sha).
+# Run "$@" holding the state file's lock. A background wait writes the state on
+# every poll while the window runs seen, push or note, so read-modify-write must
+# not interleave (a lost write could drop a monitor_gen bump or a head_sha).
+# flock(1) on <state>.lock when it exists, else a <state>.lockd directory
+# (broken once older than 120 s). Re-entrant within one process: while the lock
+# is held OPSX_PR_LOCKED names the state file and nested calls run directly.
+# A lock not obtained within $OPSX_PR_LOCK_WAIT seconds (30) warns on stderr
+# and the write goes ahead unlocked: never silent, never stuck.
+LOCK_WAIT=${OPSX_PR_LOCK_WAIT:-30}
+[[ $LOCK_WAIT =~ ^[0-9]+$ ]] || LOCK_WAIT=30
+lock_busy() { printf 'pr: state lock busy after %ss; writing unlocked (%s)\n' "$LOCK_WAIT" "$1" >&2; }
 with_state_lock() {
-  local f
+  local f rc=0 prev=${OPSX_PR_LOCKED-} had=${OPSX_PR_LOCKED+x}
   f=$(state_file)
+  if [ -n "$prev" ] && [ "$prev" = "$f" ]; then "$@"; return; fi
   mkdir -p "$(dirname "$f")"
+  export OPSX_PR_LOCKED=$f
   if command -v flock >/dev/null 2>&1; then
-    { flock -w 10 9 || true; "$@"; } 9>"$f.lock"
+    { flock -w "$LOCK_WAIT" 9 || lock_busy flock; "$@"; rc=$?; } 9>"$f.lock"
   else
-    "$@"
+    local d="$f.lockd" i=0 got=0
+    while :; do
+      if mkdir "$d" 2>/dev/null; then got=1; break; fi
+      # Left behind by a killed process: break it after 120 s.
+      if [ -n "$(find "$d" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
+        rmdir "$d" 2>/dev/null || true
+        continue
+      fi
+      [ "$i" -lt $(( LOCK_WAIT * 5 )) ] || break
+      sleep 0.2; i=$((i + 1))
+    done
+    if [ "$got" -eq 1 ]; then
+      # shellcheck disable=SC2064  # $d is fixed now
+      trap "rmdir $(printf '%q' "$d") 2>/dev/null || true" EXIT
+      "$@"; rc=$?
+      rmdir "$d" 2>/dev/null || true
+      trap - EXIT
+    else
+      lock_busy mkdir
+      "$@"; rc=$?
+    fi
   fi
+  if [ -n "$had" ]; then OPSX_PR_LOCKED=$prev; else unset OPSX_PR_LOCKED; fi
+  return "$rc"
 }
 
 sset_unlocked() { # key value
@@ -387,9 +421,24 @@ bump_gen_unlocked() {
   sset_unlocked monitor_gen "$(( $(cur_gen) + 1 ))"
 }
 
-# Increase monitor_gen: a monitor started for an older prompt then exits 4.
+# Increase monitor_gen: a monitor started for an older prompt then exits 4
+# (superseded). start and restart-input: stopped_gen is cleared.
 bump_gen() {
-  with_state_lock bump_gen_unlocked
+  with_state_lock bump_gen_clear_unlocked
+}
+bump_gen_clear_unlocked() {
+  bump_gen_unlocked
+  sset_unlocked stopped_gen ""
+}
+
+# pr.sh stop: increase monitor_gen and record it as stopped_gen in one lock, so
+# a running monitor exits 4 with `stopped` instead of `superseded`.
+stop_gen() {
+  with_state_lock stop_gen_unlocked
+}
+stop_gen_unlocked() {
+  bump_gen_unlocked
+  sset_unlocked stopped_gen "$(cur_gen)"
 }
 
 # Current values into CUR_* variables (read indirectly by write_seen/detect_event).
@@ -442,7 +491,12 @@ snapshot() {
   CUR_last_review_id=$(max_id "repos/$SLUG/pulls/$PR/reviews" || true)
 }
 
+# One lock for the whole update (the nested sset calls run directly).
 write_seen() {
+  with_state_lock write_seen_unlocked
+}
+
+write_seen_unlocked() {
   local k v rec_tip
   rec_tip=$(sget parent_tip)
   # After a parent merged, keep the tip recorded while it was open.
@@ -640,28 +694,40 @@ mark_label() {
 # The Loop section: a background ops-pr-monitor on Claude Code, the
 # foreground wait elsewhere. $1 cli, $2 window script, $3 mark label.
 loop_text() {
-  local cli=$1 W=$2 M=$3 WAITCMD
-  WAITCMD="$SELF wait $PR --repo $REPO --slice $SLICE --poll $POLL --gen $(cur_gen)"
+  local cli=$1 W=$2 M=$3 WAITCMD G s calls
+  G=$(cur_gen)
   if is_claude_cli "$cli"; then
+    # One call must fit the monitor's 600 s Bash timeout; max-calls keeps a
+    # monitor's run at about 27 minutes whatever the slice.
+    s=$(( SLICE > 570 ? 570 : SLICE ))
+    [ "$s" -ge 1 ] || s=1
+    calls=$(( 1620 / s ))
+    [ "$calls" -ge 1 ] || calls=1
+    # Quoted, so a path with spaces or shell characters stays one argument.
+    WAITCMD=$(printf '%q wait %s --repo %q --slice %s --poll %s --gen %s' "$SELF" "$PR" "$REPO" "$s" "$POLL" "$G")
     cat <<EOF
 ## Loop (Claude Code: background monitor)
 The waiting runs in a background subagent, so this window stays idle and reads the user's messages at
 once. Never run \`pr.sh wait\` in this window yourself, and never sleep to wait.
-1. \`$W mark $M idle\` (or \`ask\` while a question to the user is open), then start the \`ops-pr-monitor\`
-   subagent in the BACKGROUND (Agent tool, \`subagent_type: "ops-pr-monitor"\`, \`run_in_background: true\`
-   where the tool has that parameter) with this exact command as its whole prompt:
+1. \`$W mark $M idle\` (or \`ask\` while a question to the user is open), then make sure one monitor runs.
+   A monitor counts as running only if you started it with \`--gen $G\` (the gen in the command below)
+   and it has not returned yet; monitors started with any other \`--gen\` do not count. When none counts,
+   start the \`ops-pr-monitor\` subagent in the BACKGROUND (Agent tool, \`subagent_type: "ops-pr-monitor"\`,
+   \`run_in_background: true\` where the tool has that parameter) with exactly these two lines as its
+   whole prompt:
    \`$WAITCMD\`
-   Then end your turn: do not wait for it, poll it or check on it. Start only one: do not start a second
-   monitor while one you started is still running (see your background tasks). When unsure, start one:
-   \`--gen\` lets only the current prompt's monitors report, and an extra one is only a cheap poller.
+   \`max-calls: $calls\`
+   Then end your turn: do not wait for it, poll it or check on it. Never start a second monitor while
+   one that counts is still running (see your background tasks).
 2. The monitor's result arrives as a new turn, as exactly one line:
    - \`event=<kind>\`: \`$W mark $M busy\` and handle the event (below). Get a worktree with
      \`$SELF worktree $PR --repo $REPO\` (it prints the path; never switch the main checkout's branch).
      After handling it (or after asking the user about it), run \`$SELF seen $PR --repo $REPO\`
      so the next wait starts from the new state, then go back to 1.
    - \`idle\`: nothing changed for about 27 minutes. This is the expected idle step: go back to 1 at once.
-   - \`superseded\`: a newer prompt (a refresh or a restart) or \`pr.sh stop\` owns the loop now. Do nothing
-     more for it and start no monitor.
+   - \`superseded\`: that monitor belonged to an older prompt (a refresh or a restart). Go back to 1: it
+     starts a monitor for the current gen unless one that counts is already running.
+   - \`stopped\`: the user ran \`pr.sh stop\`. Start no monitor; say in one line that the loop stopped.
    - \`error: <message>\`: \`wait\` counts failed polls as no change, so this is a setup failure (no state
      file, no base remote, a gh or auth problem). Read the message; fix what is clearly local and go back
      to 1, otherwise ask the user (see Ask the user first).
@@ -674,16 +740,17 @@ once. Never run \`pr.sh wait\` in this window yourself, and never sleep to wait.
 4. Messages the user types in this window come first: they take precedence over the PR loop. Act on them
    (answer, do what they ask, settle an open question), then make sure one \`ops-pr-monitor\` is running
    (step 1) and end your turn.
-5. A turn that starts while no monitor of yours is running (a goal check-in, a lost result): start one (step 1).
+5. A turn that starts while no monitor that counts is running (a goal check-in, a lost result): go to step 1.
 EOF
   else
+    WAITCMD=$(printf '%q wait %s --repo %q --slice %s --poll %s --gen %s' "$SELF" "$PR" "$REPO" "$SLICE" "$POLL" "$G")
     cat <<EOF
 ## Loop
 1. \`$W mark $M idle\` (or \`ask\` while a question to the user is open), then run
    \`$WAITCMD\` in the FOREGROUND with a Bash tool
    timeout of 600000 ms. Never run it in the background and never sleep separately.
    Exit 3 means nothing changed: run the same wait again at once. Exit 0 prints one event=<kind>.
-   Exit 4 (\`superseded\`): a newer prompt or \`pr.sh stop\` owns the loop; stop waiting for this one.
+   Exit 4 (\`superseded\` or \`stopped\`): a newer prompt or \`pr.sh stop\` owns the loop; stop waiting for this one.
 2. On an event, \`$W mark $M busy\` and handle it (below). Get a worktree with
    \`$SELF worktree $PR --repo $REPO\` (it prints the path; never switch the main checkout's branch).
 3. After handling it (or after asking the user about it), run \`$SELF seen $PR --repo $REPO\`
@@ -870,14 +937,17 @@ cmd_wait() {
   done
 }
 
-# wait --gen <n>: exit 4 once the state's monitor_gen is no longer <n>.
+# wait --gen <n>: exit 4 once the state's monitor_gen is no longer <n>, with
+# `pr: stopped` when pr.sh stop made the bump, else `pr: superseded`.
 check_gen() {
   [ -n "$GEN" ] || return 0
   local cur
   cur=$(cur_gen)
   [ "$cur" != "$GEN" ] || return 0
-  if [ "$cur" -gt "$GEN" ]; then
-    printf 'pr: superseded (gen %s < %s): a newer prompt or pr.sh stop owns the loop of %s#%s\n' "$GEN" "$cur" "$SLUG" "$PR" >&2
+  if [ "$(sget stopped_gen)" = "$cur" ]; then
+    printf 'pr: stopped (gen %s, now %s): pr.sh stop ended the loop of %s#%s; start no new monitor\n' "$GEN" "$cur" "$SLUG" "$PR" >&2
+  elif [ "$cur" -gt "$GEN" ]; then
+    printf 'pr: superseded (gen %s < %s): a newer prompt (a refresh or a restart) owns the loop of %s#%s\n' "$GEN" "$cur" "$SLUG" "$PR" >&2
   else
     printf 'pr: superseded (gen %s, state has %s): another prompt owns the loop of %s#%s\n' "$GEN" "$cur" "$SLUG" "$PR" >&2
   fi
@@ -1343,10 +1413,14 @@ cmd_restart_input() {
   esac
 }
 
-# watch column of list for state file $1: watch=<age>s since the last poll of
-# a wait, watch=stale past slice + poll + 30 s, watch=- before any wait.
+# watch column of list for state file $1: watch=off once the last event is
+# merged, closed or stopped (nothing should watch); else watch=<age>s since the
+# last poll of a wait, watch=stale past slice + poll + 30 s, watch=- before any wait.
 watch_col() {
   local at sl po age
+  case $(sget last_event "$1") in
+    merged|closed|stopped) printf 'watch=off'; return ;;
+  esac
   at=$(sget last_wait_at "$1")
   [[ $at =~ ^[0-9]+$ ]] || { printf 'watch=-'; return; }
   sl=$(sget wait_slice "$1"); [[ $sl =~ ^[0-9]+$ ]] || sl=540
@@ -1403,7 +1477,7 @@ cmd_stop() {
   setup_pr stop
   local wins id change n=0
   # First, so a running monitor ends (wait --gen exits 4) and reports nothing.
-  [ ! -f "$(state_file)" ] || bump_gen
+  [ ! -f "$(state_file)" ] || stop_gen
   wins=$(pr_window_ids "$PR" "$SLUG")
   while IFS=$'\t' read -r id change _; do
     [ -n "$id" ] || continue
@@ -1422,6 +1496,9 @@ cmd_stop() {
     printf 'state kept %s\n' "$(state_file)"
   fi
 }
+
+# Sourced (tests): define the functions only.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
 [ $# -ge 1 ] || usage 1
 sub=$1; shift

@@ -133,6 +133,45 @@ ok "state of an unstacked PR has no parent (a fork PR on a branch named main is 
 P seen 43 >/dev/null
 ok "stacked PR records its parent and parent tip" 'grep -qx "parent=42" "$ST43" && grep -qx "parent_tip=$SHA_A" "$ST43" && grep -qx "parent_base=main" "$ST43"'
 
+# pr-monitor-hardening 2.1: state locking (flock, mkdir fallback, re-entrant, busy warning).
+# NOFL: every command of /usr/bin and /bin except flock, plus the fake gh.
+NOFL=$SP/noflock; mkdir -p "$NOFL"
+for d in /usr/bin /bin; do for x in "$d"/*; do b=${x##*/}; [ "$b" = flock ] || [ -e "$NOFL/$b" ] || ln -s "$x" "$NOFL/$b"; done; done
+ln -sf "$SP/fakebin/gh" "$NOFL/gh"
+setkeys() { # path-dir prefix: 50 distinct keys through pr.sh's own sset
+  PATH=$1 bash -c '. "$1"; SLUG=o/app PR=42; for i in $(seq 1 50); do sset "$2$i" "$i"; done' _ "$PRSH" "$2"
+}
+ok "no-flock PATH really has no flock" '! PATH=$NOFL command -v flock >/dev/null'
+setkeys "$NOFL" lka & p1=$!; setkeys "$NOFL" lkb & p2=$!; wait $p1 $p2
+ok "without flock: two concurrent writers of 50 keys each keep all 100 keys" '[ "$(grep -c "^lk[ab][0-9]*=" "$ST42")" -eq 100 ] && [ ! -e "$ST42.lockd" ]'
+setkeys "$PATH" lfa & p1=$!; setkeys "$PATH" lfb & p2=$!; wait $p1 $p2
+ok "with flock: two concurrent writers of 50 keys each keep all 100 keys" '[ "$(grep -c "^lf[ab][0-9]*=" "$ST42")" -eq 100 ]'
+sed -i "/^l[kf][ab][0-9]*=/d" "$ST42"
+t0=$(date +%s); OPSX_PR_LOCK_WAIT=5 P seen 42 >/dev/null 2>"$SP/lock.err"; rc=$?; dt=$(( $(date +%s) - t0 ))
+ok "seen (write_seen) takes the lock once: no nested wait, no warning" '[ $rc -eq 0 ] && ! grep -q "lock busy" "$SP/lock.err" || { echo "rc=$rc dt=$dt"; cat "$SP/lock.err"; false; }'
+cat > "$SP/reent.sh" <<'EOF'
+# Sourced pr.sh: write_seen and sset inside an already held lock (PR 77, scratch state).
+. "$1"
+SLUG=o/app PR=77 REPO=/nonexistent
+for k in state author head head_sha base base_sha parent parent_tip parent_state parent_head parent_base \
+         ci last_comment_id last_issue_comment_id last_review_id url; do printf -v "CUR_$k" '%s' "v-$k"; done
+with_state_lock write_seen
+with_state_lock with_state_lock sset reent 1
+EOF
+ok "write_seen and sset inside a held lock of the same process do not deadlock" 'timeout 20 env OPSX_PR_LOCK_WAIT=5 bash "$SP/reent.sh" "$PRSH" 2>"$SP/lock.err" && ! grep -q "lock busy" "$SP/lock.err" && grep -qx "reent=1" "$SD/o-app-77/state" && grep -qx "head_sha=v-head_sha" "$SD/o-app-77/state"'
+rm -rf "$SD/o-app-77"
+flock "$ST42.lock" sleep 6 & hp=$!; sleep 0.5
+sed -i "/^seen_at=/d" "$ST42"
+OPSX_PR_LOCK_WAIT=2 P seen 42 >/dev/null 2>"$SP/lock.err"; rc=$?
+ok "flock held by another process: seen warns 'state lock busy' on stderr and still updates" '[ $rc -eq 0 ] && grep -q "pr: state lock busy after 2s" "$SP/lock.err" && grep -q "^seen_at=" "$ST42"'
+kill $hp 2>/dev/null; wait $hp 2>/dev/null
+mkdir "$ST42.lockd"; sed -i "/^seen_at=/d" "$ST42"
+PATH=$NOFL OPSX_PR_LOCK_WAIT=1 "$PRSH" seen 42 --repo "$R" >/dev/null 2>"$SP/lock.err"; rc=$?
+ok "mkdir lock held: seen warns 'state lock busy' and still updates" '[ $rc -eq 0 ] && grep -q "state lock busy" "$SP/lock.err" && grep -q "^seen_at=" "$ST42" && [ -d "$ST42.lockd" ]'
+touch -d "3 minutes ago" "$ST42.lockd"
+PATH=$NOFL OPSX_PR_LOCK_WAIT=1 "$PRSH" seen 42 --repo "$R" >/dev/null 2>"$SP/lock.err"; rc=$?
+ok "mkdir lock older than 120 s is broken: no warning, lock dir gone afterwards" '[ $rc -eq 0 ] && ! grep -q "lock busy" "$SP/lock.err" && [ ! -e "$ST42.lockd" ]'
+
 # ---------------------------------------------------------------- wait (2.3)
 t0=$(date +%s); out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?; dt=$(( $(date +%s) - t0 ))
 ok "nothing changes: exit 3 within a few seconds, no event" '[ $rc -eq 3 ] && [ $dt -le 8 ] && ! printf "%s" "$out" | grep -q "^event="'
@@ -147,7 +186,7 @@ t0=$(date +%s)
 P wait 42 --gen 1 --slice 30 --poll 1 >"$SP/gen.out" 2>"$SP/gen.err" & gpid=$!
 sleep 2; setstate "$ST42" monitor_gen 2
 wait "$gpid"; rc=$?; dt=$(( $(date +%s) - t0 ))
-ok "wait --gen: gen bumped mid-wait exits 4 within a few seconds, says superseded, no event" '[ $rc -eq 4 ] && [ $dt -le 8 ] && grep -q superseded "$SP/gen.err" && ! grep -q "^event=" "$SP/gen.out"'
+ok "wait --gen: gen bumped mid-wait exits 4 within a few seconds, says superseded, no event" '[ $rc -eq 4 ] && [ $dt -le 8 ] && grep -q superseded "$SP/gen.err" && ! grep -q "pr: stopped" "$SP/gen.err" && ! grep -q "^event=" "$SP/gen.out"'
 t0=$(date +%s); out=$(P wait 42 --gen 1 --slice 30 --poll 1 2>"$SP/gen.err"); rc=$?; dt=$(( $(date +%s) - t0 ))
 ok "wait --gen: an older gen exits 4 at the first poll" '[ $rc -eq 4 ] && [ $dt -le 3 ] && grep -q "superseded (gen 1 < 2)" "$SP/gen.err" && [ -z "$out" ]'
 out=$(P wait 42 --gen 2 --slice 2 --poll 1 2>/dev/null); rc=$?
@@ -497,7 +536,14 @@ ok "list shows a PR without a window as none" 'printf "%s\n" "$out" | grep -P "^
 ok "list: fresh watcher shows watch=<n>s under 60" 'n=$(printf "%s\n" "$out" | grep -P "^o/app\t42\t" | awk -F "\t" "{print \$5}" | sed -n "s/^watch=\([0-9]*\)s$/\1/p"); [ -n "$n" ] && [ "$n" -lt 60 ]'
 ok "list: last_wait_at an hour old shows watch=stale" 'printf "%s\n" "$out" | grep -P "^o/app\t43\t.*\twatch=stale$" >/dev/null'
 ok "list: never waited shows watch=-" 'printf "%s\n" "$out" | grep -P "^o/app\t99\tnone\t-\twatch=-$" >/dev/null'
-rm -rf "$SD/o-app-99"
+# pr-monitor-hardening 4.1: watch=off once the last event is merged, closed or stopped.
+for e in merged closed stopped; do
+  mkdir -p "$SD/o-app-9$e"; printf 'repo=o/app\npr=9%s\nlast_event=%s\nlast_wait_at=%s\n' "$e" "$e" $(( $(date +%s) - 3600 )) > "$SD/o-app-9$e/state"
+done
+out=$("$PRSH" list)
+ok "list: last_event merged/closed/stopped with an hour-old wait shows watch=off" 'for e in merged closed stopped; do printf "%s\n" "$out" | grep -P "^o/app\t9$e\t.*\t$e\twatch=off$" >/dev/null || { echo "no watch=off for $e"; exit 1; }; done'
+ok "list: last_event comments with an hour-old wait still shows watch=stale" 'printf "%s\n" "$out" | grep -P "^o/app\t43\t.*\twatch=stale$" >/dev/null'
+rm -rf "$SD/o-app-99" "$SD"/o-app-9merged "$SD"/o-app-9closed "$SD"/o-app-9stopped
 out=$(P stop 42); rc=$?
 ok "stop closes the window, keeps the state file" '[ $rc -eq 0 ] && [ -z "$(winof pr-42)" ] && [ -f "$ST42" ]'
 ok "stop keeps the worktree" '[ -d "$WT42" ]'
@@ -510,6 +556,19 @@ ok "restart after stop keeps the state file" '[ $rc -eq 0 ] && printf "%s" "$out
 ok "start on monitor_gen=3 writes monitor_gen=4 and --gen 4 in the prompt" 'grep -qx "monitor_gen=4" "$ST42" && grep -q -- "--gen 4\`" "$PROMPT"'
 P stop 42 >/dev/null
 ok "stop then writes monitor_gen=5" 'grep -qx "monitor_gen=5" "$ST42"'
+# pr-monitor-hardening 1.1: stop is reported as stopped, a refresh as superseded.
+ok "stop records stopped_gen=5" 'grep -qx "stopped_gen=5" "$ST42"'
+out=$(P wait 42 --gen 4 --slice 30 --poll 1 2>"$SP/stop.err"); rc=$?
+ok "wait --gen after stop: exit 4, says stopped, not superseded, no event" '[ $rc -eq 4 ] && grep -q "pr: stopped" "$SP/stop.err" && ! grep -q superseded "$SP/stop.err" && [ -z "$out" ]'
+out=$(P start 42 --agent-cli claude 2>&1); rc=$?
+ok "start clears stopped_gen (monitor_gen=6)" '[ $rc -eq 0 ] && grep -qx "monitor_gen=6" "$ST42" && grep -qx "stopped_gen=" "$ST42"'
+t0=$(date +%s)
+P wait 42 --gen 6 --slice 30 --poll 1 >"$SP/stop.out" 2>"$SP/stop.err" & gpid=$!
+sleep 2; P stop 42 >/dev/null
+wait "$gpid"; rc=$?; dt=$(( $(date +%s) - t0 ))
+ok "pr.sh stop during a wait: exit 4 within a few seconds, says stopped, not superseded" '[ $rc -eq 4 ] && [ $dt -le 15 ] && grep -q "pr: stopped" "$SP/stop.err" && ! grep -q superseded "$SP/stop.err" && ! grep -q "^event=" "$SP/stop.out" || { echo "rc=$rc dt=$dt"; cat "$SP/stop.err" "$SP/stop.out"; false; }'
+ok "the stop wrote monitor_gen=7 and stopped_gen=7" 'grep -qx "monitor_gen=7" "$ST42" && grep -qx "stopped_gen=7" "$ST42"'
+setstate "$ST42" monitor_gen 5
 
 # ---------------------------------------------------------------- restart-input (session restore 4.2)
 # No tmux at all: a failing tmux stub first on PATH records any call.
@@ -522,6 +581,7 @@ ok "restart-input: within the 4000-character /goal cap" '[ $(( ${#out} - 6 )) -l
 ok "restart-input: state file kept (same last_comment_id)" '[ -n "$LCID" ] && [ "$(sed -n "s/^last_comment_id=//p" "$ST42")" = "$LCID" ]'
 ok "restart-input: prompt and goal files rewritten" '[ -s "$PROMPT" ] && [ -s "$GOAL" ]'
 ok "restart-input: increases monitor_gen (5 -> 6), prompt has --gen 6, Claude loop by default" 'grep -qx "monitor_gen=6" "$ST42" && grep -q -- "--gen 6\`" "$PROMPT" && grep -q "ops-pr-monitor" "$PROMPT" && grep -q "ops-pr-monitor" "$GOAL"'
+ok "restart-input clears stopped_gen" 'grep -qx "stopped_gen=" "$ST42"'
 ok "restart-input: no tmux call, no window" '[ ! -e "$SP/notmux/calls" ] && [ -z "$(winof pr-42)" ]'
 out=$(env -u TMUX -u TMUX_PANE PATH="$SP/notmux:$PATH" "$PRSH" restart-input 41 --repo "$R" 2>"$SP/ri.err"); rc=$?
 ok "restart-input: merged PR refused, names MERGED, prints no input" '[ $rc -ne 0 ] && grep -q MERGED "$SP/ri.err" && [ -z "$out" ]'
@@ -635,7 +695,35 @@ ok "prompt: user messages in this window come first, then back to pr.sh wait (fo
 P prompt 42 --agent-cli claude > "$SP/p.claude"; P prompt 42 --agent-cli codex > "$SP/p.codex"
 ok "prompt claude: user messages first, then make sure one monitor runs and end the turn" 'grep -q "Messages the user types in this window come first" "$SP/p.claude" && grep -q "make sure one .ops-pr-monitor. is running" "$SP/p.claude"'
 ok "prompt claude: ops-pr-monitor in the background, end the turn, never wait in the window, --gen" 'grep -q "start the .ops-pr-monitor." "$SP/p.claude" && grep -q "BACKGROUND" "$SP/p.claude" && grep -q "run_in_background: true" "$SP/p.claude" && grep -q "end your turn" "$SP/p.claude" && grep -q "Never run .pr.sh wait. in this window" "$SP/p.claude" && grep -q -- "wait 42 --repo .* --gen [0-9][0-9]*\`" "$SP/p.claude"'
-ok "prompt claude: names the idle, superseded and error: results; no second monitor" 'grep -q "^   - .idle.:" "$SP/p.claude" && grep -q "^   - .superseded.:" "$SP/p.claude" && grep -q "^   - .error: <message>.:" "$SP/p.claude" && grep -q "do not start a second" "$SP/p.claude" && grep -q "start no monitor" "$SP/p.claude"'
+ok "prompt claude: names the idle, superseded, stopped and error: results; no second monitor" 'grep -q "^   - .idle.:" "$SP/p.claude" && grep -q "^   - .superseded.:" "$SP/p.claude" && grep -q "^   - .stopped.:" "$SP/p.claude" && grep -q "^   - .error: <message>.:" "$SP/p.claude" && grep -q "Never start a second monitor" "$SP/p.claude" && grep -q "Start no monitor" "$SP/p.claude"'
+# pr-monitor-hardening 1.2
+G42=$(sed -n "s/^monitor_gen=//p" "$ST42")
+ok "prompt claude: only a monitor started with the current --gen counts; superseded -> step 1; no 'When unsure'" 'grep -q "counts as running only if you started it with .--gen $G42." "$SP/p.claude" && sed -n "/^   - .superseded.:/,/^   - .stopped.:/p" "$SP/p.claude" | grep -q "Go back to 1" && ! grep -qi "When unsure, start one" "$SP/p.claude"'
+ok "prompt claude: stopped starts no monitor" 'sed -n "/^   - .stopped.:/,/^   - .error/p" "$SP/p.claude" | grep -q "Start no monitor"'
+ok "prompt claude: default slice 540 gives max-calls: 3 on its own line after the command" 'grep -q -- "--slice 540 --poll 60 --gen [0-9]*\`$" "$SP/p.claude" && grep -qx "   \`max-calls: 3\`" "$SP/p.claude"'
+P prompt 42 --agent-cli claude --slice 900 > "$SP/p.900"
+ok "prompt claude --slice 900: wait uses --slice 570, max-calls: 2" 'grep -q -- "wait 42 --repo .* --slice 570 --poll" "$SP/p.900" && ! grep -q -- "--slice 900" "$SP/p.900" && grep -q "max-calls: 2" "$SP/p.900"'
+ok "prompt claude --slice 30: max-calls: 54" 'P prompt 42 --agent-cli claude --slice 30 | grep -q "max-calls: 54"'
+ok "prompt codex --slice 900: foreground keeps --slice 900, no max-calls" 'P prompt 42 --agent-cli codex --slice 900 > "$SP/p.c900"; grep -q -- "--slice 900" "$SP/p.c900" && ! grep -q "max-calls" "$SP/p.c900"'
+SPR="$SP/my repo"; $G clone -q "$ORIGIN" "$SPR" 2>/dev/null
+"$PRSH" prompt 42 --agent-cli claude --repo "$SPR" > "$SP/p.space" 2>/dev/null
+"$PRSH" prompt 42 --agent-cli codex --repo "$SPR" > "$SP/p.space.codex" 2>/dev/null
+ok "prompt: a repo path with a space is %q-quoted in the wait command (both CLIs)" 'grep -qF -- "--repo $(printf "%q" "$SPR") --slice" "$SP/p.space" && grep -qF -- "--repo $(printf "%q" "$SPR") --slice" "$SP/p.space.codex"'
+# pr-monitor-hardening 3.1: the guard allows the exact prompt command, denies the rest.
+GUARD=$REPO/skills/opsx-pr/monitor-guard.sh
+guard() { jq -n --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | "$GUARD" 2>"$SP/guard.err"; }
+waitcmd() { grep -o "^   \`[^\`]* wait 42 [^\`]*\`$" "$1" | sed 's/^   `//; s/`$//'; }
+WC=$(waitcmd "$SP/p.space"); WC2=$(waitcmd "$SP/p.claude")
+ok "guard: allows the prompt's exact wait command (repo path with a space)" '[ -n "$WC" ] && guard "$WC"'
+ok "guard: allows the prompt's exact wait command (plain repo path)" '[ -n "$WC2" ] && guard "$WC2"'
+ok "guard: the allowed command really is one argument per word" '( eval "set -- $WC"; [ "$5" = "$SPR" ] && [ "$#" -eq 11 ] )'
+ok "guard: denies pr.sh wait ...; rm -rf x (with and without a path)" 'guard "pr.sh wait 42 --repo /r --slice 5 --poll 1 --gen 1; rm -rf x"; a=$?; guard "$PRSH wait 42 --repo /r --slice 5 --poll 1 --gen 1; rm -rf x"; b=$?; [ $a -eq 2 ] && [ $b -eq 2 ] && grep -q "monitor-guard" "$SP/guard.err"'
+ok "guard: denies gh pr view 42" 'guard "gh pr view 42"; [ $? -eq 2 ]'
+ok "guard: denies cat ~/.ssh/id_rsa" 'guard "cat ~/.ssh/id_rsa"; [ $? -eq 2 ]'
+ok "guard: denies a command with \$(id)" 'guard "$PRSH wait 42 --repo \$(id) --slice 5 --poll 1 --gen 1"; [ $? -eq 2 ]'
+ok "guard: denies a newline-joined second command" 'guard "$WC2"$'"'"'\n'"'"'"id"; [ $? -eq 2 ]'
+ok "guard: denies backticks, pipes, && and a missing --gen" 'for c in "$PRSH wait 42 --repo \`id\` --slice 5 --poll 1 --gen 1" "$WC2 | sh" "$WC2 && id" "$PRSH wait 42 --repo /r --slice 5 --poll 1"; do guard "$c"; [ $? -eq 2 ] || { echo "allowed: $c"; exit 1; }; done'
+ok "guard: denies an empty or non-Bash payload" 'echo "{}" | "$GUARD" 2>/dev/null; [ $? -eq 2 ]'
 ok "prompt claude: self-caused head-moved and comments are acknowledged with seen" 'sed -n "/^3\. Events you caused yourself/,/^4\./p" "$SP/p.claude" > "$SP/p.self" && grep -q "head-moved" "$SP/p.self" && grep -q "comments" "$SP/p.self" && grep -q "pr.sh push" "$SP/p.self" && grep -q "own replies" "$SP/p.self" && grep -q "seen 42" "$SP/p.self"'
 ok "prompt codex: foreground wait with --gen, exit 4, no ops-pr-monitor" 'grep -q FOREGROUND "$SP/p.codex" && grep -q -- "wait 42 --repo .* --gen [0-9][0-9]*\`" "$SP/p.codex" && grep -q "Exit 4" "$SP/p.codex" && ! grep -q "ops-pr-monitor" "$SP/p.codex"'
 ok "prompt: both CLIs keep the shared sections" 'for f in "$SP/p.claude" "$SP/p.codex"; do for h in "## First turn" "## Events" "## Gates before a push" "## Untrusted input"; do grep -q "^$h" "$f" || exit 1; done; done'
@@ -791,13 +879,26 @@ fmpm() { awk '/^---$/{n++; next} n==1' "$PM"; }
 ok "install: ops-pr-monitor in ~/.claude/agents, Bash only, model haiku" '[ -f "$PM" ] && fmpm | grep -qx "name: \"ops-pr-monitor\"" && fmpm | grep -qx "tools: \[Bash\]" && fmpm | grep -qx "model: haiku" && [ "$(fmpm | grep -c "^model:")" -eq 1 ]'
 ok "install: ops-pr-monitor is Claude Code only" '[ ! -e "$IH/.cursor/agents/opsx-pr-monitor.md" ] && [ ! -e "$IH/.codex/agents/ops-pr-monitor.toml" ] && [ ! -e "$IH/.config/opencode/agents/ops-pr-monitor.md" ] && [ ! -e "$IH/.gemini/agents/opsx-pr-monitor.md" ]'
 ok "install: verify step checks ops-pr-monitor" 'printf "%s" "$out" | grep -q "\.claude/agents/opsx-pr-monitor.md"'
-ok "monitor agent: one-line return contract, at most three calls" 'for t in "event=<kind>" "idle" "superseded" "error: <" "600000" "at most 3 calls" "Never read GitHub content"; do grep -qF "$t" "$REPO/agents/opsx-pr-monitor.md" || { echo "missing: $t"; exit 1; }; done'
+ok "monitor agent: one-line return contract, max-calls (default 3, cap 30)" 'for t in "event=<kind>" "idle" "superseded" "stopped" "error: <" "600000" "max-calls:" "use 3" "use 30" "pr: stopped" "Never read GitHub content"; do grep -qF "$t" "$REPO/agents/opsx-pr-monitor.md" || { echo "missing: $t"; exit 1; }; done'
+# pr-monitor-hardening 3.1 / 4.2: the PreToolUse hook runs the installed guard (absolute path).
+PG=$IH/.claude/skills/opsx-pr/monitor-guard.sh
+hookcmd() { fmpm | sed -n "s/^ *command: //p"; }
+ok "install: monitor-guard.sh installed executable next to pr.sh" '[ -x "$PG" ] && cmp -s "$PG" "$REPO/skills/opsx-pr/monitor-guard.sh"'
+ok "install: ops-pr-monitor has a Bash PreToolUse hook naming the installed guard" 'fmpm | grep -qx "hooks:" && fmpm | grep -qx "  PreToolUse:" && fmpm | grep -q "matcher: \"Bash\"" && hookcmd | grep -qF "$PG"'
+hookrun() { local c; c=$(hookcmd | sed "s/^'//; s/'\$//"); sh -c "$c"; }
+hookpay() { jq -n --arg c "$1" '{tool_input:{command:$c}}'; }
+ok "install: the hook command runs the guard (allows the wait, denies gh)" 'hookpay "$PRSH wait 1 --repo /r --slice 5 --poll 1 --gen 1" | hookrun && { hookpay "gh pr view 1" | hookrun 2>/dev/null; [ $? -eq 2 ]; }'
+ok "install: verify step checks monitor-guard.sh" 'printf "%s" "$out" | grep -q "opsx-pr/monitor-guard.sh"'
 out=$(run_install --uninstall); rc=$?
 ok "uninstall removes all six opsx-pr folders" '[ $rc -eq 0 ] && [ "$(n_pr_dirs)" -eq 0 ]'
-ok "uninstall removes ops-pr-monitor" '[ ! -e "$PM" ]'
+ok "uninstall removes ops-pr-monitor and its guard" '[ ! -e "$PM" ] && [ ! -e "$PG" ]'
 rm -rf "$IH"; mkdir -p "$IH"
 out=$(run_install --skip-pr); rc=$?
 ok "--skip-pr installs no opsx-pr folder" '[ $rc -eq 0 ] && [ "$(n_pr_dirs)" -eq 0 ] && [ -d "$IH/.claude/skills/opsx-review" ]'
+ok "--skip-pr installs no ops-pr-monitor and no monitor-guard.sh, verify does not miss them" '[ ! -e "$PM" ] && [ -z "$(find "$IH" -name monitor-guard.sh)" ] && ! printf "%s" "$out" | grep -q "missing.*opsx-pr-monitor"'
+mkdir -p "$IH/.claude/agents" "$IH/.claude/skills/opsx-pr"; : > "$PM"; : > "$PG"
+out=$(run_install --uninstall); rc=$?
+ok "uninstall removes ops-pr-monitor and its guard even after --skip-pr" '[ $rc -eq 0 ] && [ ! -e "$PM" ] && [ ! -e "$PG" ]'
 ok "install --help lists --skip-pr" 'bash "$REPO/install.sh" --help | grep -q -- "--skip-pr"'
 
 # ---------------------------------------------------------------- docs (4.3)
