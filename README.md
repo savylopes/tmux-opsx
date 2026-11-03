@@ -67,7 +67,7 @@ Not in tmux? It starts a session named after the project folder for you.
 | `ops-reviewer` subagent | `~/.claude/agents/opsx-reviewer.md` · `~/.cursor/agents/opsx-reviewer.md` · `~/.codex/agents/ops-reviewer.toml` · `~/.config/opencode/agents/ops-reviewer.md` · `~/.gemini/agents/opsx-reviewer.md` | Implementation review gate. Runs on `apply --validate` or `/opsx-run <change> review` |
 | `ops-security` subagent | `~/.claude/agents/opsx-security.md` · `~/.cursor/agents/opsx-security.md` · `~/.codex/agents/ops-security.toml` · `~/.config/opencode/agents/ops-security.md` · `~/.gemini/agents/opsx-security.md` | Security review gate. Runs on `apply --validate` or `/opsx-run <change> security` |
 | `ops-qa` subagent | `~/.claude/agents/opsx-qa.md` · `~/.cursor/agents/opsx-qa.md` · `~/.codex/agents/ops-qa.toml` · `~/.config/opencode/agents/ops-qa.md` · `~/.gemini/agents/opsx-qa.md` | UI/UX gate. Runs on `apply --validate` (dispatcher window `/goal`) or `/opsx-run <change> qa` / `/opsx-run qa "..."` |
-| `ops-pr-monitor` subagent | `~/.claude/agents/opsx-pr-monitor.md` (Claude Code only) | Background PR watcher of an `/opsx-pr` window: runs `pr.sh wait` (Bash only, `claude.pr-monitor = haiku` in models.conf) so the window stays idle between PR events |
+| `ops-pr-monitor` subagent | `~/.claude/agents/opsx-pr-monitor.md` (Claude Code only) | Background PR watcher of an `/opsx-pr` window: runs `pr.sh wait` (Bash only, `claude.pr-monitor = haiku` in models.conf) so the window stays idle between PR events. A PreToolUse hook (`~/.claude/skills/opsx-pr/monitor-guard.sh`) lets it run nothing but that wait. Skipped by `--skip-pr` |
 | `/opsx:*` commands + OpenSpec skills | global Claude / Cursor / Codex / OpenCode / Gemini dirs | OpenSpec propose/apply/archive/explore — installed globally by `./install.sh` |
 | `/graphify` skill | `~/.claude/skills/graphify/` · `~/.cursor/skills/graphify/` · `~/.agents/skills/graphify/` · `~/.codex/skills/graphify/` · `~/.config/opencode/skills/graphify/` · `~/.gemini/skills/graphify/` | Graphify knowledge-graph skill — installed globally after the CLI is verified |
 | OpenSpec CLI | npm global | `openspec` — the spec/change engine everything is built on |
@@ -194,6 +194,12 @@ cp agents/opsx-reviewer.md ~/.claude/agents/
 cp agents/opsx-reviewer.md ~/.gemini/agents/
 cp agents/opsx-security.md ~/.claude/agents/
 cp agents/opsx-security.md ~/.gemini/agents/
+# /opsx-pr (Claude Code) and its background watcher ops-pr-monitor; the agent's PreToolUse
+# hook runs $HOME/.claude/skills/opsx-pr/monitor-guard.sh, so install the guard there too:
+mkdir -p ~/.claude/skills/opsx-pr
+cp skills/opsx-pr/SKILL.md skills/opsx-pr/monitor-guard.sh skills/opsx-pr/pr.sh ~/.claude/skills/opsx-pr/
+chmod +x ~/.claude/skills/opsx-pr/pr.sh ~/.claude/skills/opsx-pr/monitor-guard.sh
+cp agents/opsx-pr-monitor.md ~/.claude/agents/
 # Cursor CLI subagent (name + description frontmatter only):
 awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' agents/opsx-applier.md \
   | { printf '%s\n' '---' 'name: ops-applier' \
@@ -439,7 +445,7 @@ Session names come from the project folder with `.`, `:` and whitespace folded t
 
 #### Per-agent models
 
-Each sub-agent (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa) can run on its own model, separate from the window's `--model`. Writing code and hunting security bugs get the strongest model; eval checks and long QA sessions get a faster one.
+Each sub-agent (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa, and on Claude Code ops-pr-monitor) can run on its own model, separate from the window's `--model`. Writing code and hunting security bugs get the strongest model; eval checks and long QA sessions get a faster one.
 
 **Defaults** live in `agents/models.conf`, one `<cli>.<agent> = <model>` per line (`<cli>` is `claude`, `agent` for Cursor, or `opencode`; `<model>` may be `inherit`, the window's model):
 
@@ -449,6 +455,7 @@ claude.eval     = sonnet
 claude.reviewer = opus
 claude.security = opus
 claude.qa       = sonnet
+claude.pr-monitor = haiku      # ops-pr-monitor, the /opsx-pr background watcher (Claude Code only)
 agent.qa        = inherit      # every Cursor and OpenCode key ships as inherit
 ```
 
@@ -611,7 +618,7 @@ The window writes `openspec/changes/<change>/review/report.md` (verdict, finding
 ```bash
 /opsx-pr 42                 # pr.sh start 42: window pr-42 with the goal and the maintain prompt
 /opsx-pr open               # pr.sh open <current branch> --title … --body-file …, then start
-/opsx-pr list               # pr.sh list: repo, PR, window status (or none), last event, watch=<age>s|stale|-
+/opsx-pr list               # pr.sh list: repo, PR, window status (or none), last event, watch=<age>s|stale|off|-
 /opsx-pr stop 42            # pr.sh stop 42: close the window, keep state and worktree
 ```
 
@@ -619,10 +626,10 @@ The window writes `openspec/changes/<change>/review/report.md` (verdict, finding
 
 **The loop.** `pr.sh wait <pr>` polls `gh` and `git ls-remote` every 60 s for up to 540 s with no LLM work, then exits 3 ("nothing yet, call again") or prints one event, most important first: `merged`, `closed`, `parent-merged`, `parent-moved`, `base-moved`, `head-moved` (someone else pushed), `ci-failed`, `comments`. After handling it the agent runs `pr.sh seen <pr>`.
 
-- **Claude Code: a background monitor.** The window never runs `pr.sh wait` itself. It starts the **ops-pr-monitor** subagent in the background with the exact wait command and ends its turn, so the pane sits idle and reads what you type at once. The monitor (Bash only, haiku by default: `claude.pr-monitor` in `models.conf`) runs the wait again after each exit 3, at most three calls (about 27 minutes, under Claude Code's 30-minute idle check-in), and returns one line: `event=<kind>`, `idle`, `superseded` or `error: <message>`. That result reaches the window as a new turn: an event is handled, `seen`, and the next monitor started; `idle` starts the next one; `superseded` starts none; `error:` is a setup problem the window fixes or asks you about. `/goal` stays: Claude Code does not evaluate the goal while a background subagent runs, so the goal keeps the loop alive without interrupting it. While a monitor waits, the window can work on your message; an event the window caused itself (its own push, its own replies) is acknowledged with `seen` and nothing more. A monitor result that arrives while the window is busy with a long step waits until that turn ends.
+- **Claude Code: a background monitor.** The window never runs `pr.sh wait` itself. It starts the **ops-pr-monitor** subagent in the background with the exact wait command and ends its turn, so the pane sits idle and reads what you type at once. The monitor (Bash only, haiku by default: `claude.pr-monitor` in `models.conf`) runs the wait again after each exit 3, up to the `max-calls:` line of its prompt (about 25 minutes in total, under Claude Code's 30-minute idle check-in: the slice is clamped to 170 s so one call ends before Claude Code's 180 s auto-background limit for a subagent's Bash call, and max-calls is 1620 / slice, at most 30, so 9), and returns one line: `event=<kind>`, `idle`, `superseded`, `stopped` or `error: <message>`. A PreToolUse hook in its frontmatter (`monitor-guard.sh`) denies every Bash command but one `pr.sh wait … --gen <n>` call of the installed `pr.sh` without shell metacharacters, and a `cat`/`tail -n` of one task output file. The monitor never replies before its result line: a call that is still moved to the background gets only `waiting` (which the window ignores), then the monitor reads the exit code from the completion notification and goes on, so an idle window wakes about 2-3 times an hour. That result reaches the window as a new turn: an event is handled, `seen`, and the next monitor started; `idle` starts the next one; `superseded` (the monitor of an older prompt, after a refresh or restart) starts one for the current gen unless one already runs; `stopped` (`pr.sh stop`) starts none; `error:` is a setup problem the window fixes or asks you about. Only a monitor started with the current prompt's `--gen` counts as running. `/goal` stays: Claude Code does not evaluate the goal while a background subagent runs, so the goal keeps the loop alive without interrupting it. While a monitor waits, the window can work on your message; an event the window caused itself (its own push, its own replies) is acknowledged with `seen` and nothing more. A monitor result that arrives while the window is busy with a long step waits until that turn ends.
 - **Other CLIs: the foreground wait.** Cursor CLI, Codex CLI, OpenCode and Gemini CLI call `pr.sh wait` as one foreground tool call and call it again after exit 3; their background-subagent completion does not reliably start a new turn. Each wake is a short turn, about six an hour while the PR is quiet.
 
-`pr.sh` picks the loop by the window's agent CLI (`--agent-cli`, else the window's `@opsx_agent_cli`, else the CLI a new window gets). **One live watcher per PR:** the state holds `monitor_gen`; `start` (also a refresh), `restart-input` and `stop` increase it, the prompt's wait carries `--gen <n>`, and a wait whose gen no longer matches exits 4 (`superseded`) on its next poll, so a monitor left from an older prompt, a stop or a restore ends by itself. **Liveness:** every poll records `last_wait_at`; `pr.sh list` shows `watch=<age>s`, or `watch=stale` when no wait ran for longer than one slice plus one poll plus 30 s, so a loop that died quietly shows up.
+`pr.sh` picks the loop by the window's agent CLI (`--agent-cli`, else the window's `@opsx_agent_cli`, else the CLI a new window gets). **One live watcher per PR:** the state holds `monitor_gen`; `start` (also a refresh), `restart-input` and `stop` increase it, the prompt's wait carries `--gen <n>`, and a wait whose gen no longer matches exits 4 on its next poll (printing `stopped` after `pr.sh stop`, which also records `stopped_gen`, else `superseded`), so a monitor left from an older prompt, a stop or a restore ends by itself. **Liveness:** every poll records `last_wait_at`; `pr.sh list` shows `watch=<age>s`, or `watch=stale` when no wait ran for longer than one slice plus one poll plus 30 s, so a loop that died quietly shows up; `watch=off` once the last event is `merged`, `closed` or `stopped`. **Locking:** state writes hold a lock on the state file (`flock`, else a `mkdir` lock directory broken after 120 s); a lock not obtained within 30 s prints `pr: state lock busy` on stderr and the write goes ahead.
 
 **CI failures.** CI counts as failing when any check is in the `fail` or `cancel` bucket. `ci-failed` is reported once per head: `wait` records the head as `ci_reported=<sha>` when it prints the event (`seen` never does, so a failure that appears while the agent handles something else is still reported), and reports again only for a new head, or once CI on that head went pending or passed and then failed again (for example after a re-run; `rerun` keeps the current failure reported, so the old failed checks GitHub still shows for a few seconds are not taken as a repeat). The agent reads the checks and the failing log first. A failure clearly caused by the PR's change is fixed; otherwise (a test unrelated to the diff, a timeout, a network or runner error, a cancelled run) it runs `pr.sh rerun <pr>` once, which re-runs each failing GitHub Actions run with `gh run rerun <id> --failed` and records `rerun_head=<sha>`. `rerun` exits 6 when it already re-ran CI for the current head and 7 when there is nothing to re-run: no check is failing, or no failing check is a GitHub Actions run (external CI is never re-run). A second failure on the same head, or exit 6 or 7, is treated as real: fixed, or asked about when the cause is unclear. `gh run rerun` needs `actions: write`; without it `rerun` exits 1 and the failure is treated as real.
 

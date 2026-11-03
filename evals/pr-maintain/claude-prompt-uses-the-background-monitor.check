@@ -12,5 +12,5 @@ echo "$out" | grep -qi "background" || fail "prompt does not say background"
 echo "$out" | grep -qiE "end (your|the) turn" || fail "prompt does not say to end the turn"
 echo "$out" | grep -qiE "never run .?pr\.sh wait|not run .?pr\.sh wait|do not run .?pr\.sh wait|never .*pr\.sh wait" || fail "prompt does not forbid running pr.sh wait in the window"
 echo "$out" | grep -qE "pr\.sh wait.*--gen [0-9]+" || fail "wait command has no --gen <n>"
-for w in idle superseded "error:"; do echo "$out" | grep -qF "$w" || fail "prompt does not name $w"; done
+for w in idle superseded stopped "error:"; do echo "$out" | grep -qF "$w" || fail "prompt does not name $w"; done
 echo OK

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Stop is reported as stopped
+# level: L1
+# requirement: One live monitor per PR
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+sf=$(state_file 42); sed -i '/^monitor_gen=/d' "$sf"; echo "monitor_gen=1" >> "$sf"
+( sleep 3; "$PRSH" stop 42 --repo "$R" >/dev/null 2>&1 ) &
+s=$(date +%s)
+out=$("$PRSH" wait 42 --gen 1 --slice 30 --poll 1 --repo "$R" 2>&1); rc=$?
+e=$(( $(date +%s) - s ))
+echo "$out"; echo "exit $rc after ${e}s"
+[ $rc -eq 4 ] || fail "expected exit 4, got $rc"
+[ $e -le 12 ] || fail "took ${e}s"
+echo "$out" | grep -q "stopped" || fail "no stopped line"
+echo "$out" | grep -q "superseded" && fail "printed superseded"
+echo OK

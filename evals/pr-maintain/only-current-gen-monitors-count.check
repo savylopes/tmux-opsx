@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Only current-gen monitors count
+# level: L1
+# requirement: Background PR monitor on Claude Code
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli claude --repo "$R" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -qiE "only (if|when)[^.]*--gen|current .?--gen|current gen" || fail "prompt does not say a monitor counts only with the current --gen"
+echo "$out" | grep -qiE "count" || fail "prompt does not say which monitors count"
+echo "$out" | grep -qF "superseded" || fail "prompt does not mention superseded"
+echo "$out" | grep -i "superseded" | grep -qiE "start|ensure" || echo "note: superseded line lacks start/ensure on same line"
+echo "$out" | grep -qi "When unsure, start one" && fail "prompt still contains 'When unsure, start one'"
+echo OK

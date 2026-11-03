@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Busy lock warns
+# level: L2
+# requirement: State writes are locked
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+"$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"
+sf=$(state_file 42)
+if command -v flock >/dev/null 2>&1; then
+  ( exec 9>"$sf.lock"; flock 9; sleep 45 ) & holder=$!
+else
+  mkdir "$sf.lockd" || fail "cannot create lock dir"; holder=
+fi
+sleep 1
+s=$(date +%s)
+err=$("$PRSH" seen 42 --repo "$R" 2>&1 >/dev/null); rc=$?
+e=$(( $(date +%s) - s ))
+[ -n "$holder" ] && kill "$holder" 2>/dev/null; rmdir "$sf.lockd" 2>/dev/null
+echo "exit $rc after ${e}s"; echo "$err"
+[ $rc -eq 0 ] || fail "seen exit $rc"
+echo "$err" | grep -q "state lock busy" || fail "no 'state lock busy' warning on stderr"
+[ $e -ge 25 ] || fail "returned after ${e}s, before the 30s wait"
+grep -q '^head_sha=' "$sf" || echo "note: head_sha not found in state"
+echo OK

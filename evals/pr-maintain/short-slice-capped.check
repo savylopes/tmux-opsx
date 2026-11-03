@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Short slice capped
+# level: L1
+# requirement: Slice fits the monitor
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli claude --slice 30 --repo "$R" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -E "pr\.sh wait|max-calls|idle"
+echo "$out" | grep -qE "max-calls: 30\b" || fail "no 'max-calls: 30'"
+echo "$out" | grep -E '`idle`' | grep -qE "about 15 minutes" || fail "idle line does not say about 15 minutes"
+echo OK

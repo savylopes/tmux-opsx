@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Repo path with a space
+# level: L1
+# requirement: Quoted wait command
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+mkdir -p "$EVAL_TMP/my repo"; cp -a "$R/." "$EVAL_TMP/my repo/"
+out=$("$PRSH" prompt 42 --agent-cli claude --repo "$EVAL_TMP/my repo" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -F "pr.sh" | grep -F -- "--repo"
+want="--repo ${EVAL_TMP}/my\\ repo"
+echo "$out" | grep -qF -- "$want" || fail "wait command lacks: $want"
+echo OK

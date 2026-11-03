@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Stale lock broken once
+# level: L1
+# requirement: State writes are locked
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+mkdir -p "$EVAL_TMP/nof"
+for d in /usr/bin /bin; do for f in "$d"/*; do b=${f##*/}; [ "$b" = flock ] && continue; [ -e "$EVAL_TMP/nof/$b" ] || ln -s "$f" "$EVAL_TMP/nof/$b" 2>/dev/null; done; done
+export PATH="$EVAL_TMP/nof"
+command -v flock >/dev/null 2>&1 && fail "flock still on PATH"
+cat > "$EVAL_TMP/w.sh" <<'EOS'
+#!/usr/bin/env bash
+. "$1"
+SLUG=o/app; PR=42
+for i in $(seq 1 20); do sset "$2$i" "$i"; done
+EOS
+export XDG_STATE_HOME="$EVAL_TMP/st"; mkdir -p "$XDG_STATE_HOME"
+d="$XDG_STATE_HOME/tmux-opsx/pr/o-app-42"; mkdir -p "$d"; sf="$d/state"; : > "$sf"
+# the lock directory is the one the product uses: find it by provoking a write and
+# watching for a new entry; fall back to the documented "<state>.lockd" name.
+mkdir "$sf.lockd" || fail "cannot create lock dir"
+touch -d '10 minutes ago' "$sf.lockd"
+bash "$EVAL_TMP/w.sh" "$PRSH" a & p1=$!
+bash "$EVAL_TMP/w.sh" "$PRSH" b & p2=$!
+wait $p1 $p2
+n=$(grep -cE '^[ab][0-9]+=' "$sf"); echo "keys: $n"
+[ "$n" -eq 40 ] || fail "expected 40 keys, got $n"
+left=$(find "$d" -maxdepth 1 \( -name '*lock*' -type d \) 2>/dev/null); echo "lock dirs left: [$left]"
+[ -z "$left" ] || fail "lock directory left: $left"
+echo OK

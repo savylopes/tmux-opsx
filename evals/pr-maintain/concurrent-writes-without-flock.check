@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Concurrent writes without flock
+# level: L1
+# requirement: State writes are locked
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+# PATH without flock: symlink every tool except flock
+mkdir -p "$EVAL_TMP/nof"
+for d in /usr/bin /bin; do for f in "$d"/*; do b=${f##*/}; [ "$b" = flock ] && continue; [ -e "$EVAL_TMP/nof/$b" ] || ln -s "$f" "$EVAL_TMP/nof/$b" 2>/dev/null; done; done
+export PATH="$EVAL_TMP/nof"
+command -v flock >/dev/null 2>&1 && fail "flock still on PATH"
+cat > "$EVAL_TMP/w.sh" <<'EOS'
+#!/usr/bin/env bash
+. "$1"
+SLUG=o/app; PR=42
+for i in $(seq 1 50); do sset "$2$i" "$i"; done
+EOS
+export XDG_STATE_HOME="$EVAL_TMP/st"; mkdir -p "$XDG_STATE_HOME"
+bash "$EVAL_TMP/w.sh" "$PRSH" a & p1=$!
+bash "$EVAL_TMP/w.sh" "$PRSH" b & p2=$!
+wait $p1 $p2
+sf="$XDG_STATE_HOME/tmux-opsx/pr/o-app-42/state"
+n=$(grep -cE '^[ab][0-9]+=' "$sf"); echo "keys: $n"
+[ "$n" -eq 100 ] || fail "expected 100 keys, got $n"
+echo OK

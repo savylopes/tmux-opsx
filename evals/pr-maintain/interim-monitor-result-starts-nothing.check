@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Interim monitor result starts nothing
+# level: L1
+# requirement: Background PR monitor on Claude Code
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli claude --repo "$R" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -F "waiting" || fail "prompt does not name the waiting line"
+echo "$out" | grep -qiE "interim" || fail "prompt does not mention an interim result"
+flat=$(echo "$out" | tr '\n' ' ' | tr -s ' ')
+echo "$flat" | grep -oE '`waiting`.{0,400}' | grep -qiE "not a reason to start a monitor" || fail "text after 'waiting' lacks 'not a reason to start a monitor'"
+echo OK

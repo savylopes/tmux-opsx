@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Skipped with --skip-pr
+# level: L2
+# requirement: PR monitor agent
+set -u
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install --skip-pr); rc=$?
+echo "$out" | tail -10; echo "install exit $rc"
+[ $rc -eq 0 ] || fail "install exit $rc"
+f=$(find "$HOME" \( -name 'opsx-pr-monitor.md' -o -name 'monitor-guard.sh' \) 2>/dev/null); echo "found: $f"
+[ -z "$f" ] || fail "monitor files installed despite --skip-pr"
+echo OK
