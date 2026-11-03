@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Missing max-calls defaults to nine
+# level: L2
+# requirement: PR monitor agent
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install); rc=$?
+[ $rc -eq 0 ] || { echo "$out" | tail -20; fail "install exit $rc"; }
+f="$HOME/.claude/agents/opsx-pr-monitor.md"; [ -f "$f" ] || fail "$f missing"
+flat=$(tr "\n" " " < "$f" | tr -s " ")
+echo "$flat" | grep -qiE "9 calls when no .?max-calls:.? line|9 calls .*max-calls.* (is )?(missing|absent|not given)|default 9" || fail "installed agent lacks the 9-call default"
+echo "$flat" | grep -qiE "no .?max-calls:.? line was given" && echo "found default phrase"
+echo OK

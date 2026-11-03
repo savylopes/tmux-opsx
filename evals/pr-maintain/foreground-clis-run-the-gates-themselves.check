@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Foreground CLIs run the gates themselves
+# level: L1
+# requirement: Gates before a push
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli codex --repo "$R" 2>&1); rc=$?
+[ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+flat=$(echo "$out" | tr "\n" " " | tr -s " ")
+echo "$flat" | grep -qiE "apply the fix yourself in the worktree" || fail "no 'apply the fix yourself in the worktree'"
+echo "$flat" | grep -qiE "run each gate yourself" || fail "no 'run each gate yourself'"
+echo "$flat" | grep -qiE "same order" || fail "no 'same order'"
+echo "$out" | grep -q 'subagent_type' && fail "codex prompt tells to spawn subagents"
+echo OK
