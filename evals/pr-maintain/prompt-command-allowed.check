@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt command allowed
+# level: L1
+# requirement: Monitor command guard
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+G_=$EVAL_ROOT/skills/opsx-pr/monitor-guard.sh
+[ -x "$G_" ] || fail "monitor-guard.sh missing or not executable"
+mkdir -p "$EVAL_TMP/my repo"; cp -a "$R/." "$EVAL_TMP/my repo/"
+for repo in "$R" "$EVAL_TMP/my repo"; do
+  out=$("$PRSH" prompt 42 --agent-cli claude --repo "$repo" 2>&1) || fail "prompt failed"
+  cmd=$(echo "$out" | grep -E "pr\.sh wait [0-9]+ --repo" | head -1 | sed -E 's/^[^/]*(\/)/\1/; s/[`"]+$//')
+  echo "cmd: $cmd"
+  [ -n "$cmd" ] || fail "no wait command found in prompt"
+  payload=$(jq -nc --arg c "$cmd" '{tool_name:"Bash",tool_input:{command:$c}}')
+  printf '%s' "$payload" | "$G_"; rc=$?
+  echo "guard exit $rc"; [ $rc -eq 0 ] || fail "guard denied the prompt's command (repo=$repo)"
+done
+echo OK

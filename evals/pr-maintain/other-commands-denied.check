@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Other commands denied
+# level: L1
+# requirement: Monitor command guard
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tools
+G_=$EVAL_ROOT/skills/opsx-pr/monitor-guard.sh
+[ -x "$G_" ] || fail "monitor-guard.sh missing or not executable"
+P=$EVAL_ROOT/skills/opsx-pr/pr.sh
+# sanity: a plain valid command is allowed
+jq -nc --arg c "$P wait 42 --repo /r --slice 5 --poll 1 --gen 1" '{tool_input:{command:$c}}' | "$G_" >/dev/null 2>&1 || fail "valid command denied"
+bad=("$P wait 42 --repo /r --slice 5 --poll 1 --gen 1; rm -rf x" "gh pr view 42" "cat ~/.ssh/id_rsa" "$P wait 42 --repo \$(id) --slice 5 --poll 1 --gen 1")
+for c in "${bad[@]}"; do
+  err=$(jq -nc --arg c "$c" '{tool_input:{command:$c}}' | "$G_" 2>&1 >/dev/null); rc=$?
+  echo "[$c] -> exit $rc: $err"
+  [ $rc -eq 2 ] || fail "expected exit 2 for: $c"
+  [ -n "$err" ] || fail "no reason on stderr for: $c"
+done
+echo OK

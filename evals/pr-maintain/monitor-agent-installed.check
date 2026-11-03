@@ -13,7 +13,10 @@ grep -q "ops-pr-monitor" "$f" || fail "does not name ops-pr-monitor"
 t=$(grep -m1 '^tools:' "$f"); echo "$t"
 echo "$t" | grep -q "Bash" || fail "no Bash tool"
 echo "$t" | grep -qiE "Read|Write|Edit|Grep|Glob|Agent|Web" && fail "more than Bash listed"
+grep -q '^hooks:' "$f" && grep -q 'PreToolUse' "$f" || fail "no PreToolUse hook"
+grep -q 'monitor-guard.sh' "$f" || fail "hook does not name monitor-guard.sh"
 out=$(run_install --uninstall); rc=$?
 echo "uninstall exit $rc"
 [ -e "$f" ] && fail "agent file still present after --uninstall"
+g=$(find "$HOME" -name monitor-guard.sh 2>/dev/null); [ -z "$g" ] || fail "guard still present after --uninstall: $g"
 echo OK

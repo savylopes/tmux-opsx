@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Long slice clamped
+# level: L1
+# requirement: Slice fits the monitor
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli claude --slice 900 --repo "$R" 2>&1); rc=$?
+echo "exit $rc"; [ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -E "pr\.sh wait|max-calls" 
+echo "$out" | grep -qE "pr\.sh wait.* --slice 570( |$)" || fail "wait command lacks --slice 570"
+echo "$out" | grep -q -- "--slice 900" && fail "slice 900 still present"
+echo "$out" | grep -qE "^\s*max-calls: 2\s*$|max-calls: 2\b" || fail "no 'max-calls: 2'"
+echo OK
