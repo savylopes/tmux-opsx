@@ -409,7 +409,7 @@ out=$(P open feat-x --base feat-x --title T --body-file "$SP/b.md" 2>&1); rc=$?
 ok "security F5: open refuses a branch equal to --base" '[ $rc -eq 1 ] && ! git -C "$ORIGIN" rev-parse -q --verify refs/heads/feat-x >/dev/null'
 
 # ---------------------------------------------------------------- shellcheck (2.7)
-ok "shellcheck pr.sh and this test" '! command -v shellcheck >/dev/null || shellcheck "$PRSH" "$SELF"'
+ok "shellcheck pr.sh, monitor-guard.sh and this test" '! command -v shellcheck >/dev/null || shellcheck "$PRSH" "$REPO/skills/opsx-pr/monitor-guard.sh" "$SELF"'
 
 # ---------------------------------------------------------------- tmux server
 $L kill-server 2>/dev/null
