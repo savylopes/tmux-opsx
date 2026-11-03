@@ -160,7 +160,9 @@ with_state_lock with_state_lock sset reent 1
 EOF
 ok "write_seen and sset inside a held lock of the same process do not deadlock" 'timeout 20 env OPSX_PR_LOCK_WAIT=5 bash "$SP/reent.sh" "$PRSH" 2>"$SP/lock.err" && ! grep -q "lock busy" "$SP/lock.err" && grep -qx "reent=1" "$SD/o-app-77/state" && grep -qx "head_sha=v-head_sha" "$SD/o-app-77/state"'
 rm -rf "$SD/o-app-77"
-flock "$ST42.lock" sleep 6 & hp=$!; sleep 0.5
+flock "$ST42.lock" sleep 8 & hp=$!
+# Under load the holder may take a while to get the lock: wait until it has it.
+for _ in $(seq 1 50); do flock -n "$ST42.lock" true || break; sleep 0.1; done
 sed -i "/^seen_at=/d" "$ST42"
 OPSX_PR_LOCK_WAIT=2 P seen 42 >/dev/null 2>"$SP/lock.err"; rc=$?
 ok "flock held by another process: seen warns 'state lock busy' on stderr and still updates" '[ $rc -eq 0 ] && grep -q "pr: state lock busy after 2s" "$SP/lock.err" && grep -q "^seen_at=" "$ST42"'
@@ -171,6 +173,15 @@ ok "mkdir lock held: seen warns 'state lock busy' and still updates" '[ $rc -eq 
 touch -d "3 minutes ago" "$ST42.lockd"
 PATH=$NOFL OPSX_PR_LOCK_WAIT=1 "$PRSH" seen 42 --repo "$R" >/dev/null 2>"$SP/lock.err"; rc=$?
 ok "mkdir lock older than 120 s is broken: no warning, lock dir gone afterwards" '[ $rc -eq 0 ] && ! grep -q "lock busy" "$SP/lock.err" && [ ! -e "$ST42.lockd" ]'
+# Round 2 F5: a stale lock is renamed before removal, so two writers break it once.
+setkeys20() { PATH=$1 OPSX_PR_LOCK_WAIT=10 bash -c '. "$1"; SLUG=o/app PR=42; for i in $(seq 1 20); do sset "$2$i" "$i"; done' _ "$PRSH" "$2"; }
+for n in 1 2 3; do
+  mkdir "$ST42.lockd"; touch -d "10 minutes ago" "$ST42.lockd"
+  setkeys20 "$NOFL" "ls${n}a" 2>>"$SP/stale.err" & p1=$!; setkeys20 "$NOFL" "ls${n}b" 2>>"$SP/stale.err" & p2=$!; wait $p1 $p2
+done
+ok "stale mkdir lock, two writers without flock (3 rounds): all keys kept, no lock dir left, no busy warning" '[ "$(grep -c "^ls[123][ab][0-9]*=" "$ST42")" -eq 120 ] && [ -z "$(find "$(dirname "$ST42")" -maxdepth 1 -name "state.lockd*")" ] && ! grep -q "lock busy" "$SP/stale.err"'
+ok "pr.sh breaks a stale lock by renaming it first" 'grep -q "mv \"\$d\" \"\$sd\"" "$PRSH"'
+sed -i "/^ls[123][ab][0-9]*=/d" "$ST42"
 
 # ---------------------------------------------------------------- wait (2.3)
 t0=$(date +%s); out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?; dt=$(( $(date +%s) - t0 ))
@@ -180,11 +191,14 @@ ok "nothing changes: exit 3 within a few seconds, no event" '[ $rc -eq 3 ] && [ 
 setstate() { # file key value
   awk -v k="$2" -v v="$3" 'index($0, k "=") == 1 { if (!d) print k "=" v; d = 1; next } { print } END { if (!d) print k "=" v }' "$1" > "$1.t" && mv "$1.t" "$1"
 }
+# The same lock as pr.sh (flock on <state>.lock), so a background wait's own
+# write cannot overwrite this one.
+setstate_locked() { flock "$1.lock" bash -c 'awk -v k="$2" -v v="$3" '"'"'index($0, k "=") == 1 { if (!d) print k "=" v; d = 1; next } { print } END { if (!d) print k "=" v }'"'"' "$1" > "$1.t" && mv "$1.t" "$1"' _ "$1" "$2" "$3"; }
 ok "wait records last_wait_at (epoch seconds)" 'at=$(sed -n "s/^last_wait_at=//p" "$ST42"); [[ $at =~ ^[0-9]+$ ]] && [ $(( $(date +%s) - at )) -le 10 ]'
 setstate "$ST42" monitor_gen 1
 t0=$(date +%s)
 P wait 42 --gen 1 --slice 30 --poll 1 >"$SP/gen.out" 2>"$SP/gen.err" & gpid=$!
-sleep 2; setstate "$ST42" monitor_gen 2
+sleep 2; setstate_locked "$ST42" monitor_gen 2
 wait "$gpid"; rc=$?; dt=$(( $(date +%s) - t0 ))
 ok "wait --gen: gen bumped mid-wait exits 4 within a few seconds, says superseded, no event" '[ $rc -eq 4 ] && [ $dt -le 8 ] && grep -q superseded "$SP/gen.err" && ! grep -q "pr: stopped" "$SP/gen.err" && ! grep -q "^event=" "$SP/gen.out"'
 t0=$(date +%s); out=$(P wait 42 --gen 1 --slice 30 --poll 1 2>"$SP/gen.err"); rc=$?; dt=$(( $(date +%s) - t0 ))
@@ -195,6 +209,13 @@ out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
 ok "wait without --gen ignores monitor_gen (exit 3)" '[ $rc -eq 3 ] && grep -qx "monitor_gen=2" "$ST42"'
 out=$(P wait 42 --gen x --slice 2 --poll 1 2>&1); rc=$?
 ok "wait --gen rejects a non-number" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q -- "--gen"'
+# Round 2 F1: the slice counts from the start and no poll round runs past it.
+# gh pr view (one per poll round) takes 3 s: rounds at 0-3 and 7-10 s; a third
+# round (14-17 s) would end past the 14 s slice, so wait sleeps out the slice
+# instead (the old loop started it and returned at about 17 s).
+mkdir -p "$SP/slowgh"; printf '#!/bin/sh\n[ "$1 $2" = "pr view" ] && sleep 3\nexec "%s" "$@"\n' "$SP/fakebin/gh" > "$SP/slowgh/gh"; chmod +x "$SP/slowgh/gh"
+t0=$(date +%s.%N); PATH="$SP/slowgh:$PATH" P wait 42 --slice 14 --poll 4 >/dev/null 2>&1; rc=$?; dt=$(echo "$(date +%s.%N) - $t0" | bc)
+ok "wait --slice 14 --poll 4 with 3 s poll rounds: exit 3 after the slice, before a third round could end (17 s)" '[ $rc -eq 3 ] && [ "$(echo "$dt >= 13 && $dt < 16.5" | bc)" -eq 1 ] || { echo "rc=$rc dt=$dt"; false; }'
 echo '[{"id":5},{"id":7},{"id":12}]' > "$api42c"
 out=$(P wait 42 --slice 5 --poll 1); rc=$?
 ok "new review comment -> event=comments" '[ $rc -eq 0 ] && [ "$out" = "event=comments" ] && grep -qx "last_event=comments" "$ST42"'
@@ -538,11 +559,20 @@ ok "list: last_wait_at an hour old shows watch=stale" 'printf "%s\n" "$out" | gr
 ok "list: never waited shows watch=-" 'printf "%s\n" "$out" | grep -P "^o/app\t99\tnone\t-\twatch=-$" >/dev/null'
 # pr-monitor-hardening 4.1: watch=off once the last event is merged, closed or stopped.
 for e in merged closed stopped; do
-  mkdir -p "$SD/o-app-9$e"; printf 'repo=o/app\npr=9%s\nlast_event=%s\nlast_wait_at=%s\n' "$e" "$e" $(( $(date +%s) - 3600 )) > "$SD/o-app-9$e/state"
+  mkdir -p "$SD/o-app-9$e"; printf 'repo=o/app\npr=9%s\nlast_event=%s\nlast_wait_at=%s\nmonitor_gen=3\nstopped_gen=3\n' "$e" "$e" $(( $(date +%s) - 3600 )) > "$SD/o-app-9$e/state"
 done
+# Round 2 F2: stopped, then start or restart-input (stopped_gen cleared, gen bumped).
+for k in fresh old; do
+  mkdir -p "$SD/o-app-8$k"; printf 'repo=o/app\npr=8%s\nlast_event=stopped\nmonitor_gen=4\nstopped_gen=\nlast_wait_at=%s\nwait_slice=170\nwait_poll=60\n' "$k" "$( [ $k = fresh ] && echo $(( $(date +%s) - 5 )) || echo $(( $(date +%s) - 3600 )) )" > "$SD/o-app-8$k/state"
+done
+mkdir -p "$SD/o-app-87"; printf 'repo=o/app\npr=87\nlast_event=stopped\nmonitor_gen=4\nstopped_gen=3\nlast_wait_at=%s\n' $(( $(date +%s) - 5 )) > "$SD/o-app-87/state"
 out=$("$PRSH" list)
 ok "list: last_event merged/closed/stopped with an hour-old wait shows watch=off" 'for e in merged closed stopped; do printf "%s\n" "$out" | grep -P "^o/app\t9$e\t.*\t$e\twatch=off$" >/dev/null || { echo "no watch=off for $e"; exit 1; }; done'
+ok "list: stopped then restarted (stopped_gen cleared), a wait 5 s ago shows watch=<n>s" 'printf "%s\n" "$out" | grep -P "^o/app\t8fresh\t.*\tstopped\twatch=[0-9]+s$" >/dev/null'
+ok "list: stopped then restarted, the new monitor died an hour ago: watch=stale" 'printf "%s\n" "$out" | grep -P "^o/app\t8old\t.*\tstopped\twatch=stale$" >/dev/null'
+ok "list: stopped_gen of an older gen (restarted since) is not off" 'printf "%s\n" "$out" | grep -P "^o/app\t87\t.*\twatch=[0-9]+s$" >/dev/null'
 ok "list: last_event comments with an hour-old wait still shows watch=stale" 'printf "%s\n" "$out" | grep -P "^o/app\t43\t.*\twatch=stale$" >/dev/null'
+rm -rf "$SD"/o-app-8fresh "$SD"/o-app-8old "$SD"/o-app-87
 rm -rf "$SD/o-app-99" "$SD"/o-app-9merged "$SD"/o-app-9closed "$SD"/o-app-9stopped
 out=$(P stop 42); rc=$?
 ok "stop closes the window, keeps the state file" '[ $rc -eq 0 ] && [ -z "$(winof pr-42)" ] && [ -f "$ST42" ]'
@@ -562,6 +592,9 @@ out=$(P wait 42 --gen 4 --slice 30 --poll 1 2>"$SP/stop.err"); rc=$?
 ok "wait --gen after stop: exit 4, says stopped, not superseded, no event" '[ $rc -eq 4 ] && grep -q "pr: stopped" "$SP/stop.err" && ! grep -q superseded "$SP/stop.err" && [ -z "$out" ]'
 out=$(P start 42 --agent-cli claude 2>&1); rc=$?
 ok "start clears stopped_gen (monitor_gen=6)" '[ $rc -eq 0 ] && grep -qx "monitor_gen=6" "$ST42" && grep -qx "stopped_gen=" "$ST42"'
+P wait 42 --gen 6 --slice 2 --poll 1 >/dev/null 2>&1
+out=$("$PRSH" list)
+ok "list after stop, start and a wait: watch=<n>s, not off (last_event still stopped)" 'printf "%s\n" "$out" | grep -P "^o/app\t42\t.*\tstopped\twatch=[0-9]+s$" >/dev/null || { printf "%s\n" "$out"; false; }'
 t0=$(date +%s)
 P wait 42 --gen 6 --slice 30 --poll 1 >"$SP/stop.out" 2>"$SP/stop.err" & gpid=$!
 sleep 2; P stop 42 >/dev/null
@@ -700,10 +733,13 @@ ok "prompt claude: names the idle, superseded, stopped and error: results; no se
 G42=$(sed -n "s/^monitor_gen=//p" "$ST42")
 ok "prompt claude: only a monitor started with the current --gen counts; superseded -> step 1; no 'When unsure'" 'grep -q "counts as running only if you started it with .--gen $G42." "$SP/p.claude" && sed -n "/^   - .superseded.:/,/^   - .stopped.:/p" "$SP/p.claude" | grep -q "Go back to 1" && ! grep -qi "When unsure, start one" "$SP/p.claude"'
 ok "prompt claude: stopped starts no monitor" 'sed -n "/^   - .stopped.:/,/^   - .error/p" "$SP/p.claude" | grep -q "Start no monitor"'
-ok "prompt claude: default slice 540 gives max-calls: 3 on its own line after the command" 'grep -q -- "--slice 540 --poll 60 --gen [0-9]*\`$" "$SP/p.claude" && grep -qx "   \`max-calls: 3\`" "$SP/p.claude"'
+ok "prompt claude: default slice 540 is clamped to 170, max-calls: 9 on its own line after the command" 'grep -q -- "--slice 170 --poll 60 --gen [0-9]*\`$" "$SP/p.claude" && grep -qx "   \`max-calls: 9\`" "$SP/p.claude"'
 P prompt 42 --agent-cli claude --slice 900 > "$SP/p.900"
-ok "prompt claude --slice 900: wait uses --slice 570, max-calls: 2" 'grep -q -- "wait 42 --repo .* --slice 570 --poll" "$SP/p.900" && ! grep -q -- "--slice 900" "$SP/p.900" && grep -q "max-calls: 2" "$SP/p.900"'
-ok "prompt claude --slice 30: max-calls: 54" 'P prompt 42 --agent-cli claude --slice 30 | grep -q "max-calls: 54"'
+ok "prompt claude --slice 900: wait uses --slice 170, max-calls: 9, idle about 25 minutes" 'grep -q -- "wait 42 --repo .* --slice 170 --poll" "$SP/p.900" && ! grep -q -- "--slice 900" "$SP/p.900" && grep -q "max-calls: 9\`" "$SP/p.900" && grep -q "^   - .idle.: nothing changed for about 25 minutes" "$SP/p.900"'
+P prompt 42 --agent-cli claude --slice 30 > "$SP/p.30"
+ok "prompt claude --slice 30: max-calls capped at 30, idle about 15 minutes" 'grep -q "max-calls: 30\`" "$SP/p.30" && grep -q "nothing changed for about 15 minutes" "$SP/p.30"'
+ok "prompt claude --slice 170 and 171: both 170 / max-calls 9; --slice 169: max-calls 9" 'for x in 170 171; do P prompt 42 --agent-cli claude --slice $x | grep -q -- "--slice 170 --poll" || exit 1; done; P prompt 42 --agent-cli claude --slice 169 | grep -q "max-calls: 9\`"'
+ok "prompt claude: waiting or a non-matching result starts no monitor" 'grep -q "^   - .waiting., or any other text that is not one of the results" "$SP/p.claude" && grep -q "not a reason to start a monitor" "$SP/p.claude"'
 ok "prompt codex --slice 900: foreground keeps --slice 900, no max-calls" 'P prompt 42 --agent-cli codex --slice 900 > "$SP/p.c900"; grep -q -- "--slice 900" "$SP/p.c900" && ! grep -q "max-calls" "$SP/p.c900"'
 SPR="$SP/my repo"; $G clone -q "$ORIGIN" "$SPR" 2>/dev/null
 "$PRSH" prompt 42 --agent-cli claude --repo "$SPR" > "$SP/p.space" 2>/dev/null
@@ -723,6 +759,16 @@ ok "guard: denies cat ~/.ssh/id_rsa" 'guard "cat ~/.ssh/id_rsa"; [ $? -eq 2 ]'
 ok "guard: denies a command with \$(id)" 'guard "$PRSH wait 42 --repo \$(id) --slice 5 --poll 1 --gen 1"; [ $? -eq 2 ]'
 ok "guard: denies a newline-joined second command" 'guard "$WC2"$'"'"'\n'"'"'"id"; [ $? -eq 2 ]'
 ok "guard: denies backticks, pipes, && and a missing --gen" 'for c in "$PRSH wait 42 --repo \`id\` --slice 5 --poll 1 --gen 1" "$WC2 | sh" "$WC2 && id" "$PRSH wait 42 --repo /r --slice 5 --poll 1"; do guard "$c"; [ $? -eq 2 ] || { echo "allowed: $c"; exit 1; }; done'
+# Round 2 F4: only the pr.sh next to the guard, by absolute path.
+ok "guard: denies a relative pr.sh path" 'guard "skills/opsx-pr/pr.sh wait 42 --repo /r --slice 5 --poll 1 --gen 1"; a=$?; guard "env/pr.sh wait 42 --repo /r --slice 5 --poll 1 --gen 1"; b=$?; [ $a -eq 2 ] && [ $b -eq 2 ]'
+ok "guard: denies an assignment prefix (PATH=/x/pr.sh wait ...)" 'guard "PATH=/x/pr.sh wait 42 --repo /r --slice 5 --poll 1 --gen 1"; a=$?; guard "PATH=$PRSH wait 42 --repo /r --slice 5 --poll 1 --gen 1"; b=$?; [ $a -eq 2 ] && [ $b -eq 2 ]'
+mkdir -p "$SP/other"; cp "$PRSH" "$SP/other/pr.sh"
+ok "guard: denies another absolute pr.sh (not the one next to the guard)" 'guard "$SP/other/pr.sh wait 42 --repo /r --slice 5 --poll 1 --gen 1"; [ $? -eq 2 ] && grep -q "not the installed pr.sh" "$SP/guard.err"'
+ok "guard: allows the same pr.sh by a non-canonical absolute path" 'guard "$REPO/skills/opsx-pr/../opsx-pr/pr.sh wait 42 --repo /r --slice 5 --poll 1 --gen 1"'
+# Round 2 F1 fallback: cat or tail -n of one task output file, nothing else.
+TO=/tmp/claude-1000/-home-u-p/0a1b-2c3d/tasks/bq7x9.output
+ok "guard: allows tail -n 5 and cat of a task output file" 'guard "tail -n 5 $TO" && guard "cat $TO"'
+ok "guard: denies other reads (/etc/passwd, tail -f, .., extra args, another dir)" 'for c in "cat /etc/passwd" "tail -f $TO" "tail -n 5 /tmp/claude-1000/../../etc/tasks/x.output" "tail -n 5 /tmp/claude-1000/a/../tasks/x.output" "cat $TO /etc/passwd" "cat /tmp/claude-1000/a/b/c/tasks/x.output" "tail -n 5 $TO; id" "cat /tmp/claude-x/a/b/tasks/x.output" "head $TO"; do guard "$c"; [ $? -eq 2 ] || { echo "allowed: $c"; exit 1; }; done'
 ok "guard: denies an empty or non-Bash payload" 'echo "{}" | "$GUARD" 2>/dev/null; [ $? -eq 2 ]'
 ok "prompt claude: self-caused head-moved and comments are acknowledged with seen" 'sed -n "/^3\. Events you caused yourself/,/^4\./p" "$SP/p.claude" > "$SP/p.self" && grep -q "head-moved" "$SP/p.self" && grep -q "comments" "$SP/p.self" && grep -q "pr.sh push" "$SP/p.self" && grep -q "own replies" "$SP/p.self" && grep -q "seen 42" "$SP/p.self"'
 ok "prompt codex: foreground wait with --gen, exit 4, no ops-pr-monitor" 'grep -q FOREGROUND "$SP/p.codex" && grep -q -- "wait 42 --repo .* --gen [0-9][0-9]*\`" "$SP/p.codex" && grep -q "Exit 4" "$SP/p.codex" && ! grep -q "ops-pr-monitor" "$SP/p.codex"'
@@ -880,6 +926,7 @@ ok "install: ops-pr-monitor in ~/.claude/agents, Bash only, model haiku" '[ -f "
 ok "install: ops-pr-monitor is Claude Code only" '[ ! -e "$IH/.cursor/agents/opsx-pr-monitor.md" ] && [ ! -e "$IH/.codex/agents/ops-pr-monitor.toml" ] && [ ! -e "$IH/.config/opencode/agents/ops-pr-monitor.md" ] && [ ! -e "$IH/.gemini/agents/opsx-pr-monitor.md" ]'
 ok "install: verify step checks ops-pr-monitor" 'printf "%s" "$out" | grep -q "\.claude/agents/opsx-pr-monitor.md"'
 ok "monitor agent: one-line return contract, max-calls (default 3, cap 30)" 'for t in "event=<kind>" "idle" "superseded" "stopped" "error: <" "600000" "max-calls:" "use 3" "use 30" "pr: stopped" "Never read GitHub content"; do grep -qF "$t" "$REPO/agents/opsx-pr-monitor.md" || { echo "missing: $t"; exit 1; }; done'
+ok "monitor agent: never ends its turn early; background fallback from the task notification" 'for t in "Never end your turn before your one final line" "moved to the background" "<task-notification>" "exit code" "<output-file>" "tail -n 5 <output-file>" "exactly the line \`waiting\`" "not a new" "never yields \`error: not a pr.sh wait command\`" "FIRST message"; do grep -qF "$t" "$REPO/agents/opsx-pr-monitor.md" || { echo "missing: $t"; exit 1; }; done'
 # pr-monitor-hardening 3.1 / 4.2: the PreToolUse hook runs the installed guard (absolute path).
 PG=$IH/.claude/skills/opsx-pr/monitor-guard.sh
 hookcmd() { fmpm | sed -n "s/^ *command: //p"; }
@@ -887,7 +934,8 @@ ok "install: monitor-guard.sh installed executable next to pr.sh" '[ -x "$PG" ] 
 ok "install: ops-pr-monitor has a Bash PreToolUse hook naming the installed guard" 'fmpm | grep -qx "hooks:" && fmpm | grep -qx "  PreToolUse:" && fmpm | grep -q "matcher: \"Bash\"" && hookcmd | grep -qF "$PG"'
 hookrun() { local c; c=$(hookcmd | sed "s/^'//; s/'\$//"); sh -c "$c"; }
 hookpay() { jq -n --arg c "$1" '{tool_input:{command:$c}}'; }
-ok "install: the hook command runs the guard (allows the wait, denies gh)" 'hookpay "$PRSH wait 1 --repo /r --slice 5 --poll 1 --gen 1" | hookrun && { hookpay "gh pr view 1" | hookrun 2>/dev/null; [ $? -eq 2 ]; }'
+ok "install: the hook command runs the guard (allows the wait, denies gh)" 'hookpay "$IH/.claude/skills/opsx-pr/pr.sh wait 1 --repo /r --slice 5 --poll 1 --gen 1" | hookrun && { hookpay "gh pr view 1" | hookrun 2>/dev/null; [ $? -eq 2 ]; }'
+ok "install: the installed guard denies the repo checkout's pr.sh" '{ hookpay "$PRSH wait 1 --repo /r --slice 5 --poll 1 --gen 1" | hookrun 2>/dev/null; [ $? -eq 2 ]; }'
 ok "install: verify step checks monitor-guard.sh" 'printf "%s" "$out" | grep -q "opsx-pr/monitor-guard.sh"'
 out=$(run_install --uninstall); rc=$?
 ok "uninstall removes all six opsx-pr folders" '[ $rc -eq 0 ] && [ "$(n_pr_dirs)" -eq 0 ]'

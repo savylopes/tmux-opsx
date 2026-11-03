@@ -372,9 +372,14 @@ with_state_lock() {
     local d="$f.lockd" i=0 got=0
     while :; do
       if mkdir "$d" 2>/dev/null; then got=1; break; fi
-      # Left behind by a killed process: break it after 120 s.
+      # Left behind by a killed process: break it after 120 s. Rename it first:
+      # only one process's mv of the same directory succeeds, so two waiters
+      # cannot both break it (and remove a lock the other just took). Between
+      # find and mv another process may break and retake it; that needs a
+      # crashed holder first and is one find call long.
       if [ -n "$(find "$d" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
-        rmdir "$d" 2>/dev/null || true
+        local sd="$d.stale.$$.$RANDOM"
+        if mv "$d" "$sd" 2>/dev/null; then rmdir "$sd" 2>/dev/null || true; fi
         continue
       fi
       [ "$i" -lt $(( LOCK_WAIT * 5 )) ] || break
@@ -694,15 +699,20 @@ mark_label() {
 # The Loop section: a background ops-pr-monitor on Claude Code, the
 # foreground wait elsewhere. $1 cli, $2 window script, $3 mark label.
 loop_text() {
-  local cli=$1 W=$2 M=$3 WAITCMD G s calls
+  local cli=$1 W=$2 M=$3 WAITCMD G s calls mins
   G=$(cur_gen)
   if is_claude_cli "$cli"; then
-    # One call must fit the monitor's 600 s Bash timeout; max-calls keeps a
-    # monitor's run at about 27 minutes whatever the slice.
-    s=$(( SLICE > 570 ? 570 : SLICE ))
+    # Claude Code moves a subagent's Bash call to the background after 180 s
+    # whatever its timeout, and the monitor would then reply early (waking the
+    # window). So one call stays under 180 s; max-calls keeps a monitor's run
+    # near 27 minutes (at most 30 calls), and idle names the effective run.
+    s=$(( SLICE > 170 ? 170 : SLICE ))
     [ "$s" -ge 1 ] || s=1
     calls=$(( 1620 / s ))
     [ "$calls" -ge 1 ] || calls=1
+    [ "$calls" -le 30 ] || calls=30
+    mins=$(( calls * s / 60 ))
+    [ "$mins" -ge 1 ] || mins=1
     # Quoted, so a path with spaces or shell characters stays one argument.
     WAITCMD=$(printf '%q wait %s --repo %q --slice %s --poll %s --gen %s' "$SELF" "$PR" "$REPO" "$s" "$POLL" "$G")
     cat <<EOF
@@ -724,14 +734,18 @@ once. Never run \`pr.sh wait\` in this window yourself, and never sleep to wait.
      \`$SELF worktree $PR --repo $REPO\` (it prints the path; never switch the main checkout's branch).
      After handling it (or after asking the user about it), run \`$SELF seen $PR --repo $REPO\`
      so the next wait starts from the new state, then go back to 1.
-   - \`idle\`: nothing changed for about 27 minutes. This is the expected idle step: go back to 1 at once.
+   - \`idle\`: nothing changed for about $mins minutes. This is the expected idle step: go back to 1 at once.
    - \`superseded\`: that monitor belonged to an older prompt (a refresh or a restart). Go back to 1: it
      starts a monitor for the current gen unless one that counts is already running.
    - \`stopped\`: the user ran \`pr.sh stop\`. Start no monitor; say in one line that the loop stopped.
    - \`error: <message>\`: \`wait\` counts failed polls as no change, so this is a setup failure (no state
      file, no base remote, a gh or auth problem). Read the message; fix what is clearly local and go back
      to 1, otherwise ask the user (see Ask the user first).
-   - anything else: treat it as \`error:\`.
+   - \`waiting\`, or any other text that is not one of the results above (an interim message, a
+     sentence about a call moved to the background): the monitor is still running. This is not a result
+     and not a reason to start a monitor: start nothing and end your turn; its real result follows.
+     Only when that monitor has finished (it is no longer among your running background tasks) does
+     such a final text count as \`error:\`.
 3. Events you caused yourself: the monitor keeps watching while you work on a user message, so it can
    report your own push or your own replies. Before acting on \`head-moved\` or \`comments\`, compare with
    what this window just did: when the new head is the SHA your \`pr.sh push\` printed, or the only new
@@ -899,17 +913,21 @@ cmd_seen() {
 }
 
 cmd_wait() {
+  # The slice counts from the start, setup included: on Claude Code a call
+  # must end before the 180 s auto-background limit (slice <= 170).
+  local deadline ev now t0 round=0
+  t0=$(date +%s)
   parse_opts "$@"
   setup_pr wait
   need_base_remote
   [ -f "$(state_file)" ] || die "no state for $SLUG#$PR; run 'pr.sh start $PR' or 'pr.sh seen $PR' first."
-  local deadline ev now
-  deadline=$(( $(date +%s) + SLICE ))
+  deadline=$(( t0 + SLICE ))
   # For list's watch column: how long a healthy watcher may go between polls.
   sset wait_slice "$SLICE"; sset wait_poll "$POLL"
   while :; do
     check_gen
-    sset last_wait_at "$(date +%s)"
+    t0=$(date +%s)
+    sset last_wait_at "$t0"
     ev=""
     # A failed poll (network, rate limit) counts as no change; try next poll.
     CUR_state=""
@@ -927,7 +945,10 @@ cmd_wait() {
       return 0
     fi
     now=$(date +%s)
-    if [ $((now + POLL)) -gt "$deadline" ]; then
+    round=$(( now - t0 ))
+    # Start the next round only when it should end by the deadline (it may take
+    # as long as this one did); else sleep out the slice.
+    if [ $((now + POLL + round)) -gt "$deadline" ]; then
       [ "$now" -lt "$deadline" ] && sleep $((deadline - now))
       check_gen
       printf 'pr: no event for %s#%s in %ss; run wait again\n' "$SLUG" "$PR" "$SLICE" >&2
@@ -1414,12 +1435,16 @@ cmd_restart_input() {
 }
 
 # watch column of list for state file $1: watch=off once the last event is
-# merged, closed or stopped (nothing should watch); else watch=<age>s since the
-# last poll of a wait, watch=stale past slice + poll + 30 s, watch=- before any wait.
+# merged or closed, or stopped while no start/restart-input ran since the stop
+# (they clear stopped_gen); else watch=<age>s since the last poll of a wait,
+# watch=stale past slice + poll + 30 s, watch=- before any wait.
 watch_col() {
-  local at sl po age
+  local at sl po age sg
   case $(sget last_event "$1") in
-    merged|closed|stopped) printf 'watch=off'; return ;;
+    merged|closed) printf 'watch=off'; return ;;
+    stopped)
+      sg=$(sget stopped_gen "$1")
+      if [ -n "$sg" ] && [ "$sg" = "$(sget monitor_gen "$1")" ]; then printf 'watch=off'; return; fi ;;
   esac
   at=$(sget last_wait_at "$1")
   [[ $at =~ ^[0-9]+$ ]] || { printf 'watch=-'; return; }
