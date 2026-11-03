@@ -59,6 +59,7 @@ line(){ printf '%s\n' "$1" | awk -v a="$2" '$1==a'; }
 # ================================================================ 1.1 shipped file
 ok "models.conf has all 15 keys" 'for c in claude agent opencode; do for a in applier eval reviewer security qa; do grep -Eq "^$c\.$a[[:space:]]*=" "$CONF" || exit 1; done; done'
 ok "claude defaults opus/sonnet" 'grep -Eq "^claude\.applier *= *opus$" "$CONF" && grep -Eq "^claude\.reviewer *= *opus$" "$CONF" && grep -Eq "^claude\.security *= *opus$" "$CONF" && grep -Eq "^claude\.eval *= *sonnet$" "$CONF" && grep -Eq "^claude\.qa *= *sonnet$" "$CONF"'
+ok "claude.pr-monitor ships as sonnet" 'grep -Eq "^claude\.pr-monitor *= *sonnet$" "$CONF"'
 ok "cursor/opencode inherit" '[ "$(grep -Ec "^(agent|opencode)\.[a-z]+ *= *inherit$" "$CONF")" -eq 10 ]'
 ok "no codex/gemini keys" '! grep -Eq "^(codex|gemini)\." "$CONF"'
 
