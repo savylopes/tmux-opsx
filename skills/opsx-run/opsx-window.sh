@@ -334,6 +334,21 @@ current_window() {
   tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null
 }
 
+# Type text literally (send-keys -l) in chunks: tmux rejects one command
+# longer than about 16 KB ("command too long"), and a long window prompt is
+# typed whole. Each chunk ends at its last space, so no word or multibyte
+# character is split.
+send_literal() { # target text
+  local tgt=$1 t=$2 c n=4000
+  while [ "${#t}" -gt "$n" ]; do
+    c=${t:0:n}
+    [[ $c == *' '* ]] && c="${c% *} "
+    tmux send-keys -t "$tgt" -l -- "$c" || return 1
+    t=${t:${#c}}
+  done
+  tmux send-keys -t "$tgt" -l -- "$t"
+}
+
 send_prompt() {
   local win=$1 file=$2 text
   # Newlines would submit the prompt early in the TUI, so collapse them.
@@ -342,7 +357,7 @@ send_prompt() {
   [ -n "$text" ] || die "prompt file is empty: $file"
   # -l sends the text literally; without it "Enter", ";" and "C-x" inside the
   # prompt are interpreted as key names.
-  tmux send-keys -t "$win" -l -- "$text" || die "failed to send text to $win"
+  send_literal "$win" "$text" || die "failed to send text to $win"
   # Let the TUI ingest the text before submitting; without the gap a fast
   # follow-up send can land in the same input box and concatenate.
   sleep 0.3
@@ -1838,7 +1853,7 @@ cmd_type() {
   text=$(tr '\n\r' '  ' <"$text_file")
   text=${text%"${text##*[![:space:]]}"}
   [ -n "$text" ] || die "text file is empty: $text_file"
-  tmux send-keys -t "$pane" -l -- "$text" || die "failed to send text to $pane"
+  send_literal "$pane" "$text" || die "failed to send text to $pane"
   tmux send-keys -t "$pane" Enter || die "failed to submit text in $pane"
   printf 'typed %s\n' "$pane"
 }
