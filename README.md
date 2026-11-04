@@ -637,12 +637,12 @@ The window writes `openspec/changes/<change>/review/report.md` (verdict, finding
 
 **Fix rounds (validation loop).** Every code change goes through the same validation loop as `/opsx-run apply --validate`: a review-comment change the rules allow, a CI failure caused by the PR, and any conflict resolution (mechanical ones included). On Claude Code, Cursor CLI and OpenCode the window never edits or commits code itself. In the PR's worktree:
 
-1. **ops-applier** implements, given the event's material (comment text, failing check and log excerpt, conflicting paths) as quoted untrusted data, and commits without pushing.
+1. **ops-applier** implements, given the event's material (comment text, failing check and log excerpt, conflicting paths) as quoted untrusted data, and commits without pushing. The window pastes the prompt's whole Untrusted input section into the applier, reviewer and security briefs, and the three agent files carry the same rule for PR fix rounds. The applier is told not to touch CI or workflow files or dependency manifests and lock files, and not to disable, skip or delete tests. After it reports, the window checks with `git ls-remote` that the remote head is still the recorded `head_sha`; if it moved, the window stops and asks you.
 2. **ops-eval** runs when the branch belongs to an OpenSpec change (head `opsx/<change>`, or the window is that change's window); otherwise it is `SKIP`.
-3. **ops-reviewer**, then **ops-security**.
+3. **ops-reviewer**, then **ops-security**. For a conflict round they get the whole rebased PR (`ONTO..HEAD`), the conflicting paths of every stop and `git range-diff OLDBASE..PRE ONTO..HEAD` against the head from before the rebase (PRE and OLDBASE are recorded before the fetch). Any change outside the conflicting paths fails the gate.
 4. **ops-qa** runs only when the repository has `.opsx/preview.yaml`; otherwise it is `SKIP`.
 5. A `FAIL` sends that gate's FINDINGS verbatim back to ops-applier and re-runs from that gate, at most 3 fix rounds per event; then the window asks you (`mark ask`, `pr.sh note`) and pushes nothing.
-6. When every gate is PASS or SKIP with no P0/P1 findings and the tests pass, the window pushes with `pr.sh push`, replies on the handled threads with the commit SHA and runs `pr.sh seen`.
+6. When every gate is PASS or SKIP with no P0/P1 findings and the tests pass, the window pushes (but it asks you first if the round touched CI, workflow, dependency or lock files, or deleted, disabled or skipped tests) with `pr.sh push`, replies on the handled threads with the commit SHA and runs `pr.sh seen`.
 
 The window prints each gate's `VERDICT`. On Codex CLI and Gemini CLI, which have no reliable subagents, the window applies the fix itself in the worktree and runs each gate itself from the agent files, in the same order. A one-line review fix now costs an applier, reviewer and security pass (plus eval on an OpenSpec branch); a clean rebase stays cheap. The questions below are still asked before any fix round.
 
