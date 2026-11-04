@@ -15,6 +15,7 @@ echo "$t" | grep -q "Bash" || fail "no Bash tool"
 echo "$t" | grep -qiE "Read|Write|Edit|Grep|Glob|Agent|Web" && fail "more than Bash listed"
 grep -q '^hooks:' "$f" && grep -q 'PreToolUse' "$f" || fail "no PreToolUse hook"
 grep -q 'monitor-guard.sh' "$f" || fail "hook does not name monitor-guard.sh"
+grep -q "^model: sonnet" "$f" || fail "installed agent lacks model: sonnet ($(grep -m1 ^model: "$f"))"
 out=$(run_install --uninstall); rc=$?
 echo "uninstall exit $rc"
 [ -e "$f" ] && fail "agent file still present after --uninstall"

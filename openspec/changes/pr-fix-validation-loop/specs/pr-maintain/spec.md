@@ -16,7 +16,7 @@ The window prompt SHALL allow the window, without asking, only mechanical steps 
 - **THEN** the prompt says the window never edits code or commits content changes itself and routes review-comment fixes, CI fixes and conflict resolution to a fix round
 
 ### Requirement: Gates before a push
-A clean rebase or restack with no conflicts SHALL need only the repository's tests before `pr.sh push`. Any other push SHALL follow a passed fix round: ops-applier, then ops-eval (OpenSpec branch, else SKIP), ops-reviewer, ops-security, ops-qa (`.opsx/preview.yaml`, else SKIP), each PASS or SKIP with no P0/P1, findings sent back verbatim, at most 3 rounds per event before asking the user, then the tests.
+A clean rebase or restack with no conflicts SHALL need only the repository's tests before `pr.sh push`. Any other push SHALL follow a passed fix round: ops-applier, then ops-eval (OpenSpec branch, else SKIP), ops-reviewer, ops-security, ops-qa (`.opsx/preview.yaml`, else SKIP), each PASS or SKIP with no P0/P1, findings sent back verbatim, at most 3 rounds per event before asking the user (a conflict rebase is one ops-applier run however often it stops), then the tests.
 
 #### Scenario: Prompt carries the gates
 - **WHEN** `pr.sh start 42` writes the prompt file

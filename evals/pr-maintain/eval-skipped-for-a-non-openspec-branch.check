@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Eval skipped for a non-OpenSpec branch
+# level: L1
+# requirement: Gates before a push
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli claude --repo "$R" 2>&1); rc=$?
+[ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+echo "$out" | grep -qE "ops-eval: SKIP" || fail "prompt does not say ops-eval is SKIP"
+echo "$out" | grep -E "ops-eval: SKIP" | head -1
+echo OK

@@ -10,4 +10,16 @@ pr_start 42 >/dev/null 2>&1 || fail "start failed"
 p=$SP/prompt.copy; [ -s "$p" ] || fail "no prompt file"
 grep -qi "test" "$p" || fail "no tests gate"
 grep -qi "ops-reviewer" "$p" || fail "no ops-reviewer gate"
+flat=$(tr "\n" " " < "$p" | tr -s " ")
+pos() { local r; r=$(printf '%s' "$flat" | grep -bo -- "$1" | head -1 | cut -d: -f1); echo "${r:-}"; }
+# order within the Gates section
+g=$(printf '%s' "$flat" | sed 's/.*## Gates before a push//')
+prev=-1
+for a in ops-applier ops-eval ops-reviewer ops-security ops-qa; do
+  r=$(printf '%s' "$g" | grep -bo -- "$a" | head -1 | cut -d: -f1)
+  [ -n "$r" ] || fail "gates section lacks $a"
+  [ "$r" -gt "$prev" ] || fail "$a out of order"; prev=$r
+done
+printf '%s' "$flat" | grep -qiE "(ask the user|ask the user instead).{0,40}|3 (fix )?rounds" || fail "no 3 rounds rule"
+printf '%s' "$flat" | grep -qiE "tests must pass before every push" || fail "tests not required before every push"
 echo OK

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Window does not edit code itself
+# level: L1
+# requirement: Autonomous actions
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+out=$("$PRSH" prompt 42 --agent-cli claude --repo "$R" 2>&1); rc=$?
+[ $rc -eq 0 ] || { echo "$out"; fail "exit $rc"; }
+flat=$(echo "$out" | tr "\n" " " | tr -s " ")
+echo "$flat" | grep -qiE "never edit code" || fail "no 'never edit code'"
+echo "$flat" | grep -qiE "commit content changes" || fail "no 'commit content changes' ban"
+echo "$flat" | grep -qiE "review-comment fix" || fail "review-comment fixes not routed"
+echo "$flat" | grep -qiE "CI fix" || fail "CI fixes not routed"
+echo "$flat" | grep -qiE "conflict resolution" || fail "conflict resolution not routed"
+echo "$flat" | grep -qiE "fix round" || fail "no fix round"
+echo OK
