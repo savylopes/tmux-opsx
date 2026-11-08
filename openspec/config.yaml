@@ -16,8 +16,9 @@ context: |
   - push notifications: install.sh --expose-domain also runs a self-hosted ntfy (tmux-opsx-ntfy unit, static Caddy route
     opsx-ntfy), and merges Claude Code Stop/Notification/PreToolUse hooks into ~/.claude/settings.json (--skip-notify)
   - agents/*.md: subagent definitions (ops-applier, ops-eval, ops-reviewer, ops-security, ops-qa,
-    ops-pr-monitor: Claude Code only, the /opsx-pr background watcher with its monitor-guard.sh hook),
-    converted by install.sh for each CLI
+    ops-pr-monitor: Claude Code only, the /opsx-pr background watcher with its monitor-guard.sh hook;
+    ops-researcher: the read-only researcher of /opsx-answer, /opsx-challenge, /opsx-settle),
+    converted by install.sh for each CLI (ops-researcher in a read-only form per CLI)
   - tmux behaviour: one window per change, `ox` window prefix, @opsx_change tags, status colours;
     session restore (Claude SessionStart hook + marked ~/.tmux.conf block for tmux-resurrect) resumes
     Claude panes and puts the @opsx_* tags back after a tmux restart

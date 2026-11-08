@@ -207,7 +207,73 @@ if command -v shellcheck >/dev/null 2>&1; then
 fi
 
 cd "$REPO" || exit 1
-# @@DOCS@@
+# ---------------------------------------------------------------- agent + reference (2.x)
+AG=$REPO/agents/opsx-researcher.md
+REFMD=$REPO/skills/opsx-questions/reference.md
+fm(){ awk '/^---$/{n++; next} n==1' "$1"; }
+ok "researcher: name ops-researcher, model inherit, bypassPermissions" 'fm "$AG" | grep -qx "name: \"ops-researcher\"" && fm "$AG" | grep -qx "model: inherit" && fm "$AG" | grep -qx "permissionMode: bypassPermissions"'
+ok "researcher: Claude tools exactly Read, Glob, Grep, WebSearch, WebFetch" '[ "$(fm "$AG" | grep "^tools:")" = "tools: [Read, Glob, Grep, WebSearch, WebFetch]" ] && ! fm "$AG" | grep -qE "Write|Edit|Bash|Agent|NotebookEdit|mcp__"'
+ok "researcher: verdict only, untrusted data, no writes" 'grep -q "VERDICT: <verdict>" "$AG" && grep -qi "data, not instructions" "$AG" && grep -q "No writes, no commands" "$AG"'
+ok "reference: brief fields, untrusted rules, challenge briefs omit the rationale" 'for w in "Question" "Stance" "Context" "Ruled out" "Untrusted input rules" "UNTRUSTED DATA"; do grep -q "$w" "$REFMD" || exit 1; done && grep -qi "omit the parent.s rationale" "$REFMD"'
+ok "format defined once: same VERDICT line and four evidence forms in both files" 'for f in "$AG" "$REFMD"; do grep -qx "VERDICT: <verdict>" "$f" || exit 1; for e in "file:<path>:<line> \"<excerpt>\"" "url:<url> \"<excerpt>\"" "ticket:<key>:<field> \"<excerpt>\"" "req:<id> \"<excerpt>\""; do grep -qxF "$e" "$f" || exit 1; done; done'
+ok "reference: both downgrade rules and the concrete-flaw rule" 'grep -q "left with no valid evidence becomes \`needs-human\`" "$REFMD" && grep -q "left with no valid evidence becomes \`stands\`" "$REFMD" && grep -q "concrete flaw" "$REFMD" && grep -q "still seems right" "$REFMD"'
+ok "reference: malformed retry, report tags, Resolved: bullets, drafts" 'grep -qi "retried once" "$REFMD" && for t in "[open]" "[decision]" "[req spec]" "[req client AC]"; do grep -qF "$t" "$REFMD" || exit 1; done && grep -q "Resolved:" "$REFMD" && grep -qi "never posted" "$REFMD" && grep -qi "product owner" "$REFMD"'
+
+# ---------------------------------------------------------------- skills (3.x)
+for s in opsx-answer opsx-challenge opsx-settle; do
+  SK=$REPO/skills/$s/SKILL.md
+  ok "$s: frontmatter name and description" 'fm "$SK" | grep -qx "name: $s" && fm "$SK" | grep -q "^description: ."'
+  ok "$s: names questions.sh, --max defaults to 6, six skill folders" 'grep -q "questions.sh" "$SK" && grep -q -- "--max\` defaults to 6" "$SK" && for d in .claude .cursor .agents .codex .config/opencode .gemini; do grep -q "~/$d/skills/opsx-questions/questions.sh" "$SK" || exit 1; done'
+  ok "$s: list confirmed before any subagent" 'grep -q "Confirm the list" "$SK" && grep -qi "do not start any subagent" "$SK"'
+  ok "$s: nothing written until commanded, ticket comments are drafts" 'grep -q "Nothing is written or posted until the user commands it" "$SK" && grep -qi "ticket comments are drafts only" "$SK"'
+  ok "$s: subagents on Claude/Cursor/OpenCode, parent on Codex/Gemini" 'grep -q "ops-researcher" "$SK" && grep -q "Codex CLI, Gemini CLI" "$SK" && grep -qi "read-only guarantee" "$SK"'
+  ok "$s: every questions.sh subcommand it names exists in --help" '( for c in $(grep -oE "questions\.sh [a-z]+" "$SK" | awk "{print \$2}" | sort -u); do "$Q" --help | grep -qE "questions\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done )'
+done
+SS=$REPO/skills/opsx-settle/SKILL.md
+ok "opsx-settle: --rounds defaults to 3" 'grep -q -- "--rounds\` defaults to 3" "$SS"'
+ok "opsx-settle: parallel independent A and B, carried attack, stop condition" 'grep -q "A, internal" "$SS" && grep -q "B, external" "$SS" && grep -q "in parallel" "$SS" && grep -qi "neither seeing the other" "$SS" && grep -qi "carries the attack that succeeded" "$SS" && grep -q "Stop" "$SS"'
+ok "opsx-challenge: --include-requirements, PO draft" 'grep -q -- "--include-requirements" "$REPO/skills/opsx-challenge/SKILL.md" && grep -qi "product owner" "$REPO/skills/opsx-challenge/SKILL.md"'
+
+# ---------------------------------------------------------------- install (4.x)
+IH=$SP/ihome; mkdir -p "$IH" "$SP/ibin"
+for b in claude node npm; do printf '#!/bin/sh\necho 1.0.0\n' > "$SP/ibin/$b"; chmod +x "$SP/ibin/$b"; done
+SKILL_DIRS=(.claude/skills .cursor/skills .agents/skills .codex/skills .config/opencode/skills .gemini/skills)
+RFILES=(.claude/agents/opsx-researcher.md .cursor/agents/opsx-researcher.md .codex/agents/ops-researcher.toml .config/opencode/agents/ops-researcher.md .gemini/agents/opsx-researcher.md)
+n_q_dirs(){ local n=0 d s; for d in "${SKILL_DIRS[@]}"; do for s in opsx-questions opsx-answer opsx-challenge opsx-settle; do [ -d "$IH/$d/$s" ] && n=$((n+1)); done; done; echo $n; }
+n_r_files(){ local n=0 f; for f in "${RFILES[@]}"; do [ -e "$IH/$f" ] && n=$((n+1)); done; echo $n; }
+run_install(){
+  (cd "$REPO" && env -u CLAUDE_CONFIG_DIR -u CODEX_HOME -u GEMINI_HOME -u OPENCODE_CONFIG_DIR -u TMUX -u TMUX_PANE \
+     -u SUDO_USER -u REAL_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u OPSX_MODELS_CONF \
+     HOME="$IH" PATH="$SP/ibin:/usr/bin:/bin" bash ./install.sh --skip-openspec --skip-graphify \
+     --skip-commands --skip-mcp --skip-memory --no-backup "$@" </dev/null 2>&1)
+}
+out=$(run_install); rc=$?
+ok "install: questions.sh executable, four folders in all six skill dirs" '[ $rc -eq 0 ] && [ -x "$IH/.claude/skills/opsx-questions/questions.sh" ] && [ -f "$IH/.claude/skills/opsx-questions/reference.md" ] && [ "$(n_q_dirs)" -eq 24 ]'
+ok "install: three skill folders under ~/.claude, ~/.agents and ~/.gemini" 'for d in .claude/skills .agents/skills .gemini/skills; do for s in opsx-answer opsx-challenge opsx-settle; do [ -f "$IH/$d/$s/SKILL.md" ] || exit 1; done; done'
+ok "install: verify reports the files and that questions.sh parses, no warning for them" 'printf "%s" "$out" | grep -q "opsx-questions/questions.sh" && printf "%s" "$out" | grep -q "questions.sh parses" && ! printf "%s" "$out" | grep -E "missing|not executable|failed to parse" | grep -qE "questions|researcher|opsx-(answer|challenge|settle)"'
+ok "install: ops-researcher on all five CLIs" '[ "$(n_r_files)" -eq 5 ]'
+ok "install: Claude researcher keeps the read-only tool list, model inherit" 'fm "$IH/.claude/agents/opsx-researcher.md" | grep -qx "tools: \[Read, Glob, Grep, WebSearch, WebFetch\]" && fm "$IH/.claude/agents/opsx-researcher.md" | grep -qx "model: inherit"'
+ok "install: Cursor researcher readonly: true" 'fm "$IH/.cursor/agents/opsx-researcher.md" | grep -qx "readonly: true"'
+OR=$IH/.config/opencode/agents/ops-researcher.md
+ok "install: OpenCode researcher denies edits, applier still allows" 'grep -qx "  edit: deny" "$OR" && grep -qx "  bash: deny" "$OR" && grep -qx "  task: deny" "$OR" && ! grep -qE "^  (edit|bash): allow" "$OR" && for k in read glob grep list webfetch websearch; do grep -qx "  $k: allow" "$OR" || exit 1; done && grep -qx "  edit: allow" "$IH/.config/opencode/agents/ops-applier.md"'
+ok "install: Codex researcher turns off the shell" 'grep -qx "shell_tool = false" "$IH/.codex/agents/ops-researcher.toml" && grep -q "^name = \"ops-researcher\"" "$IH/.codex/agents/ops-researcher.toml"'
+GR=$IH/.gemini/agents/opsx-researcher.md
+ok "install: Gemini researcher has read and web tools only" '[ "$(fm "$GR" | awk "/^tools:/{t=1; next} t && /^  - /{print \$2; next} {t=0}" | tr "\n" " ")" = "read_file read_many_files glob grep_search list_directory google_web_search web_fetch " ] && ! grep -qE "^  - (run_shell_command|write_file|replace)$|^tools: \[" "$GR"'
+ok "install: other agents unchanged (no readonly, no [features], Gemini copies as is)" '! grep -q "^readonly" "$IH/.cursor/agents/opsx-applier.md" && ! grep -q "^\[features\]" "$IH/.codex/agents/ops-applier.toml" && cmp -s "$REPO/agents/opsx-applier.md" "$IH/.gemini/agents/opsx-applier.md" && fm "$IH/.claude/agents/opsx-applier.md" | grep -q "^tools:"'
+ok "researcher is not in models.conf" '! grep -q researcher "$REPO/agents/models.conf"'
+out=$(run_install --uninstall); rc=$?
+ok "uninstall removes the four skill folders and every ops-researcher file" '[ $rc -eq 0 ] && [ "$(n_q_dirs)" -eq 0 ] && [ "$(n_r_files)" -eq 0 ]'
+rm -rf "$IH"; mkdir -p "$IH"
+out=$(run_install --skip-questions); rc=$?
+ok "--skip-questions installs no question skill and no ops-researcher" '[ $rc -eq 0 ] && [ "$(n_q_dirs)" -eq 0 ] && [ "$(n_r_files)" -eq 0 ] && [ -f "$IH/.claude/agents/opsx-applier.md" ]'
+ok "install --help lists --skip-questions" 'bash "$REPO/install.sh" --help | grep -q -- "--skip-questions"'
+
+# ---------------------------------------------------------------- docs (4.4)
+RD=$REPO/README.md
+ok "README lists the three skills and ops-researcher in the overview" 'sed -n "/^ your dev harness/,/^\`\`\`/p" "$RD" | grep -q "/opsx-answer" && sed -n "/^ your dev harness/,/^\`\`\`/p" "$RD" | grep -q "ops-researcher" && grep -q "^| \`ops-researcher\` subagent" "$RD" && grep -q "^| \`/opsx-answer\`, \`/opsx-challenge\`, \`/opsx-settle\`" "$RD"'
+ok "README: Codex and Gemini research sequentially in the parent without the read-only guarantee" 'sed -n "/^### Answering and challenging questions/,/^---\$/p" "$RD" | grep -q "Codex CLI and Gemini CLI.*one at a time, without the read-only guarantee"'
+ok "README: flags match the SKILL.md usage lines" 'for s in answer challenge settle; do u=$(grep -m1 -E "^/opsx-$s \[input\]" "$REPO/skills/opsx-$s/SKILL.md"); grep -qF "$u" "$RD" || { echo "README lacks: $u"; exit 1; }; done'
+ok "README questions.sh commands exist in the script usage" '( for c in $(grep -oE "questions\.sh [a-z]+" "$RD" | awk "{print \$2}" | sort -u); do "$Q" --help | grep -qE "questions\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done )'
 
 echo "---"
 echo "$pass passed, $fail failed"
