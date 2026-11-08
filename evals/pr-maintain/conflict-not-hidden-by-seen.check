@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Seen does not hide a conflict
+# level: L1
+# requirement: Detect a conflicting PR
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+setpr 42 '.mergeable="CONFLICTING"'
+seen
+out=$(w --slice 3 --poll 1); echo "$out"
+[ "$out" = "event=conflict" ] || fail "seen hid the conflict"
+echo OK

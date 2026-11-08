@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Capped at one hour
+# level: L1
+# requirement: Back off between polls
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+w --slice 1 --poll 60 >/dev/null
+sed -i 's/^poll_step=.*/poll_step=9/; s/^next_poll_at=.*/next_poll_at=/' "$sf"
+w --slice 1 --poll 60 >/dev/null
+gap=$(( $(sed -n 's/^next_poll_at=//p' "$sf") - $(date +%s) )); echo "gap $gap"
+[ "$gap" -gt 3590 ] && [ "$gap" -le 3600 ] || fail "gap $gap"
+echo OK

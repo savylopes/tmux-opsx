@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Gaps grow
+# level: L1
+# requirement: Back off between polls
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+# Each wait call polls once, so the check does not depend on how long a poll takes.
+gap() {
+  sed -i 's/^next_poll_at=.*/next_poll_at=/' "$sf"
+  w --slice 1 --poll 60 >/dev/null
+  echo $(( $(sed -n 's/^next_poll_at=//p' "$sf") - $(date +%s) ))
+}
+for want in 60 120 240; do
+  g=$(gap); echo "gap $g, want $want"
+  [ "$g" -gt $((want - 5)) ] && [ "$g" -le "$want" ] || fail "gap $g, want $want"
+done
+echo OK

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Conflict reported
+# level: L1
+# requirement: Detect a conflicting PR
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+setpr 42 '.mergeable="CONFLICTING"'
+out=$(w --slice 3 --poll 1); rc=$?; echo "$out"
+[ $rc -eq 0 ] && [ "$out" = "event=conflict" ] || fail "rc=$rc"
+grep -q "^conflict_reported=$SHA_A:[0-9a-f]\{40\}$" "$sf" || fail "pair not recorded"
+echo OK

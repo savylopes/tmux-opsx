@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Base moved wins
+# level: L1
+# requirement: Detect a conflicting PR
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+setpr 42 '.mergeable="CONFLICTING"'
+commit "$R" m.txt M "main moves"; $G -C "$R" push -q origin main
+out=$(w --slice 3 --poll 1); echo "$out"
+[ "$out" = "event=base-moved" ] || fail "first: $out"
+seen
+out=$(w --slice 3 --poll 1); echo "$out"
+[ "$out" = "event=conflict" ] || fail "later: $out"
+echo OK

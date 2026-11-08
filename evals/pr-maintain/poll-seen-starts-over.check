@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Seen starts over
+# level: L1
+# requirement: Back off between polls
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+w --slice 1 --poll 60 >/dev/null
+sed -i "s/^next_poll_at=.*/next_poll_at=$(( $(date +%s) + 3000 ))/" "$sf"
+seen
+: > "$GHD/gh.log"
+w --slice 1 --poll 60 >/dev/null
+grep -q '^pr checks' "$GHD/gh.log" || fail "no poll after seen"
+echo OK

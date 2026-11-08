@@ -125,6 +125,8 @@ ok "F2: gh pr calls name the repository with -R" 'grep "^pr view" "$SP/gh/gh.log
 
 # ---------------------------------------------------------------- state (2.2)
 ST42=$SD/o-app-42/state; ST43=$SD/o-app-43/state
+# The next poll is due now, whatever gap the last wait set.
+due42() { sed -i "s/^next_poll_at=.*/next_poll_at=/" "$ST42"; }
 api42c=$(api_file repos/o/app/pulls/42/comments)
 echo '[{"id":5},{"id":7}]' > "$api42c"
 out=$(P seen 42); rc=$?
@@ -217,6 +219,7 @@ mkdir -p "$SP/slowgh"; printf '#!/bin/sh\n[ "$1 $2" = "pr view" ] && sleep 3\nex
 t0=$(date +%s.%N); PATH="$SP/slowgh:$PATH" P wait 42 --slice 14 --poll 4 >/dev/null 2>&1; rc=$?; dt=$(echo "$(date +%s.%N) - $t0" | bc)
 ok "wait --slice 14 --poll 4 with 3 s poll rounds: exit 3 after the slice, before a third round could end (17 s)" '[ $rc -eq 3 ] && [ "$(echo "$dt >= 13 && $dt < 16.5" | bc)" -eq 1 ] || { echo "rc=$rc dt=$dt"; false; }'
 echo '[{"id":5},{"id":7},{"id":12}]' > "$api42c"
+due42
 out=$(P wait 42 --slice 5 --poll 1); rc=$?
 ok "new review comment -> event=comments" '[ $rc -eq 0 ] && [ "$out" = "event=comments" ] && grep -qx "last_event=comments" "$ST42"'
 P seen 42 >/dev/null
@@ -287,11 +290,68 @@ out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
 ok "old failed checks still showing after rerun are not a repeat failure" '[ $rc -eq 3 ] && [ -z "$out" ] && grep -qx "ci_reported=$SHA_A" "$ST42"'
 CKFAIL=$(cat "$CK42")
 jq -nc --arg l "$(run_link 77 4)" '[{bucket:"pending",link:$l}]' > "$CK42"
+due42  # the gap from the last wait has not passed; poll now
 out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
 ok "wait sees the re-run pending: no event, ci_reported cleared" '[ $rc -eq 3 ] && grep -qx "ci_reported=" "$ST42"'
 printf '%s\n' "$CKFAIL" > "$CK42"
+due42
 out=$(P wait 42 --slice 5 --poll 1)
 ok "failure again after a re-run on the same head is reported" '[ "$out" = "event=ci-failed" ]'
+P seen 42 >/dev/null
+# pr-conflict-event: conflict from GitHub's mergeable, once per head and base tip.
+setpr 42 '.mergeable="CONFLICTING"'
+out=$(P wait 42 --slice 5 --poll 1); rc=$?
+ok "CONFLICTING -> event=conflict, pair recorded" '[ $rc -eq 0 ] && [ "$out" = "event=conflict" ] && grep -q "^conflict_reported=$SHA_A:[0-9a-f]\{40\}$" "$ST42"'
+P seen 42 >/dev/null
+out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "conflict reported once per head and base" '[ $rc -eq 3 ] && [ -z "$out" ]'
+sed -i "/^conflict_reported=/d" "$ST42"; P seen 42 >/dev/null
+ok "seen never records conflict_reported" '! grep -q "^conflict_reported=" "$ST42"'
+out=$(P wait 42 --slice 5 --poll 1)
+ok "seen does not hide a conflict" '[ "$out" = "event=conflict" ]'
+commit "$SP/other" m2.txt m2 "main moves again"; $G -C "$SP/other" push -q origin main
+out=$(P wait 42 --slice 5 --poll 1)
+ok "base-moved wins over conflict" '[ "$out" = "event=base-moved" ]'
+P seen 42 >/dev/null
+out=$(P wait 42 --slice 5 --poll 1)
+ok "a new base tip reports the conflict again" '[ "$out" = "event=conflict" ]'
+setpr 42 '.mergeable="UNKNOWN"'; sed -i "/^conflict_reported=/d" "$ST42"; P seen 42 >/dev/null
+out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "UNKNOWN raises no event" '[ $rc -eq 3 ] && [ -z "$out" ]'
+setpr 42 '.mergeable="MERGEABLE"'; P seen 42 >/dev/null
+out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "MERGEABLE raises no event" '[ $rc -eq 3 ] && [ -z "$out" ]'
+setpr 42 '.mergeable="CONFLICTING"'; P seen 42 >/dev/null
+mkdir -p "$SP/nols"; printf '#!/bin/sh\n[ "$3" = ls-remote ] && exit 1\nexec "%s" "$@"\n' "$(command -v git)" > "$SP/nols/git"; chmod +x "$SP/nols/git"
+out=$(PATH="$SP/nols:$PATH" P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "no base tip (ls-remote failed): no conflict event" '[ $rc -eq 3 ] && [ -z "$out" ] && ! grep -q "^conflict_reported=" "$ST42"'
+setpr 42 '.mergeable="MERGEABLE"'; P seen 42 >/dev/null
+# pr-conflict-event: the gap between polls doubles, across wait calls, at most 1 h.
+gap42() { # one wait call with a due poll; prints the gap it scheduled
+  due42; P wait 42 --slice 1 --poll 60 >/dev/null 2>&1
+  echo $(( $(sed -n 's/^next_poll_at=//p' "$ST42") - $(date +%s) ))
+}
+near() { [ "$1" -gt $(($2 - 5)) ] && [ "$1" -le "$2" ]; }
+g1=$(gap42); g2=$(gap42); g3=$(gap42); g4=$(gap42)
+ok "gaps double across wait calls: 60, 120, 240, 480 (got $g1 $g2 $g3 $g4)" 'near $g1 60 && near $g2 120 && near $g3 240 && near $g4 480'
+sed -i "s/^poll_step=.*/poll_step=7/" "$ST42"; g7=$(gap42); g8=$(gap42)
+ok "gap capped at 3600 (got $g7 $g8)" 'near $g7 3600 && near $g8 3600'
+sed -i "s/^next_poll_at=.*/next_poll_at=$(( $(date +%s) + 3000 ))/" "$ST42"; : > "$SP/gh/gh.log"
+sed -i "/^last_wait_at=/d" "$ST42"
+out=$(P wait 42 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "before the next poll: no PR read, exit 3, last_wait_at current" '[ $rc -eq 3 ] && ! grep -q "^pr view 42.*headRefOid" "$SP/gh/gh.log" && ! grep -q "^pr checks" "$SP/gh/gh.log" && at=$(sed -n "s/^last_wait_at=//p" "$ST42") && [ $(( $(date +%s) - at )) -le 3 ]'
+sed -i "s/^monitor_gen=.*/monitor_gen=9/" "$ST42"
+t0=$(date +%s); out=$(P wait 42 --gen 8 --slice 30 --poll 1 2>/dev/null); rc=$?; dt=$(( $(date +%s) - t0 ))
+ok "an older gen exits 4 at once during a long gap" '[ $rc -eq 4 ] && [ $dt -le 3 ]'
+P seen 42 >/dev/null
+ok "seen starts the gaps over" 'grep -qx "next_poll_at=" "$ST42" && grep -qx "poll_step=" "$ST42"'
+sed -i "s/^poll_step=.*/poll_step=3/" "$ST42"; due42
+mkdir -p "$SP/badgh"; printf '#!/bin/sh\n[ "$1 $2" = "pr view" ] && exit 1\nexec "%s" "$@"\n' "$SP/fakebin/gh" > "$SP/badgh/gh"; chmod +x "$SP/badgh/gh"
+PATH="$SP/badgh:$PATH" P wait 42 --slice 1 --poll 60 >/dev/null 2>&1
+ok "a failed poll does not advance the gaps" 'grep -qx "poll_step=3" "$ST42"'
+echo '[{"id":99}]' > "$api42c"; due42
+out=$(P wait 42 --slice 3 --poll 1)
+ok "an event starts the gaps over" '[ "$out" = "event=comments" ] && grep -qx "next_poll_at=" "$ST42" && grep -qx "poll_step=" "$ST42"'
 P seen 42 >/dev/null
 : > "$SP/gh/gh.log"
 out=$(P rerun 42 2>&1); rc=$?
@@ -805,6 +865,7 @@ ok "security F3: applier told to leave CI, workflows, dependency manifests and t
 ok "security F4: the window compares the remote head with head_sha before the gates and stops when it moved" 'fixsec "$SP/p.claude" | tr "\n" " " > "$SP/fx" && grep -q "before any gate: compare .git ls-remote [^ ]* refs/heads/feat-a. with  *.head_sha. in the state file" "$SP/fx" && grep -q "When the remote head moved (to the applier.s commit or to anything  *else), stop: push nothing, ask the user" "$SP/fx"'
 ok "prompt claude: window never edits or commits code; foreground ops-* subagents, no model, retry rule" 'fixsec "$SP/p.claude" > "$SP/fix.c" && grep -q "You never edit code in this window and never .git commit. content changes yourself" "$SP/fix.c" && grep -q "only ops-applier changes and commits code" "$SP/fix.c" && grep -q "subagent_type: \"ops-applier\"" "$SP/fix.c" && grep -q "run_in_background: false" "$SP/fix.c" && grep -q "Spawn them without a model" "$SP/fix.c" && grep -q "retry once without a model" "$SP/fix.c" && ! grep -q "This CLI has no reliable subagents" "$SP/fix.c"'
 ok "prompt claude: routes review-comment fixes, CI fixes and conflict resolution to a fix round" 'grep -q "every code change, i.e. a review-comment fix, a CI fix or a" "$SP/p.claude" && grep -q "conflict resolution, goes through a fix round" "$SP/p.claude"'
+ok "prompt claude+codex: conflict entry acknowledges or rebases" 'for f in "$SP/p.claude" "$SP/p.codex"; do sed -n "/^## Events/,/^## You may do on your own/p" "$f" | tr "\n" " " | tr -s " " > "$SP/ev" && grep -q -- "- conflict: GitHub says the PR conflicts" "$SP/ev" && grep -q "acknowledge it with" "$SP/ev" && grep -q "handle it like base-moved" "$SP/ev" || exit 1; done'
 ok "prompt codex: applies the fix itself in the worktree and runs each gate itself in the same order" 'fixsec "$SP/p.codex" > "$SP/fix.x" && grep -q "you do every step yourself, in the same order" "$SP/fix.x" && grep -q "apply the fix yourself in the worktree" "$SP/fix.x" && grep -q "run each gate yourself by following its agent file" "$SP/fix.x" && grep -q "~/.codex/agents/ops-\*.toml" "$SP/fix.x" && ! grep -q "subagent_type" "$SP/fix.x" && ! grep -q "Events you caused yourself" "$SP/fix.x" && ! grep -q "never edit code" "$SP/p.codex" && grep -q "whose steps you run yourself on this CLI" "$SP/p.codex" && [ "$(gate_order "$SP/p.codex")" = "ops-applier ops-eval ops-reviewer ops-security ops-qa " ]'
 ok "prompt gemini: same as codex; opencode and cursor (agent): dispatcher like claude" 'P prompt 42 --agent-cli gemini | grep -q "This CLI has no reliable subagents" && P prompt 42 --agent-cli opencode | grep -q "only ops-applier changes and commits code" && P prompt 42 --agent-cli agent | grep -q "only ops-applier changes and commits code"'
 P prompt 47 --agent-cli claude > "$SP/p.47" 2>/dev/null

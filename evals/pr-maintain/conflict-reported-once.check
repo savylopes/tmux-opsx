@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Reported once
+# level: L1
+# requirement: Detect a conflicting PR
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+setpr 42 '.mergeable="CONFLICTING"'
+w --slice 3 --poll 1 >/dev/null || fail "first wait"
+seen
+out=$(w --slice 2 --poll 1); rc=$?; echo "exit $rc $out"
+[ $rc -eq 3 ] && [ -z "$out" ] || fail "reported twice"
+echo OK

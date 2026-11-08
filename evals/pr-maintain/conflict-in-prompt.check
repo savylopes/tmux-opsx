@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt names the event
+# level: L1
+# requirement: Prompt handles the conflict event
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+for cli in claude codex; do
+  out=$("$PRSH" prompt 42 --agent-cli $cli --repo "$R" 2>&1) || fail "prompt $cli"
+  ev=$(echo "$out" | sed -n "/^## Events/,/^## You may do on your own/p" | tr "\n" " " | tr -s " ")
+  echo "$ev" | grep -q -- "- conflict: GitHub says the PR conflicts" || fail "$cli: no entry"
+  echo "$ev" | grep -q "acknowledge it with" || fail "$cli: no acknowledge path"
+  echo "$ev" | grep -q "handle it like base-moved" || fail "$cli: no rebase path"
+done
+echo OK

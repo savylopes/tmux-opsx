@@ -58,10 +58,18 @@
 #           window recorded by start, else pr-<n>). Increases monitor_gen.
 #           The loop follows --agent-cli (default claude), as the first input.
 # seen      records the PR's current head, base, parent, CI and comment ids.
-# wait      polls gh/git every --poll seconds (default 60) for --slice seconds
-#           (default 540) and prints one event=<kind> line, exit 0, kinds in
-#           priority order: merged closed parent-merged parent-moved base-moved
-#           head-moved ci-failed comments. Exit 3: nothing changed in the slice.
+# wait      polls gh/git for --slice seconds (default 540) and prints one
+#           event=<kind> line, exit 0, kinds in priority order: merged closed
+#           parent-merged parent-moved base-moved head-moved conflict ci-failed
+#           comments. Exit 3: nothing changed in the slice.
+#           The gap between polls doubles from --poll seconds (default 60: 1, 2,
+#           4, 8, ... minutes), at most 1 h,
+#           kept in the state across wait calls (poll_step, next_poll_at). An
+#           event, seen, push, a re-run, start and restart-input start it over.
+#           The generation and last_wait_at are still checked every --poll s.
+#           conflict: GitHub says mergeable=CONFLICTING. Reported once per head
+#           and base tip (conflict_reported=<head>:<base>, recorded by wait,
+#           never by seen); UNKNOWN and MERGEABLE never raise it.
 #           CI fails when any check is in the fail or cancel bucket; ci-failed
 #           is reported once per head (ci_reported=<sha>), again only for a new
 #           head or once CI on that head left the fail state (pending or pass)
@@ -172,6 +180,7 @@ pr_number() {
 
 # Shared option parsing. Sets ARG1 ARG2 REPO_OPT SLICE POLL AGENT_CLI ONTO
 # TITLE BODY_FILE BASE_OPT CLEAR.
+POLL_MAX=3600  # longest gap between polls of wait
 ARG1="" ARG2="" REPO_OPT="" SLICE=540 POLL=60 AGENT_CLI="" ONTO="" TITLE="" BODY_FILE="" BASE_OPT="" CLEAR=0
 WINDOW_OPT="" NEW_WINDOW=0 GEN=""
 OPTIONS=()
@@ -207,7 +216,7 @@ parse_opts() {
 
 # ---------------------------------------------------------------- GitHub reads
 
-PR_FIELDS=number,url,headRefName,headRefOid,baseRefName,state,author,isCrossRepository,headRepositoryOwner,headRepository
+PR_FIELDS=number,url,headRefName,headRefOid,baseRefName,state,mergeable,author,isCrossRepository,headRepositoryOwner,headRepository
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
@@ -440,6 +449,7 @@ bump_gen_unlocked() {
 # (superseded). start and restart-input: stopped_gen is cleared.
 bump_gen() {
   with_state_lock bump_gen_clear_unlocked
+  reset_poll_backoff
 }
 bump_gen_clear_unlocked() {
   bump_gen_unlocked
@@ -452,8 +462,10 @@ stop_gen() {
   with_state_lock stop_gen_unlocked
 }
 stop_gen_unlocked() {
+  # stopped_gen first: check_gen reads without the lock, and must never see the
+  # new generation without it (it would report superseded, not stopped).
+  sset_unlocked stopped_gen "$(( $(cur_gen) + 1 ))"
   bump_gen_unlocked
-  sset_unlocked stopped_gen "$(cur_gen)"
 }
 
 # Current values into CUR_* variables (read indirectly by write_seen/detect_event).
@@ -464,6 +476,7 @@ snapshot() {
   CUR_state=$(jq -r .state <<<"$j")
   CUR_head=$(jq -r .headRefName <<<"$j")
   CUR_head_sha=$(jq -r .headRefOid <<<"$j")
+  CUR_mergeable=$(jq -r '.mergeable // ""' <<<"$j")
   CUR_base=$(jq -r .baseRefName <<<"$j")
   CUR_author=$(jq -r '.author.login // ""' <<<"$j")
   CUR_url=$(jq -r .url <<<"$j")
@@ -506,6 +519,24 @@ snapshot() {
   CUR_last_review_id=$(max_id "repos/$SLUG/pulls/$PR/reviews" || true)
 }
 
+# Seconds to the next poll at step $1: --poll doubled per step (1, 2, 4, 8, ...
+# times --poll), at most POLL_MAX (or --poll, when that is longer).
+poll_interval() {
+  local v=$POLL i=1 cap=$POLL_MAX
+  [ "$POLL" -le "$cap" ] || cap=$POLL
+  while [ "$i" -lt "$1" ] && [ "$v" -lt "$cap" ]; do
+    v=$((v * 2)); i=$((i + 1))
+  done
+  [ "$v" -le "$cap" ] || v=$cap
+  printf '%s' "$v"
+}
+
+# The PR just changed or is about to: poll at once and start the gaps over.
+reset_poll_backoff() {
+  sset poll_step ""
+  sset next_poll_at ""
+}
+
 # One lock for the whole update (the nested sset calls run directly).
 write_seen() {
   with_state_lock write_seen_unlocked
@@ -532,6 +563,8 @@ write_seen_unlocked() {
   # reported again. A failed fetch (none) keeps it.
   clear_ci_reported
   sset seen_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  sset poll_step ""
+  sset next_poll_at ""
 }
 
 # CI left the fail state (pending or pass): a later failure is new. Not on
@@ -559,6 +592,11 @@ detect_event() {
     printf base-moved; return
   fi
   [ "$CUR_head_sha" = "$(sget head_sha)" ] || { printf head-moved; return; }
+  # No base tip (ls-remote failed): an empty base would look like a new pair.
+  if [ "$CUR_mergeable" = CONFLICTING ] && [ -n "$CUR_base_sha" ] \
+     && [ "$(sget conflict_reported)" != "$CUR_head_sha:$CUR_base_sha" ]; then
+    printf conflict; return
+  fi
   if [ "$CUR_ci" = fail ] && [ "$(sget ci_reported)" != "$CUR_head_sha" ]; then printf ci-failed; return; fi
   for k in last_comment_id last_issue_comment_id last_review_id; do
     v="CUR_$k"
@@ -949,6 +987,11 @@ $(loop_text "$cli" "$W" "$M")
 - head-moved: someone else pushed to the branch. \`git fetch $HR\` and \`git rebase $HR/$HEAD_NAME\` (or reset to
   $HR/$HEAD_NAME when you have no local work); never overwrite their commits. Run \`$SELF seen $PR --repo $REPO\`
   once their commits are in your branch, so the push lease expects their head.
+- conflict: GitHub says the PR conflicts with its base (reported once per head and base tip). When an open
+  question (\`ask=\` in the state file) or a rebase you already started covers it, acknowledge it with
+  \`$SELF seen $PR --repo $REPO\`, do nothing else, and go back to waiting. Otherwise handle it like
+  base-moved (like parent-moved when the base is a parent's branch): a stopped rebase goes to a fix round
+  (see Fix round), or ask first when both sides changed behaviour.
 - ci-failed: CI fails on the current head (a failing or cancelled check; reported once per head).
   Read \`gh pr checks $PR -R $SLUG\` and the failing job's log (\`gh run view <run-id> --log-failed -R $SLUG\`).
   - When the failure is clearly caused by this PR's change: fix it in a fix round (see Fix round), then push.
@@ -1059,7 +1102,7 @@ cmd_seen() {
 cmd_wait() {
   # The slice counts from the start, setup included: on Claude Code a call
   # must end before the 180 s auto-background limit (slice <= 170).
-  local deadline ev now t0 round=0
+  local deadline ev now t0 round next raw step polled
   t0=$(date +%s)
   parse_opts "$@"
   setup_pr wait
@@ -1070,28 +1113,47 @@ cmd_wait() {
   sset wait_slice "$SLICE"; sset wait_poll "$POLL"
   while :; do
     check_gen
-    t0=$(date +%s)
-    sset last_wait_at "$t0"
-    ev=""
-    # A failed poll (network, rate limit) counts as no change; try next poll.
-    CUR_state=""
-    if snapshot 2>/dev/null && [ -n "$CUR_state" ]; then
-      clear_ci_reported
-      ev=$(detect_event)
-    fi
-    if [ -n "$ev" ]; then
-      # The snapshot takes a while: a superseded wait reports nothing.
-      check_gen
-      [ "$ev" != ci-failed ] || sset ci_reported "$CUR_head_sha"
-      sset last_event "$ev"
-      sset last_event_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      printf 'event=%s\n' "$ev"
-      return 0
+    now=$(date +%s)
+    sset last_wait_at "$now"
+    raw=$(sget next_poll_at)
+    next=$raw; [[ $next =~ ^[0-9]+$ ]] || next=0
+    if [ "$now" -ge "$next" ]; then
+      t0=$now
+      ev="" polled=0
+      # A failed poll (network, rate limit) counts as no change; try next poll.
+      CUR_state=""
+      if snapshot 2>/dev/null && [ -n "$CUR_state" ]; then
+        polled=1
+        clear_ci_reported
+        ev=$(detect_event)
+      fi
+      if [ -n "$ev" ]; then
+        # The snapshot takes a while: a superseded wait reports nothing.
+        check_gen
+        [ "$ev" != ci-failed ] || sset ci_reported "$CUR_head_sha"
+        [ "$ev" != conflict ] || sset conflict_reported "$CUR_head_sha:$CUR_base_sha"
+        sset last_event "$ev"
+        sset last_event_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        reset_poll_backoff
+        printf 'event=%s\n' "$ev"
+        return 0
+      fi
+      now=$(date +%s)
+      sset poll_round "$(( now - t0 ))"
+      # A seen or push during the poll started the gaps over: keep that. A failed
+      # poll says nothing about a quiet PR: it keeps the current gap.
+      if [ "$(sget next_poll_at)" = "$raw" ]; then
+        step=$(sget poll_step); [[ $step =~ ^[0-9]+$ ]] && [ "$step" -ge 1 ] || step=1
+        sset next_poll_at "$(( now + $(poll_interval "$step") ))"
+        if [ "$polled" -eq 1 ] && [ "$(poll_interval "$step")" -lt "$(poll_interval "$((step + 1))")" ]; then
+          sset poll_step "$((step + 1))"
+        fi
+      fi
     fi
     now=$(date +%s)
-    round=$(( now - t0 ))
+    round=$(sget poll_round); [[ $round =~ ^[0-9]+$ ]] || round=0
     # Start the next round only when it should end by the deadline (it may take
-    # as long as this one did); else sleep out the slice.
+    # as long as the last one did); else sleep out the slice.
     if [ $((now + POLL + round)) -gt "$deadline" ]; then
       [ "$now" -lt "$deadline" ] && sleep $((deadline - now))
       check_gen
@@ -1250,6 +1312,7 @@ head_sha=%s
     exit 5
   fi
   sset head_sha "$sha"
+  reset_poll_backoff
   printf 'pushed=1
 head_sha=%s
 ' "$sha"
@@ -1291,6 +1354,7 @@ cmd_rerun() {
   [ -z "$errs" ] || printf '%s' "$errs" >&2
   [ "$n" -gt 0 ] || die "every gh run rerun failed; treat the failure as real."
   sset rerun_head "$sha"
+  reset_poll_backoff
   # The old failed checks show until GitHub lists the new attempt as pending:
   # keep them reported, so only a failure after CI left fail is a repeat.
   sset ci_reported "$sha"

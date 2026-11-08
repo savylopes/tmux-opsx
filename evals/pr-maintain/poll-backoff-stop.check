@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Backoff does not delay a stop
+# level: L1
+# requirement: Back off between polls
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+w --slice 1 --poll 60 >/dev/null
+sed -i "s/^next_poll_at=.*/next_poll_at=$(( $(date +%s) + 3000 ))/" "$sf"
+echo "monitor_gen=1" >> "$sf"
+( sleep 2; sed -i 's/^monitor_gen=.*/monitor_gen=2/' "$sf" ) &
+s=$(date +%s); w --gen 1 --slice 30 --poll 1 >/dev/null; rc=$?; e=$(( $(date +%s) - s )); echo "exit $rc after ${e}s"
+[ $rc -eq 4 ] && [ $e -le 6 ] || fail "rc=$rc e=$e"
+echo OK

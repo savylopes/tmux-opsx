@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Liveness during backoff
+# level: L1
+# requirement: Back off between polls
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_env
+w() { "$PRSH" wait 42 "$@" --repo "$R" 2>/dev/null; }
+seen() { "$PRSH" seen 42 --repo "$R" >/dev/null 2>&1 || fail "seen failed"; }
+seen; sf=$(state_file 42)
+w --slice 1 --poll 60 >/dev/null
+sed -i "s/^next_poll_at=.*/next_poll_at=$(( $(date +%s) + 3000 ))/; /^last_wait_at=/d" "$sf"
+: > "$GHD/gh.log"
+w --slice 2 --poll 1 >/dev/null; rc=$?
+[ $rc -eq 3 ] || fail "exit $rc"
+! grep -q '^pr checks' "$GHD/gh.log" || fail "polled during the gap"
+at=$(sed -n 's/^last_wait_at=//p' "$sf"); [ $(( $(date +%s) - at )) -le 3 ] || fail "last_wait_at old"
+echo OK
