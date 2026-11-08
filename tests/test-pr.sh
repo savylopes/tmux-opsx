@@ -61,7 +61,7 @@ api_file() { printf '%s/gh/api/%s' "$SP" "$(printf '%s' "$1" | tr '/' '_')"; }
 # The fork block (add-pr-forks) serves acme/app from $SP/gh-acme; one log.
 cat > "$SP/fakebin/gh" <<EOF
 #!/usr/bin/env bash
-D=$SP/gh
+D=\${FAKE_GH_DIR:-$SP/gh}
 printf '%s\n' "\$*" >> "\$D/gh.log"
 opt() { local k=\$1; shift; while [ \$# -gt 0 ]; do [ "\$1" = "\$k" ] && { printf '%s' "\$2"; return; }; shift; done; }
 R=\$(opt -R "\$@"); [ "\$R" = acme/app ] && D=$SP/gh-acme
