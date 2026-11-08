@@ -76,8 +76,8 @@
 #                                   -> ~/.claude/agents/opsx-researcher.md (Read, Glob, Grep,
 #                                      WebSearch, WebFetch only)
 #                                   -> ~/.cursor/agents/opsx-researcher.md (readonly: true)
-#                                   -> ~/.codex/agents/ops-researcher.toml (shell, apps and
-#                                      plugins off; Codex cannot make an agent file read-only)
+#                                   -> ~/.codex/agents/ops-researcher.toml (shell, apps,
+#                                      plugins, memories off; Codex cannot make an agent file read-only)
 #                                   -> ~/.config/opencode/agents/ops-researcher.md (edit, bash,
 #                                      task, todowrite: deny)
 #                                   -> ~/.gemini/agents/opsx-researcher.md (read and web tools only)

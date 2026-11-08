@@ -4,7 +4,7 @@
 #   questions.sh extract <change> --mode answer|challenge [--include-requirements] [--repo <dir>]
 #   questions.sh cite <path> <line> <excerpt> [--repo <dir>]
 #   questions.sh run new <answer|challenge|settle> --questions-file <tsv> [--max N] [--rounds N] [--repo <dir>]
-#   questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> [--sources <n>] [--repo <dir>]
+#   questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> [--sources <n>] [--attempts <n>] [--repo <dir>]
 #   questions.sh status <run> [--repo <dir>]
 #
 # extract  prints one TSV line per question of an OpenSpec change:
@@ -33,10 +33,15 @@
 #            answer:                  answered | partial | needs-human | unanswerable
 #            challenge-a/challenge-b: stands | weakened | invalidated
 #          --sources is the number of evidence items that survived validation (default 0).
+#          --attempts is the number of subagent runs behind the verdict: 2 when a
+#          malformed result was retried (default 1).
 # status   prints one line per question, derived from verdicts.tsv:
 #          <qid> <state> round=<k> subagents=<n> history=<stage:verdict,...>
-#          settle states: open, challenging, settled, contested, needs-human,
-#          unanswerable. answer/challenge: the recorded verdict (pending before).
+#          subagents= sums --attempts. settle states: open, challenging, settled,
+#          contested, needs-human, unanswerable; an open question starts open, a
+#          decision or requirement starts challenging (the claim is its answer).
+#          answer: the last recorded verdict (pending before). challenge: the
+#          strongest recorded verdict (invalidated > weakened > stands).
 #
 # Nothing is fetched: url: evidence is checked by the parent with its own web tool.
 # Exit status: 0 ok, 1 cite mismatch, 2 usage or input error, 3 cite path outside.
@@ -101,7 +106,7 @@ extract_items() {
           else print rel ":" curline "\t" t
         }
       }
-      cur = ""
+      cur = ""; nested = 0
     }
     /^```/ { fence = !fence }
     fence { next }
@@ -129,12 +134,15 @@ extract_items() {
     /^([-*+]|[0-9]+[.)])[ \t]+/ {
       flush()
       t = $0; sub(/^([-*+]|[0-9]+[.)])[ \t]+/, "", t)
-      cur = t; curline = NR
+      cur = t; curline = NR; nested = 0
       next
     }
     /^[ \t]+[^ \t]/ && cur != "" {
       t = $0; sub(/^[ \t]+/, "", t)
-      if (t ~ /^([-*+]|[0-9]+[.)])[ \t]+/) next   # nested item: not a question of its own
+      # A nested item is not a question of its own, and neither its text nor the
+      # indented lines after it belong to the parent item.
+      if (t ~ /^([-*+]|[0-9]+[.)])[ \t]+/) { nested = 1; next }
+      if (nested) next
       cur = cur " " t
       next
     }
@@ -205,7 +213,8 @@ cmd_cite() {
   local path=${args[0]} line=${args[1]} excerpt=${args[2]} root mem abs
   is_uint "$line" && [ "$line" -ge 1 ] || die "cite: <line> must be a positive number."
   root=$(repo_root "$repo")
-  case "$path" in /*) abs=$path ;; ~/*) abs=$HOME/${path#\~/} ;; *) abs=$root/$path ;; esac
+  # The ~ is quoted: an unquoted ~/* pattern is tilde-expanded and never matches a literal "~/".
+  case "$path" in /*) abs=$path ;; \~/*) abs=$HOME/${path#\~/} ;; *) abs=$root/$path ;; esac
   abs=$(canon "$abs")
   mem=$(canon "$HOME/.agents/memory")
   # Confinement before existence: an outside path never reveals whether it exists.
@@ -341,13 +350,20 @@ replay() {
   local dir=$1 mode cap
   mode=$(meta_get "$dir" mode); cap=$(meta_get "$dir" rounds)
   awk -F'\t' -v mode="$mode" -v cap="$cap" '
-    FNR == NR { if ($1 != "") { nq++; q[nq] = $1; st[$1] = (mode == "settle" ? "open" : "pending"); rd[$1] = 1 }; next }
+    # In settle an open question starts open (an answer is due); a decision or a
+    # requirement is already a claim, so it starts challenging.
+    FNR == NR { if ($1 != "") { nq++; q[nq] = $1; st[$1] = (mode == "settle" ? ($2 == "open" ? "open" : "challenging") : "pending"); rd[$1] = 1 }; next }
     {
       id = $1; r = $2 + 0; stage = $3; v = $4; s = $5 + 0
       if (!(id in st)) next
-      sub_n[id]++
+      sub_n[id] += ($6 ~ /^[0-9]+$/ && $6 > 0 ? $6 : 1)   # a retried result counts both runs
       hist[id] = hist[id] (hist[id] == "" ? "" : ",") stage ":" v
-      if (mode != "settle") { st[id] = v; rd[id] = r; next }
+      if (mode == "answer") { st[id] = v; rd[id] = r; next }
+      if (mode == "challenge") {
+        # The strongest attack wins: one challenger finding a flaw is not undone by another that did not.
+        if (rank(v) >= rank(st[id])) { st[id] = v; rd[id] = r }
+        next
+      }
       if (final(st[id])) next
       if (stage == "answer") {
         if (r != rd[id] || st[id] != "open") next
@@ -370,6 +386,7 @@ replay() {
         delete ca[id]; delete cb[id]
       }
     }
+    function rank(x) { return x == "invalidated" ? 3 : x == "weakened" ? 2 : x == "stands" ? 1 : 0 }
     function final(x) { return x == "settled" || x == "contested" || x == "needs-human" || x == "unanswerable" }
     END {
       for (i = 1; i <= nq; i++) {
@@ -381,20 +398,21 @@ replay() {
 }
 
 cmd_record() {
-  local run="" qid="" round="" stage="" verdict="" sources=0 repo=""
+  local run="" qid="" round="" stage="" verdict="" sources=0 attempts=1 repo=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --round) round=${2:-}; shift 2 || die "--round needs a number." ;;
       --stage) stage=${2:-}; shift 2 || die "--stage needs a value." ;;
       --verdict) verdict=${2:-}; shift 2 || die "--verdict needs a value." ;;
       --sources) sources=${2:-}; shift 2 || die "--sources needs a number." ;;
+      --attempts) attempts=${2:-}; shift 2 || die "--attempts needs a number." ;;
       --repo) repo=${2:-}; shift 2 || die "--repo needs a directory." ;;
       -h|--help) help ;;
       -*) die "record: unknown option $1" ;;
       *) if [ -z "$run" ]; then run=$1; elif [ -z "$qid" ]; then qid=$1; else die "record: too many arguments."; fi; shift ;;
     esac
   done
-  [ -n "$run" ] && [ -n "$qid" ] || die "usage: questions.sh record <run> <qid> --round <k> --stage <s> --verdict <v> [--sources <n>]"
+  [ -n "$run" ] && [ -n "$qid" ] || die "usage: questions.sh record <run> <qid> --round <k> --stage <s> --verdict <v> [--sources <n>] [--attempts <n>]"
   local dir mode cap
   dir=$(run_dir "$run" "$repo")
   mode=$(meta_get "$dir" mode); cap=$(meta_get "$dir" rounds)
@@ -402,6 +420,7 @@ cmd_record() {
   is_uint "$round" && [ "$round" -ge 1 ] || die "--round must be a positive number."
   [ "$round" -le "$cap" ] || die "round $round is above the cap of $cap for run $run."
   is_uint "$sources" || die "--sources must be a number."
+  is_uint "$attempts" && [ "$attempts" -ge 1 ] && [ "$attempts" -le 2 ] || die "--attempts must be 1 or 2 (one retry of a malformed result)."
   case "$stage" in
     answer) in_list "$verdict" "$ANSWER_VERDICTS" || die "verdict '$verdict' is not an answer verdict ($ANSWER_VERDICTS)." ;;
     challenge-a|challenge-b) in_list "$verdict" "$CHALLENGE_VERDICTS" || die "verdict '$verdict' is not a challenge verdict ($CHALLENGE_VERDICTS)." ;;
@@ -411,7 +430,7 @@ cmd_record() {
     answer:challenge-*) die "an answer run records only --stage answer." ;;
     challenge:answer) die "a challenge run records only --stage challenge-a or challenge-b." ;;
   esac
-  printf '%s\t%s\t%s\t%s\t%s\n' "$qid" "$round" "$stage" "$verdict" "$sources" >> "$dir/verdicts.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$qid" "$round" "$stage" "$verdict" "$sources" "$attempts" >> "$dir/verdicts.tsv"
 }
 
 cmd_status() {

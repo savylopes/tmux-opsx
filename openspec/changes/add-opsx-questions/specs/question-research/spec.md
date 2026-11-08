@@ -174,7 +174,7 @@ After the citation check, the parent SHALL judge whether the remaining evidence 
 
 It SHALL refuse more than `--max` questions (default 6) with a non-zero exit.
 
-`questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> [--sources <n>]` SHALL store one validated verdict. It SHALL reject:
+`questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> [--sources <n>] [--attempts <n>]` SHALL store one validated verdict. `--attempts` (1 or 2, default 1) is the number of subagent runs behind it: 2 when a malformed result was retried. It SHALL reject:
 
 - a verdict outside the stage's vocabulary;
 - a round above the cap;
@@ -184,6 +184,7 @@ It SHALL refuse more than `--max` questions (default 6) with a non-zero exit.
 
 In settle mode the state SHALL follow these rules:
 
+- A question of kind `open` starts `open` (an answer is due). A `decision`, `req-spec` or `req-client` starts `challenging` in round 1: its text is the claim the challengers attack, and no answer subagent runs until an attack succeeds.
 - An answer of `needs-human` or `unanswerable` ends the question in that state.
 - An answer of `answered` or `partial` moves it to `challenging` in the same round.
 - When both challenges of round `k` are recorded:
@@ -191,7 +192,7 @@ In settle mode the state SHALL follow these rules:
   - any `weakened` or `invalidated`: `open` in round `k+1` (a new answer is due), or `contested` when `k` is the cap;
   - no attack succeeded but a `stands` had 0 sources: `challenging` in round `k+1` (new challengers, same answer), or `needs-human` when `k` is the cap.
 
-In answer and challenge modes, the state SHALL be the recorded verdict. `subagents` SHALL count the recorded verdicts.
+In answer mode, the state SHALL be the last recorded verdict. In challenge mode, it SHALL be the strongest recorded verdict (`invalidated` over `weakened` over `stands`), so a later `stands` does not hide an attack. `subagents` SHALL be the sum of the `--attempts` of the recorded verdicts.
 
 #### Scenario: Settled in one round
 - **WHEN** Q1 records `answer answered`, then `challenge-a stands --sources 2` and `challenge-b stands --sources 1` in round 1

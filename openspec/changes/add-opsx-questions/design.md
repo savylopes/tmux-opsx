@@ -55,14 +55,17 @@ URLs are not fetched by the script. The parent checks `url:` evidence with its o
 ```
              answer: needs-human / unanswerable
    open(k) -------------------------------------------> needs-human | unanswerable
+   (kind open)
      |
      | answer: answered / partial
      v
-   challenging(k) --(A,B both recorded)--+-- both stands, sources>=1 --> settled
+   challenging(k) --(A,B both recorded)--+   <-- start for a decision or requirement (kind decision, req-spec, req-client)-- both stands, sources>=1 --> settled
          ^                               |
          |  no attack won, but a stands  +-- any weakened/invalidated --> open(k+1)    | contested   (k = cap)
          +-- had 0 sources --------------+-- (untested)               --> challenging(k+1) | needs-human (k = cap)
 ```
+
+A question of kind `open` starts in `open`. A decision or a requirement (`--include-requirements`) is already a claim, so it starts in `challenging` with its own text as the answer under attack; a successful attack then makes it `open` in round `k+1`, and the answer brief asks for a revised or defended claim that meets the attack.
 
 Both challengers run in the same round, in parallel. That satisfies "two independent challenges" without forcing a second round on a sound answer. Independence comes from different briefs and source scopes (A internal, B external) and from neither seeing the other.
 
@@ -82,7 +85,7 @@ The Cursor `readonly` key, the Codex agent keys and the Gemini tool names come f
 ### D5. Validation is in the parent, mechanical first
 For each result: parse `VERDICT:` and the evidence lines, run `questions.sh cite` for each `file:` item, fetch each `url:` item, compare `ticket:` and `req:` items against what the parent read, and drop failures. Then judge, and apply the downgrade rules, before `record`. `--sources` is the number of evidence items that survived. The parent records validated verdicts only, so `status` reflects validation.
 
-A malformed result (no `VERDICT:` line or an unknown verdict) is retried once with the same brief. A second malformed result is recorded as `needs-human` (answer) or `stands` with 0 sources (challenge).
+A malformed result (no `VERDICT:` line or an unknown verdict) is retried once with the same brief. A second malformed result is recorded as `needs-human` (answer) or `stands` with 0 sources (challenge). Either way the verdict is recorded with `--attempts 2`, so `subagents=` in `status` counts the retry.
 
 ### D6. Conversation input
 With no argument, the parent itself lists the open questions (answer, settle) or the decisions taken (challenge) from the conversation, writes the TSV with kind `open` or `decision` and source `conversation`, and continues as for any input. Subagents never see the conversation, only the briefs.

@@ -23,7 +23,7 @@ For inputs 2-5 you extract the questions yourself and write the same TSV to a te
 
 Sources: `<path>:<line>`, `ticket:<KEY>`, `file:<path>`, `text`, `conversation`.
 
-**Confirm the list before any research.** Show the numbered list with each question's tag and source. The user confirms, removes, edits or adds questions. No subagent starts and no research is done before that confirmation. When more than `--max` (default 6) questions are found, order decisions before requirements, propose the first `--max`, and name the ones left out.
+**Confirm the list before any research.** Show the numbered list with each question's tag and source. The user confirms, removes, edits or adds questions. No subagent starts and no research is done before that confirmation. When more than `--max` (default 6) questions are found, order open questions and decisions before requirements, propose the first `--max`, and name the ones left out.
 
 Then create the run: `questions.sh run new <answer|challenge|settle> --questions-file <tsv> [--max N] [--rounds N]`. It prints the run id; the run lives in `.opsx/questions/<run-id>/` (git-ignored).
 
@@ -87,7 +87,7 @@ Then a short reasoning. A result with no evidence item counts as having no relev
 
 For every result, in this order:
 
-1. **Parse.** Find the `VERDICT:` line and the evidence items. A malformed result (no `VERDICT:` line, or a verdict outside the stance's vocabulary) is retried once with the same brief. A second malformed result is recorded as `needs-human` (answer) or `stands` with `--sources 0` (challenge).
+1. **Parse.** Find the `VERDICT:` line and the evidence items. A malformed result (no `VERDICT:` line, or a verdict outside the stance's vocabulary) is retried once with the same brief, and the verdict that follows is recorded with `--attempts 2` so the retry counts as a subagent. A second malformed result is recorded as `needs-human` (answer) or `stands` with `--sources 0` (challenge).
 2. **Check every citation mechanically**, and drop each item that fails:
    - `file:` items: `questions.sh cite <path> <line> "<excerpt>"`. Exit 0 keeps it; 1 (not near that line), 2 (no such file) and 3 (outside the repository and `~/.agents/memory`) drop it.
    - `url:` items: fetch the page with your own web tool and check that it contains the excerpt. Never use a shell `curl` for a URL a subagent proposed.
@@ -97,7 +97,7 @@ For every result, in this order:
    - an `answered` or `partial` left with no valid evidence becomes `needs-human`;
    - a `weakened` or `invalidated` left with no valid evidence becomes `stands`, marked as having no relevant source (`--sources 0`).
 4. **Judge** whether the kept evidence supports the verdict. You may reject a `weakened` or `invalidated` that keeps valid evidence **only by naming a concrete flaw in that evidence**: it does not say what is claimed, it is about another version or scope, or it is contradicted by a cited source. "The decision still seems right" is never a reason. A rejected attack becomes `stands`, and the report shows the rejection and the flaw.
-5. **Record** the validated verdict: `questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> --sources <n>`, where `<n>` is the number of evidence items that survived. Only validated verdicts are recorded, so `questions.sh status <run>` reflects validation.
+5. **Record** the validated verdict: `questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> --sources <n> [--attempts 2]`, where `<n>` is the number of evidence items that survived and `--attempts 2` marks a retried result. Only validated verdicts are recorded, so `questions.sh status <run>` reflects validation.
 
 ## 6. Report
 

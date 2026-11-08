@@ -6,7 +6,8 @@
 # Uses scratch git repos and a scratch HOME; no network, no agent CLI.
 # Usage: bash tests/test-questions.sh
 # Assertions are eval'd strings, so variables read only there look unused.
-# shellcheck disable=SC2034,SC2016
+# Literal ~/ paths are passed on purpose (cite resolves them itself).
+# shellcheck disable=SC2034,SC2016,SC2088
 set -u
 REPO=$(cd -- "$(dirname -- "$0")/.." && pwd)
 Q=$REPO/skills/opsx-questions/questions.sh
@@ -82,6 +83,10 @@ out=$("$Q" extract '../../etc' --mode answer 2>/dev/null); rc=$?
 ok "extract: unsafe change name exits 2, nothing read" '[ $rc -eq 2 ] && [ -z "$out" ]'
 "$Q" extract 'a/b' --mode answer >/dev/null 2>&1; rc=$?
 ok "extract: slash in name exits 2" '[ $rc -eq 2 ]'
+mkdir -p "$R/openspec/changes/nested"
+printf '## Open Questions\n\n- Parent question?\n  - sub item\n    continuation of the sub item\n- Next question?\n' > "$R/openspec/changes/nested/design.md"
+out=$("$Q" extract nested --mode answer)
+ok "extract: a nested item and its continuation lines stay out of the parent text" '[ "$(printf "%s\n" "$out" | cut -f4 | tr "\n" ";")" = "Parent question?;Next question?;" ]'
 if [ -d "$REPO/openspec/changes/add-opsx-workspace" ]; then
   out=$("$Q" extract add-opsx-workspace --mode answer --repo "$REPO")
   ok "extract add-opsx-workspace prints its two open questions" '[ "$(printf "%s\n" "$out" | grep -c "	open	")" -eq 2 ]'
@@ -114,6 +119,12 @@ rm -f "$R/link.md"
 mkdir -p "$SP/home/.agents/memory"; printf 'remember this\n' > "$SP/home/.agents/memory/m.md"
 HOME=$SP/home "$Q" cite "$SP/home/.agents/memory/m.md" 1 "remember this"; rc=$?
 ok "cite: ~/.agents/memory is allowed" '[ $rc -eq 0 ]'
+HOME=$SP/home "$Q" cite '~/.agents/memory/m.md' 1 "remember this"; rc=$?
+ok "cite: a literal ~/.agents/memory/... path resolves under HOME" '[ $rc -eq 0 ]'
+HOME=$SP/home "$Q" cite '~/.agents/memory/none.md' 1 x 2>/dev/null; rc=$?
+ok "cite: a missing ~/.agents/memory file exits 2" '[ $rc -eq 2 ]'
+HOME=$SP/home "$Q" cite '~/other.md' 1 x 2>/dev/null; rc=$?
+ok "cite: ~/ outside ~/.agents/memory exits 3" '[ $rc -eq 3 ]'
 
 # ---------------------------------------------------------------- run (1.4)
 R2=$(newrepo r2); cd "$R2" || exit 1
@@ -181,6 +192,21 @@ S6=$("$Q" run new settle --questions-file "$(qf 1)")
 rec "$S6" Q1 --round 1 --stage answer --verdict unanswerable
 ok "an unanswerable answer ends the question" 'st "$S6" | grep -q "^Q1 unanswerable round=1 subagents=1 "'
 
+S8=$("$Q" run new settle --questions-file "$(qf 1)")
+rec "$S8" Q1 --round 1 --stage answer --verdict answered --sources 1 --attempts 2
+ok "a retried result counts two subagents" 'st "$S8" | grep -q "^Q1 challenging round=1 subagents=2 "'
+rec "$S8" Q1 --round 1 --stage challenge-a --verdict stands --attempts 3; rc=$?
+ok "record: --attempts above 2 rejected" '[ $rc -ne 0 ]'
+
+printf 'Q1\treq-spec\tspec.md:3\tThe thing SHALL bar.\nQ2\tdecision\tdesign.md:5\tUse SQLite\nQ3\topen\tconversation\tWhy?\n' > "$SP/req.tsv"
+S9=$("$Q" run new settle --questions-file "$SP/req.tsv")
+ok "settle: a requirement and a decision start challenging, an open question open" 'st "$S9" Q1 | grep -q "^Q1 challenging round=1 subagents=0 " && st "$S9" Q2 | grep -q "^Q2 challenging round=1 " && st "$S9" Q3 | grep -q "^Q3 open round=1 "'
+rec "$S9" Q1 --round 1 --stage challenge-a --verdict stands --sources 1
+rec "$S9" Q1 --round 1 --stage challenge-b --verdict stands --sources 1
+ok "settle: a requirement settles with no answer subagent" 'st "$S9" Q1 | grep -q "^Q1 settled round=1 subagents=2 "'
+rec "$S9" Q2 --round 1 --stage challenge-a --verdict invalidated --sources 1
+ok "settle: an attacked decision reopens for an answer" 'st "$S9" Q2 | grep -q "^Q2 open round=2 "'
+
 S7=$("$Q" run new settle --questions-file "$(qf 1)")
 before=$("$Q" status "$S7"); vb=$(cat "$R2/.opsx/questions/$S7/verdicts.tsv")
 rec "$S7" Q1 --round 1 --stage answer --verdict stands; rc=$?
@@ -200,6 +226,8 @@ ok "answer mode: challenge stages rejected" '[ $rc -ne 0 ]'
 C1=$("$Q" run new challenge --questions-file "$(qf 1)")
 rec "$C1" Q1 --round 1 --stage challenge-a --verdict invalidated --sources 2
 ok "challenge mode: state is the recorded verdict" 'st "$C1" | grep -q "^Q1 invalidated "'
+rec "$C1" Q1 --round 1 --stage challenge-b --verdict stands --sources 1
+ok "challenge mode: a later stands does not hide the attack" 'st "$C1" | grep -q "^Q1 invalidated round=1 subagents=2 "'
 
 ok "run leaves the repo untouched except .gitignore" '[ "$(git -C "$R2" status --porcelain | grep -vE "^(\?\?| M) \.gitignore$")" = "" ]'
 
