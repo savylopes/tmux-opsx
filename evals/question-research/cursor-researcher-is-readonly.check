@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Cursor researcher is readonly
+# level: L2
+# requirement: Read-only agent on every CLI
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install 2>&1); rc=$?; [ $rc -eq 0 ] || { echo "$out" | tail -20; fail "install exit $rc"; }
+f="$HOME/.cursor/agents/opsx-researcher.md"; [ -f "$f" ] || fail "$f missing"
+fm=$(awk 'NR==1&&/^---$/{n=1;next} n&&/^---$/{exit} n' "$f"); echo "$fm"
+echo "$fm" | grep -Eq '^readonly:\s*true' || fail "no readonly: true in frontmatter"
+echo OK

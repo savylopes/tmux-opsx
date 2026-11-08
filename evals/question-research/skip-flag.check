@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: question-research / Skip flag
+# level: L2
+# requirement: Installation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install --skip-questions 2>&1); rc=$?; [ $rc -eq 0 ] || { echo "$out" | tail; fail "exit $rc"; }
+f=$(find "$HOME" \( -name 'opsx-questions' -o -name 'opsx-answer' -o -name 'opsx-challenge' -o -name 'opsx-settle' -o -name 'opsx-researcher.*' -o -name 'ops-researcher.*' \) 2>/dev/null)
+echo "found: [$f]"; [ -z "$f" ] || fail "files created despite --skip-questions"
+echo OK

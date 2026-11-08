@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: question-research / Decisions extracted
+# level: L1
+# requirement: Extract questions from a change
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; mk_change c1
+out=$(cd "$R" && "$QSH" extract c1 --mode challenge); echo "$out"
+[ "$(echo "$out" | wc -l)" -eq 2 ] || fail "expected two lines"
+echo "$out" | sed -n 1p | grep -Pq '^Q1\tdecision\t' || fail "line 1 not Q1 decision"
+echo "$out" | sed -n 2p | grep -Pq '^Q2\tdecision\t' || fail "line 2 not Q2 decision"
+echo "$out" | grep -q 'Use SQLite' && echo "$out" | grep -q 'One window per change' || fail "decision titles missing"
+echo OK

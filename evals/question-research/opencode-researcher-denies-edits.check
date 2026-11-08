@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: question-research / OpenCode researcher denies edits
+# level: L2
+# requirement: Read-only agent on every CLI
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install --skip-memory 2>&1); rc=$?; [ $rc -eq 0 ] || { echo "$out" | tail -20; fail "install exit $rc"; }
+d="$HOME/.config/opencode/agents"; r="$d/ops-researcher.md"
+[ -f "$r" ] || fail "$r missing"
+grep -Eq '^\s*edit:\s*deny' "$r" && grep -Eq '^\s*bash:\s*deny' "$r" || fail "edit/bash not denied"
+grep -Eq '(edit|bash):\s*allow' "$r" && fail "researcher allows edit or bash"
+grep -Eq '^\s*edit:\s*allow' "$d/ops-applier.md" || fail "ops-applier lost edit: allow"
+echo OK

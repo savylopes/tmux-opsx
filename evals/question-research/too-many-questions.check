@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: question-research / Too many questions
+# level: L1
+# requirement: Settle state machine
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; mk_questions 7
+out=$("$QSH" run new settle --questions-file "$EVAL_TMP/q.tsv" --repo "$R" 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -ne 0 ] || fail "expected non-zero exit"
+[ -z "$(ls -A "$R/.opsx/questions" 2>/dev/null)" ] || fail "run directory created: $(ls "$R/.opsx/questions")"
+echo OK

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: question-research / Open questions extracted
+# level: L1
+# requirement: Extract questions from a change
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; mk_change c1
+out=$(cd "$R" && "$QSH" extract c1 --mode answer); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+[ "$(echo "$out" | wc -l)" -eq 1 ] || fail "expected exactly one line"
+n=$(grep -n 'Where does X write' "$C/design.md" | cut -d: -f1)
+exp=$(printf 'Q1\topen\topenspec/changes/c1/design.md:%s\tWhere does X write?' "$n")
+[ "$out" = "$exp" ] || { echo "expected: $exp"; fail "line differs"; }
+echo OK

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: question-research / Round structure documented
+# level: L1
+# requirement: Settle rounds
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+f="$EVAL_ROOT/skills/opsx-settle/SKILL.md"; [ -f "$f" ] || fail "missing"
+grep -Eiq 'challengers? A\b' "$f" && grep -Eiq '(challengers? A and B|\bB\b.{0,3}external|challenger B)' "$f" || fail "challengers A and B not described"
+grep -Eiq 'parallel' "$f" || fail "parallel not mentioned"
+grep -Eiq 'independent|neither sees|not see|never see' "$f" || fail "independence not stated"
+grep -Eiq 'carr(y|ies|ied)' "$f" || fail "carried attack not described"
+grep -Eiq 'stop|until every question is final|cap' "$f" || fail "stop condition missing"
+echo OK

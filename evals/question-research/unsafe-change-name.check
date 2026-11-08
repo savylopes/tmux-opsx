@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: question-research / Unsafe change name
+# level: L1
+# requirement: Extract questions from a change
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo
+mkdir -p "$R/etc"; printf '## Open Questions\n\n- leaked?\n' > "$R/etc/design.md"
+mkdir -p "$R/openspec/changes"
+out=$(cd "$R" && "$QSH" extract '../../etc' --mode answer 2>&1); rc=$?
+echo "$out"; echo "exit $rc"
+[ $rc -eq 2 ] || fail "expected exit 2"
+echo "$out" | grep -q 'leaked' && fail "read a file outside openspec/changes"
+echo OK

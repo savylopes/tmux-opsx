@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: question-research / Claude tool list is read-only
+# level: L1
+# requirement: Read-only research agent
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+f="$EVAL_ROOT/agents/opsx-researcher.md"; [ -f "$f" ] || fail "missing"
+t=$(awk 'NR==1&&/^---$/{n=1;next} n&&/^---$/{exit} n&&/^tools:/' "$f"); echo "$t"
+list=$(echo "$t" | sed 's/^tools:[ ]*//; s/[][,"]/ /g' | tr -s ' ' '\n' | grep -v '^$' | sort | tr '\n' ' ')
+[ "$list" = "Glob Grep Read WebFetch WebSearch " ] || fail "tools are: $list"
+echo OK

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Settled in one round
+# level: L1
+# requirement: Settle state machine
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; new_run settle 1
+rec Q1 --round 1 --stage answer --verdict answered || fail rec1
+rec Q1 --round 1 --stage challenge-a --verdict stands --sources 2 || fail rec2
+rec Q1 --round 1 --stage challenge-b --verdict stands --sources 1 || fail rec3
+s=$(st); echo "$s"; echo "$s" | grep -Eq '^Q1 settled round=1 subagents=3( |$)' || fail "unexpected status"
+echo OK

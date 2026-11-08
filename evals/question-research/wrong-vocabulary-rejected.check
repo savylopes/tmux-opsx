@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Wrong vocabulary rejected
+# level: L1
+# requirement: Settle state machine
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; new_run settle 1
+before=$(st); echo "$before"
+rec Q1 --round 1 --stage answer --verdict stands; rc=$?; echo "exit $rc"
+[ $rc -ne 0 ] || fail "expected non-zero exit"
+after=$(st); [ "$before" = "$after" ] || { echo "$after"; fail "status changed"; }
+echo OK

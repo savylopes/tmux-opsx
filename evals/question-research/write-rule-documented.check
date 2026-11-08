@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Write rule documented
+# level: L1
+# requirement: Report and write only on command
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+for s in answer challenge settle; do
+  f="$EVAL_ROOT/skills/opsx-$s/SKILL.md"; [ -f "$f" ] || fail "$f missing"
+  grep -Eiq 'nothing is (written|posted)|not (write|edit|post)|never (write|post)|no (write|edit)|until you|until the user' "$f" || fail "opsx-$s: write-on-command rule missing"
+  grep -Eiq 'draft' "$f" && grep -Eiq 'ticket' "$f" || fail "opsx-$s: ticket comments as drafts missing"
+done
+echo OK

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Downgrade rules documented
+# level: L1
+# requirement: Parent validation and downgrade
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+f="$EVAL_ROOT/skills/opsx-questions/reference.md"; [ -f "$f" ] || fail "missing"
+grep -Eq 'needs-human' "$f" && grep -Eiq '(answered|partial)[^.]*needs-human' "$f" || fail "answered/partial -> needs-human rule missing"
+grep -Eiq '(weakened|invalidated)[^.]*stands' "$f" || fail "weakened/invalidated -> stands rule missing"
+grep -Eiq 'concrete flaw' "$f" || fail "concrete-flaw requirement missing"
+grep -Eiq 'still seems right' "$f" || fail "'still seems right' exclusion missing"
+echo OK

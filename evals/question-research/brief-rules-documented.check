@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Brief rules documented
+# level: L1
+# requirement: Briefs carry the evidence the agent cannot fetch
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+f="$EVAL_ROOT/skills/opsx-questions/reference.md"; [ -f "$f" ] || fail "missing"
+grep -Eiq 'untrusted' "$f" || fail "no untrusted-input rules"
+for w in 'stance' 'ruled out' 'context'; do grep -Eiq "$w" "$f" || fail "brief field '$w' missing"; done
+grep -Eiq 'rationale' "$f" || fail "no mention of the parent's rationale"
+grep -Eiq '(omit|not|never|without)[^.]*rationale|rationale[^.]*(omit|not|never|withheld)' "$f" || fail "does not say challenge briefs omit the rationale"
+echo OK
