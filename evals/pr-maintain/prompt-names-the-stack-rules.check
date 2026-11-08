@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt names the stack rules
+# level: L1
+# requirement: Prompt coordinates the stack
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 42 41
+for cli in claude codex; do
+  p=$(pr prompt 42 --agent-cli $cli) || fail "prompt --agent-cli $cli failed"
+  for s in 'ledger 42 --unread --mark' 'restack 42 --parent-moved' 'tell 42 all hold' 'tell 42 all moved'; do
+    echo "$p" | grep -qF -- "$s" || fail "$cli prompt lacks: $s"
+  done
+  echo "$p" | grep -q 'peer' || fail "$cli prompt has no peer entry"
+  echo "$cli: ok"
+done
+echo OK

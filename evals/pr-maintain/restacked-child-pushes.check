@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Restacked child pushes
+# level: L1
+# requirement: Push keeps the stack in one version
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_moved_env
+pr restack 42 --parent-moved >/dev/null || fail "restack failed"
+out=$(pr push 42 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "expected exit 0, got $rc"
+[ "$($G -C "$R" ls-remote origin refs/heads/feat-b | cut -f1)" = "$($G -C "$R" rev-parse feat-b)" ] || fail "remote not updated"
+echo OK

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt carries the dead-owner question
+# level: L1
+# requirement: Ask before starting a stopped owner
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 42 41
+p=$(pr prompt 42) || fail "prompt failed"
+echo "$p" | grep -qF -- '--option start --option wait' || fail "no '--option start --option wait'"
+echo "$p" | grep -qF -- 'parent_live=0' || fail "no parent_live=0"
+echo OK

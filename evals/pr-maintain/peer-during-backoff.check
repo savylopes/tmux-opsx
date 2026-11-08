@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Peer during backoff
+# level: L1
+# requirement: Peer event from the ledger
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41; seed 42 41
+st_set 42 poll_step 5; st_set 42 next_poll_at $(( $(date +%s) + 3600 ))
+tell_ok 41 pr-42 ack
+: > "$GHD/gh.log"
+t0=$(date +%s)
+out=$(pr wait 42 --slice 10 --poll 1 2>&1); rc=$?; echo "$out"; echo "exit $rc after $(( $(date +%s) - t0 ))s"
+echo "$out" | grep -qx "event=peer" || fail "no event=peer"
+[ $(( $(date +%s) - t0 )) -le 8 ] || fail "took too long"
+# resolving the repo slug is not a poll; any PR/API/checks query is
+grep -E '^(pr |api )' "$GHD/gh.log" && fail "gh polled GitHub during the backoff"
+echo OK

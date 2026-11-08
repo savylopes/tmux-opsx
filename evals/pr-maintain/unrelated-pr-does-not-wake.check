@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Unrelated PR does not wake
+# level: L1
+# requirement: Peer event from the ledger
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41; seed 42 41
+tell_ok 50 all hold
+out=$(pr wait 42 --slice 2 --poll 1 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 3 ] || fail "expected exit 3, got $rc"
+echo "$out" | grep -q '^event=' && fail "an event line was printed"
+echo OK

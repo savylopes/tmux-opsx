@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Implicit stack inferred
+# level: L2
+# requirement: Resolve the PR's stack
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_stack_env
+out=$(start_stack 42 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "start exit $rc"
+echo "$out" | grep -qx "stack parent=41 children=-" || fail "no 'stack parent=41 children=-' line"
+f=$(state_file 42)
+grep -qx "stack_parent=41" "$f" || fail "state lacks stack_parent=41"
+grep -qx "stack_parent_tip=$SHA_A" "$f" || fail "state lacks stack_parent_tip=$SHA_A"
+echo OK

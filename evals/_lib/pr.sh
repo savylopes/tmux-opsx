@@ -6,7 +6,16 @@ WINSH="$EVAL_ROOT/skills/opsx-run/opsx-window.sh"
 G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
 fail() { echo "FAIL: $*"; exit 1; }
 need_tools() { command -v jq >/dev/null 2>&1 || { echo "jq missing"; exit 77; }; command -v git >/dev/null 2>&1 || exit 77; }
-need_tmux() { command -v tmux >/dev/null 2>&1 && [ -n "${TMUX:-}" ] || { echo "no private tmux server"; exit 77; }; }
+# private_tmux: true only when EVAL_TMUX_SOCKET is set and $TMUX points at that private
+# socket (never the user's live server, whose TMUX the shell may have inherited).
+private_tmux() {
+  [ -n "${EVAL_TMUX_SOCKET:-}" ] && [ -n "${TMUX:-}" ] || return 1
+  [ "$(basename "${TMUX%%,*}")" = "$EVAL_TMUX_SOCKET" ]
+}
+need_tmux() {
+  command -v tmux >/dev/null 2>&1 || { echo "no tmux"; exit 77; }
+  private_tmux || { echo "TMUX is not the private eval server (EVAL_TMUX_SOCKET=${EVAL_TMUX_SOCKET:-unset} TMUX=${TMUX:-unset}); refusing to launch windows"; exit 77; }
+}
 T() { tmux -L "$EVAL_TMUX_SOCKET" "$@"; }
 commit() { # dir file content msg
   printf '%s\n' "$3" > "$1/$2"; $G -C "$1" add "$2"; $G -C "$1" commit -qm "$4"
@@ -90,7 +99,7 @@ EOF
   cd "$R"
 }
 state_file() { printf '%s/tmux-opsx/pr/o-app-%s/state' "$XDG_STATE_HOME" "$1"; }
-pr_start() { "$PRSH" start "$1" --repo "$R" --agent-cli "$SP/fakebin/agent" "${@:2}"; }
+pr_start() { need_tmux; "$PRSH" start "$1" --repo "$R" --agent-cli "$SP/fakebin/agent" "${@:2}"; }
 win_count() { T list-windows -a -F '#{@opsx_change}' 2>/dev/null | grep -cx "pr-$1" || true; }
 
 # ---- change-window helpers (pr-in-change-window) -----------------------------
@@ -124,3 +133,50 @@ mk_change_win() {
 wopt() { T show-options -wqv -t "$1" "$2"; }
 # wait_typed <change> <text> [secs]
 wait_typed() { local i; for i in $(seq $(( ${3:-5} * 10 ))); do grep -qF -- "$2" "$EVAL_TMP/typed.$1" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+
+# ---- stack / ledger helpers (pr-stack-ledger) ---------------------------------
+# mk_stack_env: mk_env, then PR 41 = feat-a (A,B) -> main and PR 42 = feat-b (A,B,C,D)
+# -> main, both OPEN, so 42 is implicitly stacked on 41. SHA_A = 41's head, SHA_B = 42's.
+mk_stack_env() {
+  mk_env
+  { pr_obj 41 feat-a "$SHA_A" main OPEN
+    pr_obj 42 feat-b "$SHA_B" main OPEN; } | jq -s . > "$GHD/prs.json"
+  LEDGER="$XDG_STATE_HOME/tmux-opsx/pr/o-app/ledger"
+}
+# put_entry <from> <to> <kind> [age seconds]: drop a ledger file by hand
+put_entry() {
+  mkdir -p "$LEDGER"
+  local ts; ts=$(date -u -d "@$(( $(date +%s) - ${4:-0} ))" +%Y%m%dT%H%M%SZ)
+  local f="$LEDGER/$ts-$(printf '%04x' $((RANDOM % 65536)))--$1--$2--$3.md"
+  printf 'pr: %s\n' "${1#pr-}" > "$f"; echo "$f"
+}
+# start_stack <n>: pr.sh start with the stub agent; needs the private tmux server
+start_stack() { need_tmux; clean_windows; trap clean_windows EXIT; pr_start "$@"; }
+
+# ---- tmux-free helpers (L1): never reach any tmux server -----------------------
+# pr <args>: pr.sh without TMUX/TMUX_PANE and with a scratch TMUX_TMPDIR, so a bare
+# tmux inside pr.sh can only see an empty private directory, never a live server.
+pr() { mkdir -p "$EVAL_TMP/notmux"; chmod 700 "$EVAL_TMP/notmux"
+  env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$EVAL_TMP/notmux" "$PRSH" "$@" --repo "$R"; }
+# seed <n> [parent|none]: state file for PR n through restart-input (no window), then
+# declare the parent by hand
+seed() { pr restart-input "$1" >/dev/null 2>&1 || fail "restart-input $1 failed"
+  [ -z "${2:-}" ] || pr stack "$1" --stacked-on "$2" >/dev/null || fail "stack $1 --stacked-on $2 failed"; }
+# st_set <n> <key> <value>: edit one line of the state file
+st_set() { local f; f=$(state_file "$1"); grep -v "^$2=" "$f" > "$f.tmp"; echo "$2=$3" >> "$f.tmp"; mv "$f.tmp" "$f"; }
+# tell_ok <args>: pr.sh tell that must succeed; waits 1 s after so names sort in order
+tell_ok() { pr tell "$@" >/dev/null || fail "tell $* failed"; sleep 1; }
+n_entries() { ls "$LEDGER" 2>/dev/null | grep -c '[.]md$' || true; }
+
+# mk_moved_env: stack 41 (A,B) <- 42 (A,B,C,D), 42 records parent 41 with tip A..B. Then
+# main gets a commit M and PR 41 is rewritten to A',B' on it and force-pushed: PAR_NEW =
+# 41's new remote head, OLD_B = 42's head before. 42's local branch is unchanged.
+mk_moved_env() {
+  mk_stack_env; seed 41; seed 42 41
+  $G -C "$R" checkout -q main; commit "$R" m.txt M M; $G -C "$R" push -q origin main
+  $G -C "$R" checkout -q -b rw feat-a; $G -C "$R" rebase -q main 2>&1 | tail -2
+  PAR_NEW=$($G -C "$R" rev-parse HEAD); $G -C "$R" push -q -f origin rw:feat-a
+  $G -C "$R" checkout -q main; $G -C "$R" branch -q -D rw
+  setpr 41 ".headRefOid=\"$PAR_NEW\""
+  OLD_B=$SHA_B
+}

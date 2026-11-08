@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Join adds a child
+# level: L1
+# requirement: Stack record is kept
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41; seed 42
+pr stack 41 | grep -qx "children=-" || fail "precondition: 41 has children"
+tell_ok 42 pr-41 join
+pr ledger 41 --unread --mark; echo "exit $?"
+out=$(pr stack 41); echo "$out"
+echo "$out" | grep -qx "children=42" || fail "children=42 not printed"
+echo OK

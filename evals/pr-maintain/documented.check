@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Documented
+# level: L1
+# requirement: Stack documentation
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+for f in skills/opsx-pr/SKILL.md README.md; do
+  for s in 'pr.sh ledger' 'pr.sh tell' 'event=peer' 'exit 9'; do
+    grep -qF -- "$s" "$EVAL_ROOT/$f" || fail "$f lacks: $s"
+  done
+  echo "$f: ok"
+done
+echo OK

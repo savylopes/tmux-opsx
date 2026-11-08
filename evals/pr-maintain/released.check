@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Released
+# level: L1
+# requirement: Holds expire
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41; seed 42 41
+st_set 41 last_wait_at $(date +%s)
+put_entry pr-41 all hold 120 >/dev/null
+put_entry pr-41 all moved 60 >/dev/null
+out=$(pr stack 42); echo "$out"
+echo "$out" | grep -qx "hold=-" || fail "hold=- not printed"
+echo OK

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Seen keeps unread entries
+# level: L1
+# requirement: Read and mark ledger entries
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41; seed 42 41
+tell_ok 41 pr-42 ack
+pr seen 42 >/dev/null 2>&1; echo "seen exit $?"
+out=$(pr wait 42 --slice 4 --poll 1 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+echo "$out" | grep -qx "event=peer" || fail "no event=peer after seen"
+echo OK

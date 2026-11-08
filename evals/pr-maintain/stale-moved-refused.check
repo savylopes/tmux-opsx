@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Stale moved refused
+# level: L1
+# requirement: Restack onto a moved parent
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_moved_env
+X=$SHA_A    # an entry says 41 moved to X, but ls-remote reports PAR_NEW
+before=$($G -C "$R" rev-parse feat-b)
+pr restack 42 --parent-moved --sha "$X"; rc=$?; echo "exit $rc"
+[ $rc -eq 2 ] || fail "expected exit 2, got $rc"
+[ "$($G -C "$R" rev-parse feat-b)" = "$before" ] || fail "branch moved"
+echo OK

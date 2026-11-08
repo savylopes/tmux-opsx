@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Parent force-push keeps the record
+# level: L1
+# requirement: Stack record is kept
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 42 41
+# PR 41's head is rewritten: a different commit, no longer an ancestor of 42's head
+$G -C "$R" checkout -q -b rewritten main; commit "$R" z.txt Z Z
+NEW=$($G -C "$R" rev-parse HEAD); $G -C "$R" push -q -f origin rewritten:feat-a
+$G -C "$R" checkout -q main
+setpr 41 ".headRefOid=\"$NEW\""
+$G -C "$R" merge-base --is-ancestor "$NEW" "$SHA_B" && fail "fixture: 41 still an ancestor of 42"
+pr seen 42 >/dev/null 2>&1; pr wait 42 --slice 2 --poll 1 >/dev/null 2>&1
+out=$(pr stack 42); echo "$out"
+echo "$out" | grep -qx "parent=41" || fail "parent=41 lost"
+echo OK

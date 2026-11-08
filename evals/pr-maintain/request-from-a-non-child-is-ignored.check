@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Request from a non-child is ignored
+# level: L1
+# requirement: Peer event from the ledger
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41
+pr stack 41 | grep -qx "children=-" || fail "precondition: 41 has children"
+tell_ok 50 pr-41 request --ref check:ci
+out=$(pr wait 41 --slice 2 --poll 1 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 3 ] || fail "expected exit 3, got $rc"
+echo OK

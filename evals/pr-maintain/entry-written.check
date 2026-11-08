@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Entry written
+# level: L1
+# requirement: Ledger entries
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41
+pr tell 41 all moved --sha "$SHA_B" --old "$SHA_A"; echo "exit $?"
+ls -la "$LEDGER"
+[ "$(n_entries)" = 1 ] || fail "expected one entry, got $(n_entries)"
+f=$(ls "$LEDGER"); echo "$f" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}--pr-41--all--moved\.md$' || fail "name '$f' does not match"
+grep -q "$SHA_B" "$LEDGER/$f" && grep -q "$SHA_A" "$LEDGER/$f" || fail "body lacks both SHAs"
+[ -z "$(ls "$LEDGER" | grep -v '[.]md$')" ] || fail "temporary file left behind"
+echo OK

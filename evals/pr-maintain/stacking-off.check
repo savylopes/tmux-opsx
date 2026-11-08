@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Stacking off
+# level: L1
+# requirement: Declare the stack by hand
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 42 41
+pr stack 42 | grep -qx "parent=41" || fail "precondition: parent=41 not recorded"
+pr stack 42 --stacked-on none; echo "exit $?"
+out=$(pr stack 42); echo "$out"
+echo "$out" | grep -qx "parent=-" || fail "parent=- not printed"
+echo OK

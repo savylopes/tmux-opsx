@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Prompt carries the request rule
+# level: L1
+# requirement: Requests go to the owner
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 42 41
+p=$(pr prompt 42) || fail "prompt failed"
+echo "$p" | grep -qF -- 'tell 42 pr-<n> request --ref' || fail "no 'tell 42 pr-<n> request --ref'"
+echo "$p" | grep -Eqi 're-?reads?' || fail "does not say the owner re-reads the item"
+echo "$p" | grep -qi 'github' || fail "does not mention GitHub"
+echo OK

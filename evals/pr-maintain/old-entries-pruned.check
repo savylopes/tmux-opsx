@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Old entries pruned
+# level: L1
+# requirement: Ledger retention
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 42 41
+old=$(put_entry pr-41 all moved $(( 40 * 86400 ))); new=$(put_entry pr-41 all hold 60)
+pr ledger 42 --prune; echo "exit $?"
+[ ! -e "$old" ] || fail "40-day-old entry remains"
+[ -e "$new" ] || fail "newer entry was deleted"
+echo OK
