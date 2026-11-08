@@ -74,7 +74,8 @@
 #                                      runs live in each repo's git-ignored .opsx/questions/)
 #      + ops-researcher, read-only on every CLI (model: inherit, not in models.conf)
 #                                   -> ~/.claude/agents/opsx-researcher.md (Read, Glob, Grep,
-#                                      WebSearch, WebFetch only)
+#                                      WebSearch, WebFetch only; a PreToolUse hook runs
+#                                      opsx-questions/webfetch-guard.sh on every WebFetch)
 #                                   -> ~/.cursor/agents/opsx-researcher.md (readonly: true)
 #                                   -> ~/.codex/agents/ops-researcher.toml (shell, apps,
 #                                      plugins, memories off; Codex cannot make an agent file read-only)
@@ -881,7 +882,9 @@ install_questions_skills() {
   local root=$1 label=$2 sk
   install_file "$SRC/skills/opsx-questions/questions.sh" "$root/opsx-questions/questions.sh"
   install_file "$SRC/skills/opsx-questions/reference.md" "$root/opsx-questions/reference.md"
-  chmod +x "$root/opsx-questions/questions.sh" || die "cannot chmod +x $root/opsx-questions/questions.sh"
+  install_file "$SRC/skills/opsx-questions/webfetch-guard.sh" "$root/opsx-questions/webfetch-guard.sh"
+  chmod +x "$root/opsx-questions/questions.sh" "$root/opsx-questions/webfetch-guard.sh" \
+    || die "cannot chmod +x $root/opsx-questions/questions.sh"
   for sk in opsx-answer opsx-challenge opsx-settle; do
     install_file "$SRC/skills/$sk/SKILL.md" "$root/$sk/SKILL.md"
   done
@@ -2322,9 +2325,10 @@ agent_model_for() {
 }
 
 # Claude Code agent: the source file with its frontmatter `model:` set to $3.
-# $4 (optional): absolute path of monitor-guard.sh, written into the
-# frontmatter hook `command:` that names monitor-guard.sh (shell-quoted, inside
-# a YAML single-quoted string).
+# $4 (optional): absolute path of the agent's guard hook (monitor-guard.sh for
+# ops-pr-monitor, webfetch-guard.sh for ops-researcher), written into the
+# frontmatter hook `command:` that names a guard (shell-quoted, inside a YAML
+# single-quoted string).
 install_claude_agent() {
   local src=$1 dest=$2 model=${3:-inherit} guard=${4:-} gq="" tmp
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
@@ -2340,7 +2344,7 @@ install_claude_agent() {
               if (n == 2 && !done) { print "model: " m; done=1 }
               print; next }
     n == 1 && /^model:/ { if (!done) { print "model: " m; done=1 }; next }
-    n == 1 && g != "" && /^ *command: .*monitor-guard\.sh.?$/ {
+    n == 1 && g != "" && /^ *command: .*(monitor|webfetch)-guard\.sh.?$/ {
       match($0, /^ *command: /); print substr($0, 1, RLENGTH) g; next }
     { print }
   ' "$src" > "$tmp"
@@ -2476,13 +2480,16 @@ install_gemini_readonly_agent() {
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
   OPSX_GEMINI_TOOLS="$GEMINI_READONLY_TOOLS" awk '
     BEGIN { nt = split(ENVIRON["OPSX_GEMINI_TOOLS"], t, " ") }
-    /^---$/ { n++; skip = 0; print; next }
+    /^---$/ { n++; skip = 0; hk = 0; print; next }
     n == 1 && /^tools:/ {
       print "tools:"; for (i = 1; i <= nt; i++) print "  - " t[i]
       skip = 1; next
     }
     n == 1 && skip && /^[ \t]*-/ { next }
-    { skip = 0; print }
+    # The Claude Code hooks: block (webfetch-guard.sh) is not Gemini syntax.
+    n == 1 && /^hooks:/ { hk = 1; next }
+    n == 1 && hk && /^[ \t]/ { next }
+    { skip = 0; hk = 0; print }
   ' "$src" > "$tmp"
   install_file "$tmp" "$dest"
   rm -f "$tmp"
@@ -3034,8 +3041,9 @@ fi
 # every CLI, always model: inherit (it is not in models.conf).
 if [ "$SKIP_QUESTIONS" -eq 0 ]; then
   [ -f "$SRC/agents/opsx-researcher.md" ] || die "missing $SRC/agents/opsx-researcher.md — run this script from the repo checkout"
-  install_claude_agent "$SRC/agents/opsx-researcher.md" "$PREFIX/agents/opsx-researcher.md" inherit
-  ok "ops-researcher -> $PREFIX/agents/opsx-researcher.md (Claude Code, read-only tools)"
+  install_claude_agent "$SRC/agents/opsx-researcher.md" "$PREFIX/agents/opsx-researcher.md" inherit \
+    "$PREFIX/skills/opsx-questions/webfetch-guard.sh"
+  ok "ops-researcher -> $PREFIX/agents/opsx-researcher.md (Claude Code, read-only tools, guard: webfetch-guard.sh)"
   install_cursor_agent "$SRC/agents/opsx-researcher.md" "$CURSOR_AGENTS_DIR/opsx-researcher.md" inherit readonly
   ok "ops-researcher -> $CURSOR_AGENTS_DIR/opsx-researcher.md (Cursor CLI, readonly: true)"
   install_codex_agent "$SRC/agents/opsx-researcher.md" "$CODEX_AGENTS_DIR/ops-researcher.toml" readonly
@@ -3249,7 +3257,7 @@ if [ "$SKIP_QUESTIONS" -eq 1 ]; then
   step "Skipping /opsx-answer, /opsx-challenge, /opsx-settle and ops-researcher (--skip-questions)"
 else
   step "Installing the /opsx-answer, /opsx-challenge and /opsx-settle skills"
-  for f in opsx-questions/questions.sh opsx-questions/reference.md opsx-answer/SKILL.md \
+  for f in opsx-questions/questions.sh opsx-questions/reference.md opsx-questions/webfetch-guard.sh opsx-answer/SKILL.md \
            opsx-challenge/SKILL.md opsx-settle/SKILL.md; do
     [ -f "$SRC/skills/$f" ] || die "missing $SRC/skills/$f — run this script from the repo checkout"
   done
@@ -3606,11 +3614,12 @@ if [ "$SKIP_TASK" -eq 0 ]; then
 fi
 if [ "$SKIP_QUESTIONS" -eq 0 ]; then
   while IFS= read -r qroot; do
-    for f in opsx-questions/questions.sh opsx-questions/reference.md opsx-answer/SKILL.md \
+    for f in opsx-questions/questions.sh opsx-questions/reference.md opsx-questions/webfetch-guard.sh opsx-answer/SKILL.md \
              opsx-challenge/SKILL.md opsx-settle/SKILL.md; do
       if [ -f "$qroot/$f" ]; then ok "$(tilde "$qroot/$f")"; else warn "missing: $qroot/$f"; FAIL=1; fi
     done
     [ -x "$qroot/opsx-questions/questions.sh" ] || { warn "not executable: $qroot/opsx-questions/questions.sh"; FAIL=1; }
+    [ -x "$qroot/opsx-questions/webfetch-guard.sh" ] || { warn "not executable: $qroot/opsx-questions/webfetch-guard.sh"; FAIL=1; }
   done < <(questions_skill_roots)
   if bash -n "$PREFIX/skills/opsx-questions/questions.sh" 2>/dev/null; then
     ok "questions.sh parses"

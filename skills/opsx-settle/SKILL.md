@@ -63,4 +63,4 @@ TK=$(ls ~/.claude/skills/opsx-task/opsx-task.sh ~/.cursor/skills/opsx-task/opsx-
 
 ## Write only on command
 
-Nothing is written or posted until the user commands it: no edit to design.md, specs, memory or tickets, and no file outside `.opsx/questions/`. Then write only what the user named. A settled question written back to a design.md keeps its bullet, starts with `Resolved:` and cites its source. Ticket comments are drafts only, shown to the user and never posted. An invalidated `[req client AC]` produces a drafted question to the product owner, never an edit.
+Nothing is written or posted until the user commands it: no edit to design.md, specs, memory or tickets, and no file outside `.opsx/questions/` (the one exception: `questions.sh run new` adds the line `.opsx/questions/` to the repository `.gitignore` once, when it is missing). Then write only what the user named. A settled question written back to a design.md keeps its bullet, starts with `Resolved:` and cites its source. Ticket comments are drafts only, shown to the user and never posted. An invalidated `[req client AC]` produces a drafted question to the product owner, never an edit.

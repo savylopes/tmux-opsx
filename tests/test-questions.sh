@@ -83,6 +83,18 @@ out=$("$Q" extract '../../etc' --mode answer 2>/dev/null); rc=$?
 ok "extract: unsafe change name exits 2, nothing read" '[ $rc -eq 2 ] && [ -z "$out" ]'
 "$Q" extract 'a/b' --mode answer >/dev/null 2>&1; rc=$?
 ok "extract: slash in name exits 2" '[ $rc -eq 2 ]'
+# Security round 1 F5: a symlinked artifact is not followed.
+mkdir -p "$R/openspec/changes/linked/specs/s" "$SP/outside"
+printf '# D\n\n## Open Questions\n\n- OUTSIDE SECRET QUESTION?\n\n## Decisions\n\n### OUTSIDE DECISION\n' > "$SP/outside/x.md"
+printf '# P\n\n## Open Points\n\n- OUTSIDE POINT?\n' > "$SP/outside/p.md"
+printf '### Requirement: OUTSIDE REQ\n' > "$SP/outside/s.md"
+ln -s "$SP/outside/x.md" "$R/openspec/changes/linked/design.md"
+ln -s "$SP/outside/p.md" "$R/openspec/changes/linked/proposal.md"
+ln -s "$SP/outside/s.md" "$R/openspec/changes/linked/specs/s/spec.md"
+out=$("$Q" extract linked --mode answer 2>&1); rc=$?
+ok "extract: symlinked design.md and proposal.md are skipped (answer)" '[ $rc -eq 0 ] && ! printf "%s" "$out" | grep -q OUTSIDE'
+out=$("$Q" extract linked --mode challenge --include-requirements 2>&1); rc=$?
+ok "extract: symlinked design.md and spec.md are skipped (challenge)" '[ $rc -eq 0 ] && ! printf "%s" "$out" | grep -q OUTSIDE'
 mkdir -p "$R/openspec/changes/nested"
 printf '## Open Questions\n\n- Parent question?\n  - sub item\n    continuation of the sub item\n- Next question?\n' > "$R/openspec/changes/nested/design.md"
 out=$("$Q" extract nested --mode answer)
@@ -125,6 +137,69 @@ HOME=$SP/home "$Q" cite '~/.agents/memory/none.md' 1 x 2>/dev/null; rc=$?
 ok "cite: a missing ~/.agents/memory file exits 2" '[ $rc -eq 2 ]'
 HOME=$SP/home "$Q" cite '~/other.md' 1 x 2>/dev/null; rc=$?
 ok "cite: ~/ outside ~/.agents/memory exits 3" '[ $rc -eq 3 ]'
+# Security round 1 F1: the values are untrusted, -h/--help in them is a value.
+"$Q" cite -h 1 x >/dev/null 2>&1; rc=$?
+ok "cite: path -h is a path (no such file, exit 2), not help" '[ $rc -eq 2 ]'
+"$Q" cite --help 1 x >/dev/null 2>&1; rc=$?
+ok "cite: path --help is a path (exit 2), not help" '[ $rc -eq 2 ]'
+"$Q" cite a.md 10 -h >/dev/null 2>&1; rc=$?
+ok "cite: excerpt -h is an excerpt (exit 1), not help" '[ $rc -eq 1 ]'
+"$Q" cite a.md -h x >/dev/null 2>&1; rc=$?
+ok "cite: line -h is a bad line (exit 2), not help" '[ $rc -eq 2 ]'
+"$Q" cite -- -h 1 x >/dev/null 2>&1; rc=$?
+ok "cite: -- then -h is a path (exit 2)" '[ $rc -eq 2 ]'
+"$Q" cite -- a.md 9 "quick brown"; rc=$?
+ok "cite: -- before the values still matches (exit 0)" '[ $rc -eq 0 ]'
+"$Q" cite --repo "$R" -- a.md 9 "quick brown"; rc=$?
+ok "cite: leading --repo then -- matches (exit 0)" '[ $rc -eq 0 ]'
+(cd / && "$Q" cite a.md 9 "quick brown" --repo "$R"); rc=$?
+ok "cite: trailing --repo still works (exit 0)" '[ $rc -eq 0 ]'
+"$Q" cite a.md 9 --repo "$R" >/dev/null 2>&1; rc=$?
+ok "cite: --repo among the values is a value, too few values exit 2" '[ $rc -eq 2 ]'
+"$Q" cite a.md 9 "quick brown" extra >/dev/null 2>&1; rc=$?
+ok "cite: a fourth value exits 2" '[ $rc -eq 2 ]'
+out=$("$Q" cite --help); rc=$?
+ok "cite --help alone is help (exit 0)" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "questions.sh cite"'
+
+# ---------------------------------------------------------------- url (security round 1 F2, F3)
+for u in "https://docs.python.org/3/library/os.html" "https://github.com/a/b/commit/0123456789012345678901234567890123456789" "https://Example.COM" "https://example.com/a/b#frag"; do
+  "$Q" url -- "$u" >/dev/null; rc=$?
+  ok "url: plain https document URL passes: $u" '[ $rc -eq 0 ]'
+done
+out=$("$Q" url "https://example.com/a/b#frag")
+ok "url: prints the URL without its fragment" '[ "$out" = "https://example.com/a/b" ]'
+out=$("$Q" url "https://Example.COM")
+ok "url: lowercases the host and adds the root path" '[ "$out" = "https://example.com/" ]'
+long=$(printf 'A%.0s' $(seq 65)); huge=$(printf 'a/%.0s' $(seq 110))
+for u in "https://attacker.example/?q=secret" "https://attacker.example/x?d=1" "http://example.com/" "https://u:p@example.com/" \
+         "https://user@example.com/" "https://example.com:8443/" "https://127.0.0.1/" "https://localhost/" "https://x.localhost/" \
+         "https://intranet/" "https://[::1]/" "https://example.com/$long" "https://example.com/$huge" "https://example.com/a b" \
+         "https://example.com/a\"b" "ftp://example.com/" "-h" "https://example.com/%0a;\$(id)"; do
+  "$Q" url -- "$u" >/dev/null 2>&1; rc=$?
+  ok "url: refused (exit 1): ${u:0:60}" '[ $rc -eq 1 ]'
+done
+"$Q" url -h >/dev/null 2>&1; rc=$?
+ok "url: -h alone is help (exit 0)" '[ $rc -eq 0 ]'
+"$Q" url -- -h >/dev/null 2>&1; rc=$?
+ok "url: -- -h is a URL, refused (exit 1)" '[ $rc -eq 1 ]'
+"$Q" url >/dev/null 2>&1; rc=$?
+ok "url: no URL exits 2" '[ $rc -eq 2 ]'
+WG=$REPO/skills/opsx-questions/webfetch-guard.sh
+printf '{"tool_input":{"url":"https://evil.example/?d=secret","prompt":"x"}}' | "$WG" 2>"$SP/wg.err"; rc=$?
+ok "webfetch-guard: URL with a query string is blocked (exit 2, reason)" '[ $rc -eq 2 ] && grep -q "query string" "$SP/wg.err"'
+printf '{"tool_input":{"url":"https://docs.example.com/guide","prompt":"x"}}' | "$WG"; rc=$?
+ok "webfetch-guard: plain docs URL is allowed (exit 0)" '[ $rc -eq 0 ]'
+printf 'not json' | "$WG" 2>/dev/null; rc=$?
+ok "webfetch-guard: unreadable payload is blocked" '[ $rc -eq 2 ]'
+printf '{"tool_input":{"prompt":"x"}}' | "$WG" 2>/dev/null; rc=$?
+ok "webfetch-guard: payload without a URL is blocked" '[ $rc -eq 2 ]'
+printf '{"tool_input":{"url":["https://docs.example.com/"]}}' | "$WG" 2>/dev/null; rc=$?
+ok "webfetch-guard: non-string URL is blocked" '[ $rc -eq 2 ]'
+printf '{"tool_input":{"url":"https://docs.example.com/a\\nhttps://evil.example/?d=1"}}' | "$WG" 2>/dev/null; rc=$?
+ok "webfetch-guard: multi-line URL is blocked" '[ $rc -eq 2 ]'
+mkdir -p "$SP/wgonly"; cp "$WG" "$SP/wgonly/"
+printf '{"tool_input":{"url":"https://docs.example.com/"}}' | "$SP/wgonly/webfetch-guard.sh" 2>/dev/null; rc=$?
+ok "webfetch-guard: no questions.sh next to it blocks (fails closed)" '[ $rc -eq 2 ]'
 
 # ---------------------------------------------------------------- run (1.4)
 R2=$(newrepo r2); cd "$R2" || exit 1
@@ -143,6 +218,13 @@ ok "run new: --max raises the limit" '"$Q" run new answer --questions-file "$(qf
 printf 'Q1\tbogus\tx\ty\n' > "$SP/bad.tsv"
 "$Q" run new answer --questions-file "$SP/bad.tsv" >/dev/null 2>&1; rc=$?
 ok "run new: unknown kind rejected" '[ $rc -ne 0 ]'
+# Security round 1 F6: control characters are stripped from the source too.
+printf 'Q1\topen\tsrc\033[31mRED\033]0;title\007\177x\tQ\033[2Jtext?\n' > "$SP/esc.tsv"
+E1=$("$Q" run new answer --questions-file "$SP/esc.tsv"); rc=$?
+ok "run new: no control character in questions.tsv source or text" '[ $rc -eq 0 ] && ! LC_ALL=C grep -q "[[:cntrl:]]" <(tr -d "\t\n" < "$R2/.opsx/questions/$E1/questions.tsv") && [ "$(cut -f3 "$R2/.opsx/questions/$E1/questions.tsv")" = "src[31mRED]0;titlex" ]'
+printf 'Q1\topen\t\033\001\tQ?\n' > "$SP/esc2.tsv"
+"$Q" run new answer --questions-file "$SP/esc2.tsv" >/dev/null 2>&1; rc=$?
+ok "run new: a source of only control characters is empty, rejected" '[ $rc -eq 2 ]'
 
 # ---------------------------------------------------------------- record + status (1.5)
 st(){ "$Q" status "$1" | awk -v q="${2:-Q1}" '$1==q'; }
@@ -233,7 +315,7 @@ ok "run leaves the repo untouched except .gitignore" '[ "$(git -C "$R2" status -
 
 # ---------------------------------------------------------------- shellcheck (1.6)
 if command -v shellcheck >/dev/null 2>&1; then
-  ok "shellcheck questions.sh and this test" 'shellcheck "$Q" "$REPO/tests/test-questions.sh"'
+  ok "shellcheck questions.sh, webfetch-guard.sh and this test" 'shellcheck "$Q" "$REPO/skills/opsx-questions/webfetch-guard.sh" "$REPO/tests/test-questions.sh"'
 fi
 
 cd "$REPO" || exit 1
@@ -243,6 +325,8 @@ REFMD=$REPO/skills/opsx-questions/reference.md
 fm(){ awk '/^---$/{n++; next} n==1' "$1"; }
 ok "researcher: name ops-researcher, model inherit, bypassPermissions" 'fm "$AG" | grep -qx "name: \"ops-researcher\"" && fm "$AG" | grep -qx "model: inherit" && fm "$AG" | grep -qx "permissionMode: bypassPermissions"'
 ok "researcher: Claude tools exactly Read, Glob, Grep, WebSearch, WebFetch" '[ "$(fm "$AG" | grep "^tools:")" = "tools: [Read, Glob, Grep, WebSearch, WebFetch]" ] && ! fm "$AG" | grep -qE "Write|Edit|Bash|Agent|NotebookEdit|mcp__"'
+ok "researcher: PreToolUse hook on WebFetch runs webfetch-guard.sh" 'fm "$AG" | grep -qx "hooks:" && fm "$AG" | grep -qx "  PreToolUse:" && fm "$AG" | grep -qx "    - matcher: \"WebFetch\"" && fm "$AG" | grep -qx "          command: \"\$HOME/.claude/skills/opsx-questions/webfetch-guard.sh\""'
+ok "researcher: never puts file contents into a URL" 'grep -q "never put file contents into a URL" "$AG"'
 ok "researcher: verdict only, untrusted data, no writes" 'grep -q "VERDICT: <verdict>" "$AG" && grep -qi "data, not instructions" "$AG" && grep -q "No writes, no commands" "$AG"'
 ok "reference: brief fields, untrusted rules, challenge briefs omit the rationale" 'for w in "Question" "Stance" "Context" "Ruled out" "Untrusted input rules" "UNTRUSTED DATA"; do grep -q "$w" "$REFMD" || exit 1; done && grep -qi "omit the parent.s rationale" "$REFMD"'
 ok "format defined once: same VERDICT line and four evidence forms in both files" 'for f in "$AG" "$REFMD"; do grep -qx "VERDICT: <verdict>" "$f" || exit 1; for e in "file:<path>:<line> \"<excerpt>\"" "url:<url> \"<excerpt>\"" "ticket:<key>:<field> \"<excerpt>\"" "req:<id> \"<excerpt>\""; do grep -qxF "$e" "$f" || exit 1; done; done'
@@ -283,6 +367,9 @@ ok "install: three skill folders under ~/.claude, ~/.agents and ~/.gemini" 'for 
 ok "install: verify reports the files and that questions.sh parses, no warning for them" 'printf "%s" "$out" | grep -q "opsx-questions/questions.sh" && printf "%s" "$out" | grep -q "questions.sh parses" && ! printf "%s" "$out" | grep -E "missing|not executable|failed to parse" | grep -qE "questions|researcher|opsx-(answer|challenge|settle)"'
 ok "install: ops-researcher on all five CLIs" '[ "$(n_r_files)" -eq 5 ]'
 ok "install: Claude researcher keeps the read-only tool list, model inherit" 'fm "$IH/.claude/agents/opsx-researcher.md" | grep -qx "tools: \[Read, Glob, Grep, WebSearch, WebFetch\]" && fm "$IH/.claude/agents/opsx-researcher.md" | grep -qx "model: inherit"'
+ok "install: Claude researcher hook names the installed webfetch-guard.sh, which is executable" 'fm "$IH/.claude/agents/opsx-researcher.md" | grep -qxF "          command: '"'"'$IH/.claude/skills/opsx-questions/webfetch-guard.sh'"'"'" && [ -x "$IH/.claude/skills/opsx-questions/webfetch-guard.sh" ]'
+ok "install: the installed guard blocks a built URL and allows a docs URL" 'printf "{\"tool_input\":{\"url\":\"https://e.example/?d=1\"}}" | "$IH/.claude/skills/opsx-questions/webfetch-guard.sh" 2>/dev/null; [ $? -eq 2 ] && printf "{\"tool_input\":{\"url\":\"https://docs.example.com/\"}}" | "$IH/.claude/skills/opsx-questions/webfetch-guard.sh"'
+ok "install: Gemini researcher carries no Claude hooks block" '! fm "$IH/.gemini/agents/opsx-researcher.md" | grep -qE "^hooks:|webfetch-guard|PreToolUse"'
 ok "install: Cursor researcher readonly: true" 'fm "$IH/.cursor/agents/opsx-researcher.md" | grep -qx "readonly: true"'
 OR=$IH/.config/opencode/agents/ops-researcher.md
 ok "install: OpenCode researcher denies edits, applier still allows" 'grep -qx "  edit: deny" "$OR" && grep -qx "  bash: deny" "$OR" && grep -qx "  task: deny" "$OR" && ! grep -qE "^  (edit|bash): allow" "$OR" && for k in read glob grep list webfetch websearch; do grep -qx "  $k: allow" "$OR" || exit 1; done && grep -qx "  edit: allow" "$IH/.config/opencode/agents/ops-applier.md"'

