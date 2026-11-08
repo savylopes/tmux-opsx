@@ -18,7 +18,7 @@ Answer each question, then attack the answer twice, independently, and repeat un
 /opsx-settle                                 # the open questions in this conversation
 ```
 
-`--max` defaults to 6 questions, `--rounds` defaults to 3. `--include-requirements` also brings in requirements and acceptance criteria, as for `/opsx-challenge`. Cost: up to `questions × rounds × 3` subagents (54 with the defaults); the report prints the number used.
+`--max` defaults to 6 questions, `--rounds` defaults to 3. `--include-requirements` also brings in requirements and acceptance criteria, as for `/opsx-challenge`. Cost: up to `questions × rounds × 3` subagents (54 with the defaults), plus one per retried malformed result; the report prints the number used.
 
 ## Files
 

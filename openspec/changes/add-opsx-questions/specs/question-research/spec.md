@@ -67,7 +67,7 @@ A change that does not exist SHALL exit 2 with a message. A change that has the 
 - **THEN** it exits 2 and reads no file outside `openspec/changes/`
 
 ### Requirement: The user confirms the question list
-Before starting any subagent, the skill SHALL show the numbered list of questions with their kind and source. The user SHALL be able to confirm, remove, edit or add questions. No research SHALL start without that confirmation. When more than `--max` questions are found, the list SHALL be ordered with decisions before requirements. The skill SHALL propose the first `--max` and name the ones left out.
+Before starting any subagent, the skill SHALL show the numbered list of questions with their kind and source. The user SHALL be able to confirm, remove, edit or add questions. No research SHALL start without that confirmation. When more than `--max` questions are found, the list SHALL be ordered with open questions and decisions before requirements. The skill SHALL propose the first `--max` and name the ones left out.
 
 #### Scenario: Confirmation step documented
 - **WHEN** the three SKILL.md files are read
