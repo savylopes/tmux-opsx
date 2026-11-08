@@ -143,8 +143,8 @@ ok "status: an answered question is challenging" 'st "$S1" | grep -q "^Q1 challe
 rec "$S1" Q1 --round 1 --stage challenge-a --verdict stands --sources 2
 rec "$S1" Q1 --round 1 --stage challenge-b --verdict stands --sources 1
 ok "settled in one round" 'st "$S1" | grep -q "^Q1 settled round=1 subagents=3 history=answer:answered,challenge-a:stands,challenge-b:stands$"'
-rec "$S1" Q1 --round 2 --stage answer --verdict answered; rc=$?
-ok "record: a final question takes no more verdicts" '[ $rc -ne 0 ] && st "$S1" | grep -q "subagents=3"'
+rec "$S1" Q1 --round 2 --stage answer --verdict invalidated; rc=$?
+ok "record: still validates the vocabulary after settling" '[ $rc -ne 0 ] && st "$S1" | grep -q "^Q1 settled round=1 subagents=3 "'
 
 S2=$("$Q" run new settle --questions-file "$(qf 1)")
 rec "$S2" Q1 --round 1 --stage answer --verdict answered --sources 1
@@ -166,6 +166,8 @@ S4=$("$Q" run new settle --questions-file "$(qf 1)" --rounds 1)
 rec "$S4" Q1 --round 1 --stage answer --verdict answered --sources 1
 rec "$S4" Q1 --round 1 --stage challenge-a --verdict weakened --sources 1
 ok "cap reached while contested" 'st "$S4" | grep -q "^Q1 contested "'
+rec "$S4" Q1 --round 1 --stage challenge-b --verdict stands --sources 1; rc=$?
+ok "cap: the parallel second challenger still records, state stays contested" '[ $rc -eq 0 ] && st "$S4" | grep -q "^Q1 contested round=1 subagents=3 history=answer:answered,challenge-a:weakened,challenge-b:stands$"'
 rec "$S4" Q1 --round 2 --stage answer --verdict answered; rc=$?
 ok "record: round above the cap rejected" '[ $rc -ne 0 ]'
 

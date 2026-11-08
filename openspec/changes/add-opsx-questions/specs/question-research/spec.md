@@ -89,7 +89,7 @@ The repo SHALL ship `agents/opsx-researcher.md`, named `ops-researcher`. Its Cla
 
 - **Claude Code**: `~/.claude/agents/opsx-researcher.md` with the source tool list.
 - **Cursor**: `~/.cursor/agents/opsx-researcher.md` with `readonly: true`.
-- **Codex**: `~/.codex/agents/ops-researcher.toml` with a read-only sandbox.
+- **Codex**: `~/.codex/agents/ops-researcher.toml` with the shell, apps, plugins and memories turned off (`[features]`). Codex has no agent-file key that blocks file edits (`sandbox_mode` in an agent file does not override the parent session), so the README records that gap.
 - **OpenCode**: `~/.config/opencode/agents/ops-researcher.md` with `edit: deny`, `bash: deny` and `task: deny`, and `read`, `glob`, `grep`, `list`, `webfetch` and `websearch` allowed.
 - **Gemini**: `~/.gemini/agents/opsx-researcher.md` with a tool list of read and web tools only.
 

@@ -71,13 +71,13 @@ Both challengers run in the same round, in parallel. That satisfies "two indepen
 |---|---|
 | Claude Code | `tools: [Read, Glob, Grep, WebSearch, WebFetch]`. `permissionMode: bypassPermissions` is safe because no write tool is listed, and it avoids WebFetch prompts in a fan-out. |
 | Cursor | frontmatter `readonly: true` (new optional argument to `install_cursor_agent`) |
-| Codex | `sandbox_mode = "read-only"` in the TOML (new optional argument to `install_codex_agent`) |
+| Codex | `[features]` `shell_tool`, `apps`, `plugins`, `memories` = false in the TOML (new optional argument to `install_codex_agent`). Verified during apply: `sandbox_mode` in an agent file does not override the parent session, and no key removes file edits, so Codex cannot make the agent fully read-only (README gap; Codex researches in the parent anyway) |
 | OpenCode | a read-only permission block: `edit`, `bash`, `task`, `todowrite` deny; `read`, `glob`, `grep`, `list`, `webfetch`, `websearch` allow (new `install_opencode_agent` variant) |
-| Gemini | the copied file gets `tools:` rewritten to Gemini's read and web tool names (`read_file`, `read_many_files`, `glob`, `search_file_content`, `list_directory`, `google_web_search`, `web_fetch`) |
+| Gemini | the copied file gets `tools:` rewritten to Gemini's read and web tool names (`read_file`, `read_many_files`, `glob`, `grep_search`, `list_directory`, `google_web_search`, `web_fetch`) |
 
 The researcher gets **no MCP tools**. Tracker MCP servers mix read and write tools under per-install names, so a safe allow-list cannot be written portably. The parent reads tickets, runs `req.sh` and `graphify query`, and passes excerpts in the brief (spec: "Briefs carry the evidence the agent cannot fetch"). The cost is that a researcher cannot search the tracker by itself. Challenger A gets the linked tickets the parent collected.
 
-The Cursor `readonly` key, the Codex `sandbox_mode` key and the Gemini tool names come from those CLIs' documentation. None of these CLIs is installed here, so task 3.x checks them against the docs (Context7 or web) before relying on them. Tests check the generated files, not the CLIs.
+The Cursor `readonly` key, the Codex agent keys and the Gemini tool names come from those CLIs' documentation. None of these CLIs is installed here, so task 3.x checks them against the docs (Context7 or web) before relying on them. Tests check the generated files, not the CLIs.
 
 ### D5. Validation is in the parent, mechanical first
 For each result: parse `VERDICT:` and the evidence lines, run `questions.sh cite` for each `file:` item, fetch each `url:` item, compare `ticket:` and `req:` items against what the parent read, and drop failures. Then judge, and apply the downgrade rules, before `record`. `--sources` is the number of evidence items that survived. The parent records validated verdicts only, so `status` reflects validation.

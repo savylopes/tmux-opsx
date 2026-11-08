@@ -26,8 +26,10 @@
 #          more than --max questions (default 6). --rounds defaults to 3 (settle;
 #          1 for answer and challenge).
 # record   validates and appends one verdict to the run's verdicts.tsv. Rejects
-#          a verdict outside the stage's vocabulary, a round above the cap, an
-#          unknown question and a question that is already final (settle).
+#          a verdict outside the stage's vocabulary, a round above the cap and an
+#          unknown question. A verdict recorded after its round was decided (the
+#          second challenger after a successful attack) is counted but does not
+#          change the state.
 #            answer:                  answered | partial | needs-human | unanswerable
 #            challenge-a/challenge-b: stands | weakened | invalidated
 #          --sources is the number of evidence items that survived validation (default 0).
@@ -409,13 +411,6 @@ cmd_record() {
     answer:challenge-*) die "an answer run records only --stage answer." ;;
     challenge:answer) die "a challenge run records only --stage challenge-a or challenge-b." ;;
   esac
-  if [ "$mode" = settle ]; then
-    local state
-    state=$(replay "$dir" | awk -v q="$qid" '$1 == q { print $2; exit }')
-    case "$state" in
-      settled|contested|needs-human|unanswerable) die "$qid is already final ($state) in run $run." ;;
-    esac
-  fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$qid" "$round" "$stage" "$verdict" "$sources" >> "$dir/verdicts.tsv"
 }
 
