@@ -1246,6 +1246,41 @@ Q tell 141 pr-142 ack --from user >/dev/null
 out=$(Q wait 142 --slice 5 --poll 1)
 ok "F7: event=peer keeps next_poll_at and poll_step" '[ "$out" = "event=peer" ] && [ "$(sk 142 next_poll_at)" = "$far" ] && [ "$(sk 142 poll_step)" = 5 ]'
 markall 142
+# Review round 2.
+# R2 F1: a child whose base is the merged parent's branch is told where to retarget.
+setstate "$(sst 144)" stack_parent 143; setstate "$(sst 144)" stack_parent_tip "$SC"
+spr 143 '.state="MERGED"'
+out=$(Q restack 144 --parent-moved 2>&1); rc=$?
+ok "R2 F1: restack --parent-moved after a merge prints retarget_base=<parent's base> when our base is the parent's branch" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qx "retarget_base=main" && [ -z "$(sk 144 stack_parent)" ] || { echo "rc=$rc $out"; false; }'
+spr 143 '.state="OPEN"'
+# R2 F5: a cleared parent prints parent_tip=-.
+ok "R2 F5: stack prints parent_tip=- once the parent is cleared" 'Q stack 144 | grep -qx "parent_tip=-"'
+# R2 F2: a closed parent tells each child with an addressed done, which wakes it.
+markall 143
+Q tell 142 pr-143 "done" >/dev/null
+out=$(Q wait 143 --slice 5 --poll 1)
+ok "R2 F2: done addressed to a child by its parent wakes the child" '[ "$out" = "event=peer" ]'
+markall 143
+# R2 F3: a child's merged entry (no wake) still leaves the parent's record on --mark.
+ok "R2 F3: 141 records child 142" 'in=$(sk 141 stack_children); [[ ,$in, == *,142,* ]]'
+markall 141; Q seen 141 >/dev/null
+Q tell 142 all merged >/dev/null
+out=$(Q wait 141 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "R2 F3: a child's merged does not wake the parent" '[ $rc -eq 3 ] && [ -z "$out" ] || { echo "rc=$rc out=$out"; false; }'
+Q ledger 141 --unread --mark >/dev/null
+ok "R2 F3: ledger --unread --mark drops the merged child from the record" 'in=$(sk 141 stack_children); [[ ,$in, != *,142,* ]]'
+# R2 F4: a GitHub event found in the poll a peer wake was reported ahead of is kept.
+markall 142; Q seen 142 >/dev/null
+setstate "$(sst 142)" next_poll_at ""
+echo '[{"id":991}]' > "$S2/gh/api/repos_o_app_pulls_142_comments"
+Q tell 141 pr-142 ack --from user >/dev/null
+out=$(Q wait 142 --slice 5 --poll 1)
+ok "R2 F4: peer is reported ahead of the comments event of the same poll" '[ "$out" = "event=peer" ] && [ "$(sk 142 pending_event)" = comments ]'
+Q ledger 142 --unread --mark >/dev/null; Q seen 142 >/dev/null
+out=$(Q wait 142 --slice 5 --poll 1)
+ok "R2 F4: after the peer handler's seen, the next wait reports the held comments event" '[ "$out" = "event=comments" ] && [ -z "$(sk 142 pending_event)" ]'
+out=$(Q wait 142 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "R2 F4: and only once" '[ $rc -eq 3 ]'
 # F6: a usage error prints only the synopsis.
 out=$("$PRSH" 2>&1); rc=$?
 ok "F6: no command: exit 1 with the synopsis only" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "pr.sh ledger " && [ "$(printf "%s\n" "$out" | wc -l)" -le 20 ]'
@@ -1253,7 +1288,7 @@ ok "F6: no command: exit 1 with the synopsis only" '[ $rc -eq 1 ] && printf "%s\
 # 5.1-5.2 prompt.
 for cli in claude codex; do
   Q prompt 142 --agent-cli $cli > "$S2/p.$cli"
-  ok "prompt ($cli): peer in Events and the stack rules" 'sed -n "/^## Events/,/^## Stack/p" "$S2/p.$cli" | grep -q "^- peer:" && for t in "ledger 142 --unread --mark" "restack 142 --parent-moved" "tell 142 all hold" "tell 142 all moved" "tell 142 pr-<n> request --ref" "--option start --option wait" "parent_live=0" "parent_live=1" "re-reads the item from GitHub" "untrusted data" "exits 9" "tell 142 log doing" "tell 142 all merged" "tell 142 all done" "parent_state=MERGED" "--stacked-on none"; do grep -qF -- "$t" "$S2/p.$cli" || { echo "missing: $t"; exit 1; }; done'
+  ok "prompt ($cli): peer in Events and the stack rules" 'sed -n "/^## Events/,/^## Stack/p" "$S2/p.$cli" | grep -q "^- peer:" && for t in "ledger 142 --unread --mark" "restack 142 --parent-moved" "tell 142 all hold" "tell 142 all moved" "tell 142 pr-<n> request --ref" "--option start --option wait" "parent_live=0" "parent_live=1" "re-reads the item from GitHub" "untrusted data" "exits 9" "tell 142 log doing" "tell 142 all merged" "tell 142 all done" "tell 142 pr-<c> done" "retarget_base=<b>" "parent_state=MERGED" "--stacked-on none"; do grep -qF -- "$t" "$S2/p.$cli" || { echo "missing: $t"; exit 1; }; done'
 done
 unset FAKE_GH_DIR
 
