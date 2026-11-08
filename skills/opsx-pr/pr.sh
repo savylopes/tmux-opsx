@@ -748,6 +748,7 @@ in_list() { case ",$2," in *",$1,"*) return 0 ;; esac; return 1; }
 load_stack() {
   STK_PARENT=$(sget stack_parent); [[ $STK_PARENT =~ ^[0-9]+$ ]] || STK_PARENT=""
   STK_CHILDREN=$(sget stack_children); [[ $STK_CHILDREN =~ ^[0-9]+(,[0-9]+)*$ ]] || STK_CHILDREN=""
+  LC_CUR=$(sget ledger_cursor); LC_FLOOR=$(sget ledger_floor); LC_RECENT=$(sget ledger_recent)
 }
 
 # True when the parsed entry would wake this PR's wait (event=peer): addressed
@@ -796,10 +797,10 @@ ledger_in_stack() {
 # True when entry name $1 (parsed) is newer than the cursor and not marked.
 # Entries a few seconds older than the last mark (same-second names, a slow
 # rename) stay unread until marked.
+# Needs load_stack first.
 ledger_unread() {
-  local cur floor recent
-  cur=$(sget ledger_cursor); floor=$(sget ledger_floor); recent=$(sget ledger_recent)
-  ! in_list "$1" "$recent" || return 1
+  local cur=$LC_CUR floor=$LC_FLOOR
+  ! in_list "$1" "$LC_RECENT" || return 1
   [ -z "$cur" ] && return 0
   [[ $1 > $cur ]] && return 0
   [ -n "$floor" ] && ! [[ $L_TIME < $floor ]] && return 0

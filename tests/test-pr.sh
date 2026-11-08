@@ -1001,6 +1001,229 @@ SK=$REPO/skills/opsx-pr/SKILL.md
 ok "SKILL.md frontmatter has name and description" 'awk "/^---\$/{n++; next} n==1" "$SK" | grep -qx "name: opsx-pr" && awk "/^---\$/{n++; next} n==1" "$SK" | grep -q "^description: ."'
 ok "every pr.sh subcommand named in SKILL.md exists" 'for c in $(grep -oE "pr\.sh [a-z][a-z-]*" "$SK" | awk "{print \$2}" | sort -u); do "$PRSH" --help | grep -qE "pr\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done'
 
+# ---------------------------------------------------------------- stack + ledger (pr-stack-ledger)
+# Own fixtures: a scratch repo with a bare origin, fake gh data in $FAKE_GH_DIR
+# and its own state root, so the blocks above are untouched. Stack 141 (A) <-
+# 142 (A B) <- 143 (A B C), all on main (an implicit stack, as from a fork);
+# 150 (X) stands alone; 144 (D) targets 143's branch (an explicit parent).
+S2=$SP/stk; mkdir -p "$S2/gh/checks" "$S2/gh/api" "$S2/work"
+export FAKE_GH_DIR=$S2/gh
+SO=$S2/origin.git; $G init -q --bare "$SO"
+SR=$S2/work/app; $G clone -q "$SO" "$SR" 2>/dev/null
+commit "$SR" base.txt base init; $G -C "$SR" push -q origin main
+$G -C "$SR" checkout -q -b s-a; commit "$SR" a.txt A "A"; SA=$($G -C "$SR" rev-parse HEAD)
+$G -C "$SR" checkout -q -b s-b; commit "$SR" b.txt B "B"; SB=$($G -C "$SR" rev-parse HEAD)
+$G -C "$SR" checkout -q -b s-c; commit "$SR" c.txt C "C"; SC=$($G -C "$SR" rev-parse HEAD)
+$G -C "$SR" checkout -q -b s-d; commit "$SR" d.txt D "D"; SDD=$($G -C "$SR" rev-parse HEAD)
+$G -C "$SR" checkout -q -b s-x main; commit "$SR" x.txt X "X"; SX=$($G -C "$SR" rev-parse HEAD)
+$G -C "$SR" push -q origin s-a s-b s-c s-d s-x; $G -C "$SR" checkout -q main
+for b in s-a s-b s-c s-d s-x; do $G -C "$SR" branch -q -D "$b"; done   # worktrees track origin
+{ pr_obj 141 s-a "$SA" main OPEN; pr_obj 142 s-b "$SB" main OPEN; pr_obj 143 s-c "$SC" main OPEN
+  pr_obj 144 s-d "$SDD" s-c OPEN; pr_obj 150 s-x "$SX" main OPEN; } | jq -s . > "$S2/gh/prs.json"
+spr() { jq --argjson n "$1" "map(if .number==\$n then $2 else . end)" "$S2/gh/prs.json" > "$S2/gh/prs.tmp" && mv "$S2/gh/prs.tmp" "$S2/gh/prs.json"; }
+SS=$S2/state; SSD=$SS/tmux-opsx/pr; LD=$SSD/o-app/ledger
+Q() { XDG_STATE_HOME=$SS "$PRSH" "$@" --repo "$SR"; }
+sst() { printf '%s/o-app-%s/state' "$SSD" "$1"; }
+sk() { sed -n "s/^$2=//p" "$(sst "$1")"; }   # state key of PR $1
+NAME_RE='^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}--pr-141--all--moved\.md$'
+nled() { find "$LD" -maxdepth 1 -type f 2>/dev/null | wc -l; }
+live() { setstate "$(sst "$1")" last_wait_at "$2"; setstate "$(sst "$1")" wait_slice 540; setstate "$(sst "$1")" wait_poll 60; }
+markall() { local n; for n in "$@"; do Q ledger "$n" --unread --mark >/dev/null; done; }
+
+# 2.1 stack resolution at start.
+out=$(Q start 141 --agent-cli claude 2>&1); rc=$?
+ok "stack: start 141 (root of an implicit stack) prints parent=- children=142" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qx "stack parent=- children=142" && [ "$(sk 141 stack_children)" = 142 ] || { printf "%s\n" "$out"; false; }'
+out=$(Q start 142 --agent-cli claude 2>&1); rc=$?
+ok "stack: start 142 infers parent 141 (all on main) and child 143, records the parent tip" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qx "stack parent=141 children=143" && [ "$(sk 142 stack_parent)" = 141 ] && [ "$(sk 142 stack_parent_tip)" = "$SA" ] || { printf "%s\n" "$out"; false; }'
+ok "stack: no join written to a parent that already lists the child" '[ "$(ls "$LD" 2>/dev/null | grep -c -- "--join\.md$")" -eq 0 ]'
+out=$(Q start 150 --agent-cli claude 2>&1); rc=$?
+ok "stack: start 150 (no other head in it, in no other head) prints parent=- children=-" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qx "stack parent=- children=-" && [ -z "$(sk 150 stack_parent)" ]'
+out=$(Q start 144 --agent-cli claude 2>&1); rc=$?
+ok "stack: start 144 whose base is 143's branch records the explicit parent 143" '[ $rc -eq 0 ] && [ "$(sk 144 stack_parent)" = 143 ] && [ "$(sk 144 stack_parent_tip)" = "$SC" ]'
+ok "stack: start 144 writes join to its parent 143 (not started yet)" 'ls "$LD" | grep -qE "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}--pr-144--pr-143--join\.md$"'
+out=$(Q start 143 --agent-cli claude 2>&1); rc=$?
+ok "stack: start 143 finds parent 142 and child 144" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qx "stack parent=142 children=144" && [ "$(sk 143 stack_parent_tip)" = "$SB" ]'
+# 2.2 --stacked-on and pr.sh stack.
+out=$(Q start 142 --stacked-on 150 --agent-cli claude 2>&1); rc=$?
+ok "stack: start 142 --stacked-on 150 overrides the inferred parent" '[ $rc -eq 0 ] && [ "$(sk 142 stack_parent)" = 150 ] && printf "%s\n" "$out" | grep -qx "stack parent=150 children=143"'
+out=$(Q start 142 --stacked-on 142 --agent-cli claude 2>&1); rc=$?
+ok "stack: --stacked-on itself or a non-number is refused" '[ $rc -eq 1 ] && ! Q start 142 --stacked-on x >/dev/null 2>&1'
+out=$(Q stack 142 --stacked-on none); rc=$?
+ok "stack: stack 142 --stacked-on none, then stack 142 prints parent=-" '[ $rc -eq 0 ] && Q stack 142 | grep -qx "parent=-" && [ -z "$(sk 142 stack_parent)" ]'
+out=$(Q stack 142 --stacked-on 141)
+ok "stack: stack --stacked-on 141 records 141 with its head as the tip, children kept" '[ "$(sk 142 stack_parent)" = 141 ] && [ "$(sk 142 stack_parent_tip)" = "$SA" ] && printf "%s\n" "$out" | grep -qx "children=143"'
+live 141 "$(date +%s)"
+ok "stack: parent window pr-141 running and its watch fresh -> parent_live=1" 'Q stack 142 | grep -qx "parent_live=1"'
+live 141 $(( $(date +%s) - 3600 ))
+ok "stack: parent watch an hour old -> parent_live=0" 'Q stack 142 | grep -qx "parent_live=0"'
+ok "stack: no parent -> parent_live=0" 'Q stack 141 | grep -qx "parent_live=0"'
+live 141 "$(date +%s)"
+Q tell 141 all hold >/dev/null
+ok "hold: live holder, hold a moment ago -> hold=141 since=<time>" 'Q stack 142 | grep -qE "^hold=141 since=[0-9]{8}T[0-9]{6}Z$"'
+live 141 $(( $(date +%s) - 3600 ))
+ok "hold: holder's watch an hour old -> hold=-" 'Q stack 142 | grep -qx "hold=-"'
+live 141 "$(date +%s)"
+sleep 1; Q tell 141 all moved --sha "$SA" --old "$SA" >/dev/null
+ok "hold: hold then moved -> hold=-" 'Q stack 142 | grep -qx "hold=-"'
+rm -f "$LD"/*--pr-141--all--moved.md "$LD"/*--pr-141--all--hold.md
+old=$(date -u -d "3 hours ago" +%Y%m%dT%H%M%SZ); : > "$LD/$old-0001--pr-141--all--hold.md"
+ok "hold: a hold older than 2 hours -> hold=-" 'Q stack 142 | grep -qx "hold=-"'
+markall 141 142 143 144 150
+
+# 1.1, 1.2 tell.
+n0=$(nled)
+out=$(Q tell 141 all moved --sha "$SB" --old "$SA"); rc=$?
+f=$(get "$out" ledger)
+ok "tell: moved entry named per the grammar, body has both SHAs, no .tmp left" '[ $rc -eq 0 ] && [ -f "$f" ] && [[ $(basename "$f") =~ $NAME_RE ]] && grep -qx "sha: $SB" "$f" && grep -qx "old: $SA" "$f" && [ -z "$(find "$LD" -name ".*.tmp")" ] && [ "$(nled)" -eq $((n0 + 1)) ]'
+ok "tell: the ledger lives in <state>/pr/<owner>-<name>/ledger" '[ "$(dirname "$f")" = "$LD" ]'
+for c in "141 all reboot" "141 pr-142;rm request --ref x" "142 pr-141 request" "141 all moved" "141 all moved --sha $SB" \
+         "142 pr-141 request --ref https://evil.example/o/app/pull/1" "142 pr-141 request --ref https://github.com/x/other/pull/1" \
+         "142 pr-141 request --ref https://github.com/o/app/pull/1\`id\`" "141 pr-141 ack" "141 all ack --from someone" "141 all moved --sha zz --old $SA"; do
+  read -r -a a <<<"$c"
+  out=$(Q tell "${a[@]}" 2>&1); rc=$?
+  ok "tell refuses '$c' with exit 2 and writes no file" '[ $rc -eq 2 ] && [ "$(nled)" -eq $((n0 + 1)) ] || { echo "rc=$rc $out"; false; }'
+done
+out=$(Q tell 142 pr-141 request --ref "https://github.com/o/app/pull/142#discussion_r123"); rc=$?
+ok "tell: request with a thread URL of the base repository is written, ref in the body" '[ $rc -eq 0 ] && grep -qx "ref: https://github.com/o/app/pull/142#discussion_r123" "$(get "$out" ledger)"'
+printf 'context line\n' > "$S2/body.txt"
+out=$(Q tell 142 pr-141 request --ref "check:unit tests" --body-file "$S2/body.txt" --from user); rc=$?
+ok "tell --from user, check:<name> ref and a body file" '[ $rc -eq 0 ] && [[ $(basename "$(get "$out" ledger)") == *--user--pr-141--request.md ]] && grep -qx "context line" "$(get "$out" ledger)"'
+# 1.3 ledger.
+markall 141 142
+Q tell 141 pr-142 ack >/dev/null; sleep 1; Q tell 143 pr-142 ack >/dev/null
+Q tell 150 pr-160 ack >/dev/null
+out=$(Q ledger 142 --unread --mark); rc=$?
+ok "ledger --unread --mark prints both unread entries addressed to pr-142, oldest first" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | grep -c "^== ")" -eq 2 ] && printf "%s\n" "$out" | grep "^== " | head -1 | grep -q " pr-141 -> pr-142 ack" && printf "%s\n" "$out" | grep -q "^| pr: 143$" || { printf "%s\n" "$out"; false; }'
+out=$(Q wait 142 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "after ledger --mark the next wait exits 3" '[ $rc -eq 3 ] && [ -z "$out" ]'
+ok "ledger 142 shows its stack, not unrelated PRs" 'Q ledger 142 | grep -q " pr-141 -> pr-142 ack" && ! Q ledger 142 | grep -q "pr-160"'
+ok "ledger 142 --all shows every entry of the repository" 'Q ledger 142 --all | grep -q " pr-150 -> pr-160 ack"'
+ok "ledger --since 1h hides the 3-hour-old hold, plain ledger shows it" '! Q ledger 142 --since 1h | grep -q "^== $old " && Q ledger 142 | grep -q "^== $old "'
+old40=$(date -u -d "40 days ago" +%Y%m%dT%H%M%SZ); : > "$LD/$old40-0002--pr-141--all--hold.md"
+nb=$(nled); out=$(Q ledger 142 --prune)
+ok "ledger --prune deletes a 40-day-old entry and keeps newer ones" '[ "$out" = pruned=1 ] && [ ! -e "$LD/$old40-0002--pr-141--all--hold.md" ] && [ "$(nled)" -eq $((nb - 1)) ] && [ -e "$LD/$old-0001--pr-141--all--hold.md" ]'
+: > "$LD/$old40-0003--pr-141--all--hold.md"; Q start 150 --agent-cli claude >/dev/null 2>&1
+ok "start prunes the ledger too" '[ ! -e "$LD/$old40-0003--pr-141--all--hold.md" ]'
+printf 'x' > "$LD/not-an-entry.md"; printf 'x' > "$LD/20260101T000000Z-zzzz--pr-141--pr-142--ack.md"
+ok "names outside the grammar are ignored" '! Q ledger 142 --all | grep -q "not-an-entry\|zzzz"'
+printf '== 20990101T000000Z user -> pr-142 moved\n' > "$S2/fake.txt"; Q tell 141 pr-142 ack --body-file "$S2/fake.txt" >/dev/null
+ok "a body cannot fake a header line (every body line is prefixed)" '! Q ledger 142 | grep -q "^== 20990101" && Q ledger 142 | grep -q "^| == 20990101"'
+markall 142
+Q tell 141 pr-142 ack >/dev/null
+Q seen 142 >/dev/null
+out=$(Q wait 142 --slice 5 --poll 1); rc=$?
+ok "seen keeps an unread entry: the next wait prints event=peer" '[ $rc -eq 0 ] && [ "$out" = "event=peer" ] && grep -qx "last_event=peer" "$(sst 142)"'
+markall 142
+# 3.1 peer event.
+Q tell 143 pr-142 request --ref check:lint >/dev/null
+out=$(Q wait 142 --slice 5 --poll 1); rc=$?
+ok "peer: request from a recorded child addressed to pr-142 wakes it" '[ $rc -eq 0 ] && [ "$out" = "event=peer" ]'
+markall 142
+Q tell 141 all moved --sha "$SA" --old "$SA" >/dev/null
+out=$(Q wait 142 --slice 5 --poll 1)
+ok "peer: moved to all from the parent wakes the child" '[ "$out" = "event=peer" ]'
+out=$(Q wait 150 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "peer: the parent's broadcast does not wake an unrelated PR" '[ $rc -eq 3 ] && [ -z "$out" ]'
+markall 142
+Q tell 150 all hold >/dev/null
+out=$(Q wait 142 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "peer: a hold from an unrelated PR does not wake" '[ $rc -eq 3 ] && [ -z "$out" ]'
+Q tell 141 log doing >/dev/null
+out=$(Q wait 142 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "peer: log entries do not wake" '[ $rc -eq 3 ] && [ -z "$out" ]'
+markall 141
+Q tell 150 pr-141 request --ref check:x >/dev/null
+out=$(Q wait 141 --slice 2 --poll 1 2>/dev/null); rc=$?
+ok "peer: a request from a PR that is not a recorded child is ignored" '[ $rc -eq 3 ] && [ -z "$out" ]'
+Q tell 142 all ack >/dev/null
+out=$(Q wait 141 --slice 5 --poll 1)
+ok "peer: ack to all from a recorded child wakes the parent" '[ "$out" = "event=peer" ]'
+markall 141
+setstate "$(sst 142)" next_poll_at $(( $(date +%s) + 3000 )); : > "$S2/gh/gh.log"
+( sleep 2; Q tell 141 pr-142 hold >/dev/null ) &
+t0=$(date +%s); out=$(Q wait 142 --slice 10 --poll 1); rc=$?; dt=$(( $(date +%s) - t0 ))
+ok "peer during a long gap: event=peer within seconds, no gh poll" '[ $rc -eq 0 ] && [ "$out" = "event=peer" ] && [ $dt -le 6 ] && ! grep -qE "^(pr view|pr checks|api --paginate)" "$S2/gh/gh.log" || { echo "rc=$rc dt=$dt"; cat "$S2/gh/gh.log"; false; }'
+wait
+markall 142
+# 2.3 the record is kept; join adds a child.
+ok "seen, wait and push never write the stack keys" 'grep -qx "stack_parent=141" "$(sst 142)" && ! sed -n "/^write_seen_unlocked() {/,/^}/p; /^cmd_wait() {/,/^}/p; /^cmd_push() {/,/^}/p" "$PRSH" | grep -q "sset.*stack_"'
+Q tell 151 pr-150 join >/dev/null
+Q tell 142 pr-150 join >/dev/null
+Q ledger 150 --unread --mark >/dev/null
+ok "join: a join to pr-150 from 151 (no state saying otherwise) adds child 151" 'Q stack 150 | grep -qx "children=151"'
+ok "join: a join from 142, whose state names another parent, adds nothing" '! Q stack 150 | grep -q "children=.*142"'
+Q tell 151 all "done" >/dev/null; Q ledger 150 --unread --mark >/dev/null
+ok "done from a child removes it from the record" 'Q stack 150 | grep -qx "children=-"'
+
+# 6.2 end to end: main moves, the root restacks and writes moved, the middle
+# PR wakes with peer and restacks with --parent-moved, the top PR's push before
+# its restack exits 9 (4.1, 4.2).
+$G clone -q "$SO" "$S2/other" 2>/dev/null
+commit "$S2/other" m.txt M "main moves"; $G -C "$S2/other" push -q origin main
+for n in 141 142 143; do Q seen $n >/dev/null; done
+markall 141 142 143
+W141=$(Q worktree 141 2>/dev/null); W142=$(Q worktree 142 2>/dev/null); W143=$(Q worktree 143 2>/dev/null)
+Q tell 141 all hold >/dev/null
+git -C "$W141" fetch -q origin && $G -C "$W141" rebase -q origin/main
+NA=$($G -C "$W141" rev-parse HEAD)
+out=$(Q push 141 2>/dev/null); rc=$?
+ok "e2e: the root (no parent) pushes as before" '[ $rc -eq 0 ] && [ "$(get "$out" pushed)" = 1 ] && [ "$($G -C "$SO" rev-parse refs/heads/s-a)" = "$NA" ]'
+spr 141 ".headRefOid=\"$NA\""; Q seen 141 >/dev/null
+Q tell 141 all moved --sha "$NA" --old "$SA" >/dev/null
+ok "e2e: parent force-pushed (no longer an ancestor) and pr.sh stack 142 still prints parent=141" '! git -C "$SR" merge-base --is-ancestor "$NA" "$SB" && Q stack 142 | grep -qx "parent=141"'
+out=$(Q wait 142 --slice 10 --poll 1); rc=$?
+ok "e2e: the middle PR's wait prints event=peer (before base-moved)" '[ $rc -eq 0 ] && [ "$out" = "event=peer" ]'
+out=$(Q ledger 142 --unread --mark)
+ok "e2e: ledger shows the moved entry with the new SHA" 'printf "%s\n" "$out" | grep -q " pr-141 -> all moved" && printf "%s\n" "$out" | grep -qx "| sha: $NA"'
+out=$(Q restack 142 --parent-moved --sha "$SA" 2>&1); rc=$?
+ok "e2e: restack --parent-moved with a stale --sha exits 2, branch unchanged" '[ $rc -eq 2 ] && [ "$($G -C "$W142" rev-parse HEAD)" = "$SB" ] && printf "%s" "$out" | grep -q "stale moved"'
+out=$(Q restack 142 --parent-moved --sha "$NA" 2>/dev/null); rc=$?
+NB=$($G -C "$W142" rev-parse HEAD)
+ok "e2e: restack --parent-moved replays only B onto the parent's head (A' byte-identical), records the tip" '[ $rc -eq 0 ] && [ "$($G -C "$W142" rev-parse HEAD~1)" = "$NA" ] && [ "$($G -C "$W142" log --format=%s "$NA..HEAD")" = B ] && [ "$(sk 142 stack_parent_tip)" = "$NA" ] && [ "$(get "$out" stack_parent_tip)" = "$NA" ]'
+# The top PR rebases on main by itself (diverged: its A and B are not 141's and 142's).
+git -C "$W143" fetch -q origin; $G -C "$W143" rebase -q origin/main
+DIV=$($G -C "$W143" rev-parse HEAD)
+out=$(Q push 142 2>/dev/null); rc=$?
+ok "e2e: the restacked middle PR pushes with the lease" '[ $rc -eq 0 ] && [ "$(get "$out" pushed)" = 1 ] && [ "$($G -C "$SO" rev-parse refs/heads/s-b)" = "$NB" ]'
+spr 142 ".headRefOid=\"$NB\""; Q seen 142 >/dev/null
+Q tell 142 all moved --sha "$NB" --old "$SB" >/dev/null
+out=$(Q push 143 2>"$S2/push.err"); rc=$?
+ok "e2e: the top PR's push before its restack exits 9, names parent 142 and its head, remote unchanged" '[ $rc -eq 9 ] && [ "$(get "$out" parent)" = 142 ] && [ "$(get "$out" parent_head)" = "$NB" ] && grep -q "restack 143 --parent-moved" "$S2/push.err" && [ "$($G -C "$SO" rev-parse refs/heads/s-c)" = "$SC" ]'
+$G -C "$W143" reset -q --hard "$SC"
+out=$(Q wait 143 --slice 10 --poll 1)
+ok "e2e: the top PR wakes with peer for its parent's moved" '[ "$out" = "event=peer" ]'
+Q ledger 143 --unread --mark >/dev/null
+out=$(Q restack 143 --parent-moved --sha "$NB" 2>/dev/null); rc=$?
+ok "e2e: top restack: A and B arrive byte-identical to 141 and 142, only C replayed" '[ $rc -eq 0 ] && [ "$($G -C "$W143" rev-parse HEAD~1)" = "$NB" ] && [ "$($G -C "$W143" rev-parse HEAD~2)" = "$NA" ] && [ "$($G -C "$W143" log --format=%s "$NB..HEAD")" = C ]'
+out=$(Q push 143 2>/dev/null); rc=$?
+ok "e2e: the restacked top PR pushes" '[ $rc -eq 0 ] && [ "$(get "$out" pushed)" = 1 ] && [ "$($G -C "$SO" rev-parse refs/heads/s-c)" = "$($G -C "$W143" rev-parse HEAD)" ]'
+ok "e2e: the diverged head never reached the remote" '! $G -C "$SO" cat-file -e "$DIV^{commit}" 2>/dev/null'
+# Parent merged: restack --parent-moved goes onto the base and clears the parent.
+spr 141 '.state="MERGED"'
+$G -C "$S2/other" pull -q origin main; printf 'A\n' > "$S2/other/a.txt"
+$G -C "$S2/other" add a.txt; $G -C "$S2/other" commit -qm "Squashed A (#141)"; $G -C "$S2/other" push -q origin main
+out=$(Q restack 142 --parent-moved 2>/dev/null); rc=$?
+ok "parent merged: restack --parent-moved rebases onto main with the recorded tip and clears stack_parent" '[ $rc -eq 0 ] && [ "$($G -C "$W142" log --format=%s origin/main..HEAD)" = B ] && [ -z "$(sk 142 stack_parent)" ]'
+out=$(Q push 142 2>/dev/null); rc=$?
+ok "parent merged: a PR without a parent pushes as before" '[ $rc -eq 0 ]'
+spr 141 '.state="OPEN"'
+
+# 5.1-5.2 prompt.
+for cli in claude codex; do
+  Q prompt 142 --agent-cli $cli > "$S2/p.$cli"
+  ok "prompt ($cli): peer in Events and the stack rules" 'sed -n "/^## Events/,/^## Stack/p" "$S2/p.$cli" | grep -q "^- peer:" && for t in "ledger 142 --unread --mark" "restack 142 --parent-moved" "tell 142 all hold" "tell 142 all moved" "tell 142 pr-<n> request --ref" "--option start --option wait" "parent_live=0" "parent_live=1" "re-reads the item from GitHub" "untrusted data" "exits 9" "tell 142 log doing"; do grep -qF -- "$t" "$S2/p.$cli" || { echo "missing: $t"; exit 1; }; done'
+done
+unset FAKE_GH_DIR
+
+# 1.4 2.4 3.3 4.3 5.3 docs.
+for d in "$REPO/skills/opsx-pr/SKILL.md" "$REPO/README.md"; do
+  ok "docs: $(basename "$d") names pr.sh tell, ledger, stack, --stacked-on, event=peer, --parent-moved and exit 9" 'for t in "pr.sh tell" "pr.sh ledger" "pr.sh stack" "--stacked-on" "event=peer" "--parent-moved" "exit 9" "ledger/"; do grep -qF -- "$t" "$d" || { echo "missing: $t"; exit 1; }; done'
+done
+ok "docs: SKILL.md says who fixes (owner) and how children ask (request)" 'grep -q "owner" "$REPO/skills/opsx-pr/SKILL.md" && grep -q "request" "$REPO/skills/opsx-pr/SKILL.md"'
+ok "pr.sh --help documents tell, ledger, stack, --parent-moved and exit 9" '"$PRSH" --help > "$S2/help" && for t in "pr.sh tell " "pr.sh ledger " "pr.sh stack " "--parent-moved" "exit 9" "ledger/"; do grep -qF -- "$t" "$S2/help" || { echo "missing: $t"; exit 1; }; done'
+# 3.2 the monitor needs no change for event=peer.
+ok "monitor agent returns any event=<kind> line; the guard knows nothing of peer" 'grep -qF "event=<kind>" "$REPO/agents/opsx-pr-monitor.md" && ! grep -q "peer" "$REPO/skills/opsx-pr/monitor-guard.sh"'
+
 # ---------------------------------------------------------------- install (4.2)
 unset TMUX TMUX_PANE
 IH=$SP/ihome; mkdir -p "$IH" "$SP/ibin"
@@ -1016,6 +1239,7 @@ run_install(){
 out=$(run_install); rc=$?
 ok "install: opsx-pr in all six skill folders, pr.sh executable" '[ $rc -eq 0 ] && [ "$(n_pr_dirs)" -eq 6 ] && [ -f "$IH/.claude/skills/opsx-pr/SKILL.md" ] && [ -x "$IH/.claude/skills/opsx-pr/pr.sh" ]'
 ok "install: installed pr.sh has the rerun command" '"$IH/.claude/skills/opsx-pr/pr.sh" --help | grep -qE "pr\.sh rerun "'
+ok "install: installed pr.sh has tell, ledger and stack (tell --help works)" '"$IH/.claude/skills/opsx-pr/pr.sh" tell --help | grep -qE "pr\.sh tell " && "$IH/.claude/skills/opsx-pr/pr.sh" --help | grep -qE "pr\.sh ledger " && "$IH/.claude/skills/opsx-pr/pr.sh" --help | grep -qE "pr\.sh stack "'
 ok "install: verify step checks opsx-pr" 'printf "%s" "$out" | grep -q "opsx-pr/{SKILL.md,pr.sh}" && printf "%s" "$out" | grep -q "pr.sh parses"'
 ok "installed pr.sh finds the installed opsx-window.sh" '[ -f "$IH/.claude/skills/opsx-pr/../opsx-run/opsx-window.sh" ]'
 # pr-monitor-subagent 2.2: ops-pr-monitor, Claude Code only.
