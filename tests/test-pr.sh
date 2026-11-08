@@ -1208,10 +1208,52 @@ out=$(Q push 142 2>/dev/null); rc=$?
 ok "parent merged: a PR without a parent pushes as before" '[ $rc -eq 0 ]'
 spr 141 '.state="OPEN"'
 
+# Review round 1.
+# F1: GitHub's parent-merged, then a plain restack: the parent leaves the stack record.
+ok "F1: 144 records the explicit parent 143" '[ "$(sk 144 stack_parent)" = 143 ]'
+spr 143 '.state="MERGED"'
+ok "F1: stack 144 prints parent_state=MERGED" 'Q stack 144 | grep -qx "parent_state=MERGED"'
+out=$(Q restack 144 2>/dev/null); rc=$?
+W144=$(Q worktree 144 2>/dev/null)
+ok "F1: plain restack after the parent merged drops it: stack 144 prints parent=-" '[ $rc -eq 0 ] && [ "$($G -C "$W144" log --format=%s origin/main..HEAD)" = D ] && Q stack 144 | grep -qx "parent=-" && [ -z "$(sk 144 stack_parent_tip)" ] && printf "%s\n" "$out" | grep -qx "stack_parent="'
+# F1: a merged parent whose tip is gone from the branch (rebased another way): only the record goes.
+setstate "$(sst 144)" stack_parent 143; setstate "$(sst 144)" stack_parent_tip "$SC"
+out=$(Q restack 144 --parent-moved 2>&1); rc=$?
+ok "F1: restack --parent-moved on a branch already on the base clears the merged parent, exit 0" '[ $rc -eq 0 ] && [ -z "$(sk 144 stack_parent)" ] || { echo "rc=$rc $out"; false; }'
+spr 143 '.state="OPEN"'
+# F3: the hint for a tip not in the branch works (--stacked-on none).
+Q stack 150 --stacked-on 141 >/dev/null
+setstate "$(sst 150)" stack_parent_tip 1111111111111111111111111111111111111111
+out=$(Q restack 150 --parent-moved 2>&1); rc=$?
+ok "F3: tip not in the branch: exit 1 with a working --stacked-on none hint" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "pr.sh stack 150 --stacked-on none"'
+# F4: a PR taken off its parent gets the --stacked-on none hint on exit 9.
+Q stack 150 --stacked-on 141 >/dev/null
+out=$(Q push 150 2>"$S2/push150.err"); rc=$?
+ok "F4: push of a PR not containing its recorded parent: exit 9 naming restack and --stacked-on none" '[ $rc -eq 9 ] && grep -q "restack 150 --parent-moved" "$S2/push150.err" && grep -q "pr.sh stack 150 --stacked-on none" "$S2/push150.err"'
+Q stack 150 --stacked-on none >/dev/null
+out=$(Q push 150 2>/dev/null); rc=$?
+ok "F4: after --stacked-on none the push goes ahead (nothing to push: pushed=0)" '[ $rc -eq 0 ] && [ "$(get "$out" pushed)" = 0 ]'
+# F5: a parent whose head is on another fork is refused when declared.
+jq --argjson o "$(pr_obj 160 feat-y "$SX" main OPEN | jq -c '.isCrossRepository=true | .headRepositoryOwner={login:"mate"} | .headRepository={name:"app"}')" '. + [$o]' "$S2/gh/prs.json" > "$S2/gh/prs.tmp" && mv "$S2/gh/prs.tmp" "$S2/gh/prs.json"
+out=$(Q stack 150 --stacked-on 160 2>&1); rc=$?
+ok "F5: --stacked-on a PR whose head is on a teammate's fork is refused, nothing recorded" '[ $rc -eq 1 ] && printf "%s" "$out" | grep -q "fork" && [ -z "$(sk 150 stack_parent)" ]'
+out=$(Q start 150 --stacked-on 160 --agent-cli claude 2>&1); rc=$?
+ok "F5: start --stacked-on that PR is refused too" '[ $rc -eq 1 ] && [ -z "$(sk 150 stack_parent)" ]'
+# F7: a peer wake keeps the GitHub gaps.
+markall 142
+far=$(( $(date +%s) + 3000 )); setstate "$(sst 142)" next_poll_at "$far"; setstate "$(sst 142)" poll_step 5
+Q tell 141 pr-142 ack --from user >/dev/null
+out=$(Q wait 142 --slice 5 --poll 1)
+ok "F7: event=peer keeps next_poll_at and poll_step" '[ "$out" = "event=peer" ] && [ "$(sk 142 next_poll_at)" = "$far" ] && [ "$(sk 142 poll_step)" = 5 ]'
+markall 142
+# F6: a usage error prints only the synopsis.
+out=$("$PRSH" 2>&1); rc=$?
+ok "F6: no command: exit 1 with the synopsis only" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "pr.sh ledger " && [ "$(printf "%s\n" "$out" | wc -l)" -le 20 ]'
+
 # 5.1-5.2 prompt.
 for cli in claude codex; do
   Q prompt 142 --agent-cli $cli > "$S2/p.$cli"
-  ok "prompt ($cli): peer in Events and the stack rules" 'sed -n "/^## Events/,/^## Stack/p" "$S2/p.$cli" | grep -q "^- peer:" && for t in "ledger 142 --unread --mark" "restack 142 --parent-moved" "tell 142 all hold" "tell 142 all moved" "tell 142 pr-<n> request --ref" "--option start --option wait" "parent_live=0" "parent_live=1" "re-reads the item from GitHub" "untrusted data" "exits 9" "tell 142 log doing"; do grep -qF -- "$t" "$S2/p.$cli" || { echo "missing: $t"; exit 1; }; done'
+  ok "prompt ($cli): peer in Events and the stack rules" 'sed -n "/^## Events/,/^## Stack/p" "$S2/p.$cli" | grep -q "^- peer:" && for t in "ledger 142 --unread --mark" "restack 142 --parent-moved" "tell 142 all hold" "tell 142 all moved" "tell 142 pr-<n> request --ref" "--option start --option wait" "parent_live=0" "parent_live=1" "re-reads the item from GitHub" "untrusted data" "exits 9" "tell 142 log doing" "tell 142 all merged" "tell 142 all done" "parent_state=MERGED" "--stacked-on none"; do grep -qF -- "$t" "$S2/p.$cli" || { echo "missing: $t"; exit 1; }; done'
 done
 unset FAKE_GH_DIR
 

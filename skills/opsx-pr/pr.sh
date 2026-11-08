@@ -136,11 +136,12 @@
 # stack --stacked-on, restack --parent-moved, and ledger --mark (join adds a
 # child, merged/done from a child removes it) change it.
 # stack     prints the recorded stack (never recomputes): parent= parent_tip=
-#           children= parent_live=1|0 (the parent's window found like list
+#           parent_state= (gh: OPEN, MERGED, CLOSED, - or unknown) children= parent_live=1|0 (the parent's window found like list
 #           and its watch not stale) and `hold=<n> since=<time>` while the
 #           parent's newest hold is newer than its newest release and moved,
 #           under 2 hours old and its watch is not stale, else hold=-.
-#           --stacked-on <n>|none records parent <n> (or none) instead.
+#           --stacked-on <n>|none records parent <n> (or none) instead; <n>
+#           must be open and its head on the base repository or origin.
 # tell      writes one ledger entry, a file in the ledger folder
 #           ${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/pr/<owner>-<name>/ledger/
 #           named <UTC yyyymmddTHHMMSSZ>-<4 hex>--<from>--<to>--<kind>.md,
@@ -176,7 +177,9 @@
 # push      refuses with exit 9 (pushes nothing) while the recorded
 #           stack_parent is open and the local head does not contain the
 #           parent's current remote head (git ls-remote); prints refused=stack,
-#           parent= and parent_head=. Run restack --parent-moved first.
+#           parent= and parent_head=. Run restack --parent-moved first (or
+#           stack --stacked-on none for a PR taken off its parent).
+#           A plain restack after the stack parent merged drops it from the record.
 #
 # State: ${XDG_STATE_HOME:-~/.local/state}/tmux-opsx/pr/<owner>-<name>-<n>/state
 # --repo defaults to the git top level of $PWD. Only open and push push
@@ -194,7 +197,15 @@
 set -euo pipefail
 
 die() { printf 'pr: %s\n' "$*" >&2; exit 1; }
-usage() { awk 'NR < 3 { next } /^#/ { print; next } { exit }' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# --help prints the whole reference (this header); a usage error only the synopsis.
+usage() {
+  if [ "${1:-0}" -eq 0 ]; then
+    awk 'NR < 3 { next } /^#/ { print; next } { exit }' "$0" | sed 's/^# \{0,1\}//'
+  else
+    awk 'NR < 4 { next } $0 == "#" { exit } { print }' "$0" | sed 's/^# \{0,1\}//' >&2
+  fi
+  exit "${1:-0}"
+}
 
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 SELF=$HERE/$(basename -- "$0")
@@ -1381,10 +1392,13 @@ Handle what is still open with the rules below, then start the loop.
 $(loop_text "$cli" "$W" "$M")
 
 ## Events
-- merged / closed: the goal holds. \`$W mark $M done\`, say so in one line, stop.
-  Leave the worktree for the user to clean up.
+- merged / closed: the goal holds. Tell the stack first: on merged
+  \`$SELF tell $PR all merged --repo $REPO\`, on closed \`$SELF tell $PR all done --repo $REPO\` (children
+  restack onto the base, the parent drops this PR from its record). Then \`$W mark $M done\`, say so in
+  one line, stop. Leave the worktree for the user to clean up.
 - parent-merged: the parent PR of this stack merged. \`$SELF restack $PR --repo $REPO\`
-  (it rebases onto the parent's base with the recorded parent tip), run the gates, push,
+  (it rebases onto the parent's base with the recorded parent tip and drops the parent from the stack
+  record), run the gates, push,
   then retarget the base: \`gh pr edit $PR --base <parent's base>\` (parent_base in the state file).
 - parent-moved: the parent PR's head changed. \`$SELF restack $PR --repo $REPO --onto <parent head branch>\`, gates, push.
 - base-moved: \`git fetch $BR\` and \`git rebase $BR/<base>\` in the worktree, gates, push.
@@ -1452,10 +1466,14 @@ checks a moved against \`git ls-remote\`.
 - One problem, one resolution: only the owner fixes a problem, the lowest PR of the stack whose own commits
   contain the cause (a conflict, a failing check, a review comment). The parent's commits exist in one
   version only: this PR never rebases, edits or resolves them; it takes them with \`restack --parent-moved\`.
-- With a parent and \`parent_live=1\`: base-moved, and a conflict caused by the shared commits, are
+- With an open parent (\`parent_state=OPEN\`) and \`parent_live=1\`: base-moved, and a conflict caused by the shared commits, are
   acknowledged with \`$SELF seen $PR --repo $REPO\` and nothing else; the parent rebases and writes moved,
   which arrives here as peer.
-- With a parent and \`parent_live=0\` (the owner's window is not running): ask the user first with
+- \`parent_state=MERGED\` (the parent merged, also in a stack on one base where GitHub reports no
+  parent-merged, only base-moved): \`$SELF restack $PR --parent-moved --repo $REPO\` (onto the base, with the
+  recorded tip; it drops the parent), tests, push, \`tell $PR all moved\`. \`parent_state=CLOSED\`: ask the
+  user how to go on, then \`$SELF stack $PR --stacked-on none --repo $REPO\` when this PR leaves the stack.
+- With a parent, \`parent_state=OPEN\` and \`parent_live=0\` (the owner's window is not running): ask the user first with
   \`$W mark $M ask\` and \`$SELF note $PR "the owner PR #<n> has no running window: start it, or wait?" --option start --option wait --repo $REPO\`.
   On \`start\` run \`$SELF start <n> --repo $REPO\` (its window reads the pending entries on its first turn);
   on \`wait\` keep waiting. Never start the owner's window without that answer.
@@ -1471,7 +1489,8 @@ checks a moved against \`git ls-remote\`.
 - At the start and the end of a fix round write \`$SELF tell $PR log doing --body-file <one line> --repo $REPO\`
   (log entries wake nobody).
 - \`$SELF push $PR\` exits 9 while this PR's open parent has a head that the local branch does not contain:
-  run \`$SELF restack $PR --parent-moved --repo $REPO\` first, never push around it.
+  run \`$SELF restack $PR --parent-moved --repo $REPO\` first, never push around it. Only when the user took
+  this PR off that parent on purpose: \`$SELF stack $PR --stacked-on none --repo $REPO\`.
 
 ## You may do on your own
 $OWN
@@ -1572,7 +1591,9 @@ report_event() {
   [ "$1" != conflict ] || sset conflict_reported "$CUR_head_sha:$CUR_base_sha"
   sset last_event "$1"
   sset last_event_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  reset_poll_backoff
+  # A ledger wake says nothing about GitHub: keep the gaps, unless it was
+  # reported ahead of a GitHub event of this poll (then poll again at once).
+  if [ "$1" != peer ] || [ -n "${2:-}" ]; then reset_poll_backoff; fi
   printf 'event=%s\n' "$1"
 }
 
@@ -1631,7 +1652,7 @@ cmd_wait() {
     esac
     # The ledger: a directory listing, no gh call, also during a long gap.
     peer=$(ledger_peer)
-    if [ -n "$peer" ]; then report_event peer; return 0; fi
+    if [ -n "$peer" ]; then report_event peer "$ev"; return 0; fi
     if [ -n "$ev" ]; then report_event "$ev"; return 0; fi
     now=$(date +%s)
     if [ "$now" -ge "$deadline" ]; then
@@ -1768,6 +1789,14 @@ cmd_restack() {
       exit 4; }
   fi
   printf 'restacked=%s\nonto=%s/%s\nhead_sha=%s\nworktree=%s\n' "$head" "$B" "$target" "$(git -C "$wt" rev-parse HEAD)" "$wt"
+  # The stack parent merged (GitHub's parent-merged): it leaves the record
+  # once the branch sits on the base.
+  load_stack
+  if [ -n "$STK_PARENT" ] && parent_info "$STK_PARENT" && [ "$PP_STATE" = MERGED ]; then
+    with_state_lock record_stack_unlocked "" "" "$(sget stack_children)"
+    sset stack_parent_tip_pending ""
+    printf 'stack_parent=\n'
+  fi
 }
 
 # restack --parent-moved: replay only this PR's own commits (those after
@@ -1808,7 +1837,18 @@ restack_parent_moved() {
     sset stack_parent_tip "$pend"; sset stack_parent_tip_pending ""
   fi
   if [ -z "$tip" ] || ! git -C "$wt" merge-base --is-ancestor "$tip" HEAD 2>/dev/null; then
-    die "the recorded parent tip ${tip:-(none)} is not in $head; restack by hand (git rebase --onto <parent head> <first own commit>^) or declare the parent again (pr.sh stack $PR --stacked-on $p)."
+    if [ "$PP_STATE" = MERGED ] && git -C "$wt" fetch -q "$B" 2>/dev/null \
+       && git -C "$wt" merge-base --is-ancestor "$B/${PP_BASE:-$base}" HEAD 2>/dev/null; then
+      # Already on the base the parent merged into: only the record is left.
+      with_state_lock record_stack_unlocked "" "" "$(sget stack_children)"
+      sset stack_parent_tip_pending ""
+      printf 'restacked=0\nhead_sha=%s\nworktree=%s\nstack_parent=\n' "$(git -C "$wt" rev-parse HEAD)" "$wt"
+      return 0
+    fi
+    if [ "$PP_STATE" = OPEN ]; then
+      die "the recorded parent tip ${tip:-(none)} is not in $head; restack by hand (git rebase --onto <parent head> <first own commit>^) and declare the parent again (pr.sh stack $PR --stacked-on $p), or, when $head is no longer stacked on PR $p, drop it: pr.sh stack $PR --stacked-on none."
+    fi
+    die "the recorded parent tip ${tip:-(none)} is not in $head and PR $p is $PP_STATE; rebase $head onto its base by hand, then drop the parent: pr.sh stack $PR --stacked-on none."
   fi
   if [ "$PP_STATE" = MERGED ]; then
     target=${PP_BASE:-$base}
@@ -1843,12 +1883,12 @@ check_stack_push() {
   parent_info "$STK_PARENT" || die "cannot read the stack parent PR $STK_PARENT (gh pr view); nothing pushed."
   [ "$PP_STATE" = OPEN ] || return 0
   ph=$(parent_remote_head)
-  [ -n "$ph" ] || die "cannot read the head of the stack parent PR $STK_PARENT (${PP_REMOTE:-no remote holds it}/$PP_HEAD, git ls-remote); nothing pushed."
+  [ -n "$ph" ] || die "cannot read the head of the stack parent PR $STK_PARENT (${PP_REMOTE:-no remote of this checkout holds it}/$PP_HEAD, git ls-remote); nothing pushed. When $SLUG#$PR is not stacked on it, drop the parent: pr.sh stack $PR --stacked-on none."
   if have_commit "$wt" "$ph" "$PP_REMOTE" "$PP_HEAD" && git -C "$wt" merge-base --is-ancestor "$ph" HEAD 2>/dev/null; then
     return 0
   fi
   printf 'refused=stack\nparent=%s\nparent_head=%s\n' "$STK_PARENT" "$ph"
-  printf 'pr: push refused: the head of %s#%s does not contain %s, the head of its stack parent PR %s; run pr.sh restack %s --parent-moved first (nothing pushed)\n' "$SLUG" "$PR" "$ph" "$STK_PARENT" "$PR" >&2
+  printf 'pr: push refused: the head of %s#%s does not contain %s, the head of its stack parent PR %s; run pr.sh restack %s --parent-moved first (nothing pushed). When this PR was taken off PR %s on purpose, drop the parent instead: pr.sh stack %s --stacked-on none\n' "$SLUG" "$PR" "$ph" "$STK_PARENT" "$PR" "$STK_PARENT" "$PR" >&2
   exit 9
 }
 
@@ -2453,6 +2493,7 @@ check_stacked_on() {
   [ "$STACKED_ON" != "$PR" ] || die "--stacked-on $STACKED_ON is this PR."
   parent_info "$STACKED_ON" || die "cannot read PR $STACKED_ON (gh pr view)."
   [ "$PP_STATE" = OPEN ] || die "--stacked-on $STACKED_ON: PR $STACKED_ON is $PP_STATE, not OPEN."
+  [ -n "$PP_REMOTE" ] || die "--stacked-on $STACKED_ON: the head of PR $STACKED_ON is on a fork that is neither $SLUG nor origin, so pr.sh cannot read it (restack and push check it); not recorded."
 }
 
 cmd_stack() {
@@ -2468,8 +2509,12 @@ cmd_stack() {
     declare_parent "$STACKED_ON" "$(jq -r .headRefOid <<<"$j")"
   fi
   load_stack
-  printf 'parent=%s\nparent_tip=%s\nchildren=%s\nparent_live=%s\n' \
-    "${STK_PARENT:--}" "$(sget stack_parent_tip | sed 's/^$/-/')" "${STK_CHILDREN:--}" "$(parent_live)"
+  local pstate=-
+  if [ -n "$STK_PARENT" ]; then
+    if parent_info "$STK_PARENT"; then pstate=${PP_STATE:-unknown}; else pstate=unknown; fi
+  fi
+  printf 'parent=%s\nparent_tip=%s\nparent_state=%s\nchildren=%s\nparent_live=%s\n' \
+    "${STK_PARENT:--}" "$(sget stack_parent_tip | sed 's/^$/-/')" "$pstate" "${STK_CHILDREN:--}" "$(parent_live)"
   hold=$(stack_hold)
   if [ -n "$hold" ]; then printf 'hold=%s since=%s\n' "${hold%% *}" "${hold#* }"; else printf 'hold=-\n'; fi
 }
