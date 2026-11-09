@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: question-research / C1 control characters stripped
+# level: L1
+# requirement: Coverage check before confirmation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; cd "$R"
+p=$(printf 'caf\xc3\xa9 \xc2\x9b31m x\n' | "$QSH" input save); rc=$?
+echo "rc=$rc path=$p"
+[ $rc -eq 0 ] || fail "input save exit $rc"
+s="$R/$p"; [ -f "$s" ] || s="$p"
+[ -f "$s" ] || fail "saved file not found"
+grep -q 'café' "$s" || fail "café lost"
+LC_ALL=C grep -q $'\xc2\x9b' "$s" && fail "C1 byte sequence c2 9b still present"
+od -c "$s" | head -3
+echo OK
