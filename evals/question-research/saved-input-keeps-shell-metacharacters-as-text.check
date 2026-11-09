@@ -6,7 +6,7 @@ set -u
 . "$EVAL_ROOT/evals/_lib/questions.sh"
 mk_repo; cd "$R"
 f="$EVAL_TMP/in.txt"
-printf '"; touch %s/pwned; echo "\n' "$EVAL_TMP"
+printf '"; touch %s/pwned; echo "\n' "$EVAL_TMP" > "$f"
 printf '%s\n' '$(id)' >> "$f"
 p=$("$QSH" input save < "$f"); rc=$?
 echo "rc=$rc path=$p"
