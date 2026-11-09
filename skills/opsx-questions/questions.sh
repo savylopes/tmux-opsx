@@ -7,6 +7,7 @@
 #   questions.sh run new <answer|challenge|settle> --questions-file <tsv> [--max N] [--rounds N] [--repo <dir>]
 #   questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> [--sources <n>] [--attempts <n>] [--repo <dir>]
 #   questions.sh status <run> [--repo <dir>]
+#   questions.sh input save [--repo <dir>]
 #
 # extract  prints one TSV line per question of an OpenSpec change:
 #          <id> <kind> <path>:<line> <text>, ids Q1, Q2, ... in file order.
@@ -54,6 +55,13 @@
 #          decision or requirement starts challenging (the claim is its answer).
 #          answer: the last recorded verdict (pending before). challenge: the
 #          strongest recorded verdict (invalidated > weakened > stands).
+# input save  reads the input a coverage subagent cannot reach (ticket text, free
+#          text, the user's request) on stdin and writes it to
+#          .opsx/questions/input-<YYYYmmdd-HHMMSS>-<rand4>/input.md: tabs and
+#          carriage returns become spaces and every other control character
+#          except the newline is stripped. Refuses a symlinked .opsx or .opsx/questions, adds
+#          .opsx/questions/ to .gitignore once, and prints the repo-relative path,
+#          so cite can check file: evidence against it. Exit 2 for empty input.
 #
 # Nothing is fetched: url: evidence is checked by the parent with its own web tool.
 # Exit status: 0 ok, 1 cite mismatch or url refused, 2 usage or input error,
@@ -64,7 +72,7 @@
 set -euo pipefail
 
 die() { printf 'questions: %s\n' "$*" >&2; exit 2; }
-usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 help() { awk 'NR>1 && /^#/ { sub(/^# ?/,""); print; next } NR>1 { exit }' "$0"; exit 0; }
 
 CHANGE_RE='^[A-Za-z0-9-]+$'
@@ -522,6 +530,44 @@ cmd_status() {
   replay "$(run_dir "$run" "$repo")"
 }
 
+# ---------------------------------------------------------------------------
+# input
+
+cmd_input() {
+  [ "${1:-}" = save ] || die "usage: questions.sh input save [--repo <dir>]"
+  shift
+  local repo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) repo=${2:-}; shift 2 || die "--repo needs a directory." ;;
+      -h|--help) help ;;
+      *) die "input save: unknown argument $1" ;;
+    esac
+  done
+  local root base tmp stamp dir
+  root=$(repo_root "$repo")
+  safe_dir "$root/.opsx"; safe_dir "$root/.opsx/questions"
+  tmp=$(mktemp 2>/dev/null || mktemp -t opsxq) || die "could not create a temp file."
+  TMPQ=$tmp
+  trap 'rm -f "$TMPQ"' EXIT
+  # Control characters (terminal escapes) are stripped; a tab becomes a space so
+  # words stay apart and the text stays citable.
+  tr '\t\r' '  ' | LC_ALL=C tr -d '\000-\011\013-\037\177' > "$tmp"
+  [ -n "$(tr -d ' \n' < "$tmp")" ] || die "input save: no input on stdin."
+  base=$root/.opsx/questions
+  mkdir -p "$base" || die "cannot create $base"
+  while :; do
+    stamp=$(date +%Y%m%d-%H%M%S)-$(rand4)
+    [[ $stamp =~ $RUN_RE ]] || continue
+    [ -e "$base/input-$stamp" ] || break
+  done
+  dir=$base/input-$stamp
+  mkdir "$dir" || die "cannot create $dir"
+  cp "$tmp" "$dir/input.md"
+  ensure_gitignore "$root"
+  printf '.opsx/questions/input-%s/input.md\n' "$stamp"
+}
+
 cmd=${1:-}
 [ $# -gt 0 ] && shift
 case "$cmd" in
@@ -531,6 +577,7 @@ case "$cmd" in
   run)     cmd_run "$@" ;;
   record)  cmd_record "$@" ;;
   status)  cmd_status "$@" ;;
+  input)   cmd_input "$@" ;;
   -h|--help|help) help ;;
   "") usage 2 ;;
   *) printf 'questions: unknown command %s\n' "$cmd" >&2; usage 2 ;;

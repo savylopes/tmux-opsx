@@ -78,7 +78,7 @@ After extraction and before the user confirms the list, the skill SHALL check th
 
 The parent SHALL validate every gap's evidence as in the mechanical citation check, SHALL drop a gap whose evidence fails, and SHALL drop a gap that duplicates a listed item, naming that item. It SHALL add the remaining gaps with the next free ids and the source `coverage:<round>`, then run the next round. The loop SHALL stop when a round leaves no surviving gap, or after `--coverage-rounds` rounds (default 3); at the cap with gaps still arriving, the list SHALL be shown with the note `coverage incomplete after <n> rounds`. `--coverage-rounds 0` SHALL skip the check. Coverage subagents SHALL be counted in the report's subagent total. The coverage check SHALL write nothing outside `.opsx/questions/`.
 
-`questions.sh input save [--repo <dir>]` SHALL read text on stdin, strip control characters except newlines, write it to `.opsx/questions/input-<stamp>/input.md`, add `.opsx/questions/` to `.gitignore` once, and print the repo-relative path, so `cite` can check `file:` evidence against it.
+`questions.sh input save [--repo <dir>]` SHALL read text on stdin, turn tabs and carriage returns into spaces and strip every other control character except newlines, refuse a symlinked `.opsx` or `.opsx/questions`, write it to `.opsx/questions/input-<stamp>/input.md`, add `.opsx/questions/` to `.gitignore` once, and print the repo-relative path, so `cite` can check `file:` evidence against it.
 
 #### Scenario: Coverage documented in every skill
 - **WHEN** the three SKILL.md files are read

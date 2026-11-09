@@ -19,7 +19,7 @@ newrepo(){ local d=$SP/$1; mkdir -p "$d"; git -C "$d" init -q; git -C "$d" confi
 
 # ---------------------------------------------------------------- usage (1.1)
 out=$("$Q" --help); rc=$?
-ok "--help exits 0 and lists extract, cite, run, record, status" '[ $rc -eq 0 ] && for c in extract cite run record status; do printf "%s" "$out" | grep -qE "questions\.sh $c( |\$)" || exit 1; done'
+ok "--help exits 0 and lists extract, cite, run, record, status, input" '[ $rc -eq 0 ] && for c in extract cite run record status input; do printf "%s" "$out" | grep -qE "questions\.sh $c( |\$)" || exit 1; done'
 "$Q" bogus >/dev/null 2>&1; rc=$?
 ok "unknown command exits non-zero" '[ $rc -ne 0 ]'
 
@@ -313,6 +313,36 @@ ok "challenge mode: a later stands does not hide the attack" 'st "$C1" | grep -q
 
 ok "run leaves the repo untouched except .gitignore" '[ "$(git -C "$R2" status --porcelain | grep -vE "^(\?\?| M) \.gitignore$")" = "" ]'
 
+# ---------------------------------------------------------------- input save (6.1)
+R3=$(newrepo r3)
+out=$(printf 'line one\nwhere does X write?\n' | "$Q" input save --repo "$R3"); rc=$?
+ok "input save: prints a repo-relative path under .opsx/questions/input-" '[ $rc -eq 0 ] && [[ $out =~ ^\.opsx/questions/input-[0-9]{8}-[0-9]{6}-[a-z0-9]{4}/input\.md$ ]] && [ -f "$R3/$out" ]'
+IN1=$out
+"$Q" cite --repo "$R3" -- "$IN1" 2 "where does X write" >/dev/null 2>&1; rc=$?
+ok "input save: the saved input is citable (cite line 2 exits 0)" '[ $rc -eq 0 ]'
+IN2=$(printf 'again\n' | "$Q" input save --repo "$R3")
+ok "input save: .opsx/questions/ in .gitignore exactly once after two saves" '[ "$(grep -cx ".opsx/questions/" "$R3/.gitignore")" -eq 1 ] && [ "$IN1" != "$IN2" ]'
+IN3=$(printf 'a\tb\033[31m red\rx\001\n' | "$Q" input save --repo "$R3")
+ok "input save: control characters stripped except newlines, tab becomes a space" '! LC_ALL=C grep -q "[[:cntrl:]]" <(tr -d "\n" < "$R3/$IN3") && grep -qF "a b[31m red x" "$R3/$IN3"'
+printf '' | "$Q" input save --repo "$R3" >/dev/null 2>&1; rc=$?
+ok "input save: empty stdin exits 2" '[ $rc -eq 2 ]'
+"$Q" input --repo "$R3" </dev/null >/dev/null 2>&1; rc=$?
+ok "input: without save exits 2" '[ $rc -eq 2 ]'
+R4=$(newrepo r4); mkdir -p "$SP/elsewhere"
+ln -s "$SP/elsewhere" "$R4/.opsx"
+printf 'x\n' | "$Q" input save --repo "$R4" >/dev/null 2>&1; rc=$?
+ok "input save: symlinked .opsx refused, nothing written" '[ $rc -eq 2 ] && [ -z "$(ls -A "$SP/elsewhere")" ] && [ ! -e "$R4/.gitignore" ]'
+R5=$(newrepo r5); mkdir -p "$R5/.opsx" "$SP/elsewhere2"
+ln -s "$SP/elsewhere2" "$R5/.opsx/questions"
+printf 'x\n' | "$Q" input save --repo "$R5" >/dev/null 2>&1; rc=$?
+ok "input save: symlinked .opsx/questions refused, nothing written" '[ $rc -eq 2 ] && [ -z "$(ls -A "$SP/elsewhere2")" ]'
+# Scenario "Gap with a fabricated citation is dropped".
+IN4=$(printf 'We cache results.\nThe cache is local.\nNothing else.\nX is kept in memory.\n' | "$Q" input save --repo "$R3")
+"$Q" cite --repo "$R3" -- "$IN4" 4 "X is stored" >/dev/null 2>&1; rc=$?
+ok "coverage: a gap with a fabricated citation fails cite -- (exit 1)" '[ $rc -eq 1 ]'
+"$Q" cite --repo "$R3" -- "$IN4" 4 "X is kept in memory" >/dev/null 2>&1; rc=$?
+ok "coverage: a gap with a real citation passes cite -- (exit 0)" '[ $rc -eq 0 ]'
+
 # ---------------------------------------------------------------- shellcheck (1.6)
 if command -v shellcheck >/dev/null 2>&1; then
   ok "shellcheck questions.sh, webfetch-guard.sh and this test" 'shellcheck "$Q" "$REPO/skills/opsx-questions/webfetch-guard.sh" "$REPO/tests/test-questions.sh"'
@@ -333,12 +363,18 @@ ok "format defined once: same VERDICT line and four evidence forms in both files
 ok "reference: both downgrade rules and the concrete-flaw rule" 'grep -q "left with no valid evidence becomes \`needs-human\`" "$REFMD" && grep -q "left with no valid evidence becomes \`stands\`" "$REFMD" && grep -q "concrete flaw" "$REFMD" && grep -q "still seems right" "$REFMD"'
 ok "reference: malformed retry, report tags, Resolved: bullets, drafts" 'grep -qi "retried once" "$REFMD" && for t in "[open]" "[decision]" "[req spec]" "[req client AC]"; do grep -qF "$t" "$REFMD" || exit 1; done && grep -q "Resolved:" "$REFMD" && grep -qi "never posted" "$REFMD" && grep -qi "product owner" "$REFMD"'
 
+ok "coverage stance in agent and reference: VERDICT: covered|gaps and gap: line with evidence" 'for f in "$AG" "$REFMD"; do grep -qF "VERDICT: covered|gaps" "$f" || exit 1; grep -qxF "gap: <kind> \"<text>\"" "$f" || exit 1; grep -qi "followed by exactly one evidence item" "$f" || exit 1; done && grep -qi "do not invent gaps without a source line" "$AG" && fm "$AG" | grep -q "coverage stance"'
+ok "reference: coverage loop stops on no surviving gap or at --coverage-rounds, fresh subagent, cap note" 'grep -qi "a round leaves no surviving gap" "$REFMD" && grep -q -- "--coverage-rounds\` rounds" "$REFMD" && grep -qi "fresh\*\* \`ops-researcher\` that never sees the results of earlier coverage rounds" "$REFMD" && grep -q "coverage incomplete after <n> rounds" "$REFMD"'
+ok "reference: gap validated with cite --, fabricated dropped and listed, duplicates, coverage:<round>, counted" 'grep -q "only with evidence that passes \`cite --\`" "$REFMD" && grep -qi "fabricated citation exits 1" "$REFMD" && grep -qi "Dropped gaps are shown" "$REFMD" && grep -qi "duplicates an item already in the list" "$REFMD" && grep -q "coverage:<round>" "$REFMD" && grep -qi "plus the coverage subagents" "$REFMD" && grep -q "questions.sh input save" "$REFMD"'
+
 # ---------------------------------------------------------------- skills (3.x)
 for s in opsx-answer opsx-challenge opsx-settle; do
   SK=$REPO/skills/$s/SKILL.md
   ok "$s: frontmatter name and description" 'fm "$SK" | grep -qx "name: $s" && fm "$SK" | grep -q "^description: ."'
   ok "$s: names questions.sh, --max defaults to 6, six skill folders" 'grep -q "questions.sh" "$SK" && grep -q -- "--max\` defaults to 6" "$SK" && for d in .claude .cursor .agents .codex .config/opencode .gemini; do grep -q "~/$d/skills/opsx-questions/questions.sh" "$SK" || exit 1; done'
-  ok "$s: list confirmed before any subagent" 'grep -q "Confirm the list" "$SK" && grep -qi "do not start any subagent" "$SK"'
+  ok "$s: coverage check first, then the list confirmed before any research subagent" 'grep -q "Confirm the list" "$SK" && grep -qi "do not start any research subagent" "$SK" && [ "$(grep -n "\*\*Coverage check\*\*" "$SK" | cut -d: -f1)" -lt "$(grep -n "\*\*Confirm the list\.\*\*" "$SK" | cut -d: -f1)" ] && grep -q "After the coverage check" "$SK"'
+  ok "$s: --coverage-rounds defaults to 3, 0 skips, in the usage line" 'grep -q -- "--coverage-rounds\` defaults to 3" "$SK" && grep -q -- "\`0\` skips the check" "$SK" && grep -m1 -E "^/$s \[input\]" "$SK" | grep -q -- "\[--coverage-rounds N\]"'
+  ok "$s: coverage loop: fresh subagent, gap needs cite --, duplicates, stop, cap note, Codex/Gemini parent" 'grep -q "fresh\*\* \`ops-researcher\`" "$SK" && grep -qi "never sees earlier coverage results" "$SK" && grep -q "only with evidence that passes \`\"\$QS\" cite --" "$SK" && grep -qi "duplicates a listed item" "$SK" && grep -q "coverage:<round>" "$SK" && grep -q "coverage incomplete after <n> rounds" "$SK" && grep -q "questions.sh input save" "$SK" && grep -qi "Gemini CLI you do the coverage pass yourself" "$SK" && grep -qi "coverage subagents" "$SK"'
   ok "$s: nothing written until commanded, ticket comments are drafts" 'grep -q "Nothing is written or posted until the user commands it" "$SK" && grep -qi "ticket comments are drafts only" "$SK"'
   ok "$s: subagents on Claude/Cursor/OpenCode, parent on Codex/Gemini" 'grep -q "ops-researcher" "$SK" && grep -q "Codex CLI, Gemini CLI" "$SK" && grep -qi "read-only guarantee" "$SK"'
   ok "$s: every questions.sh subcommand it names exists in --help" '( for c in $(grep -oE "questions\.sh [a-z]+" "$SK" | awk "{print \$2}" | sort -u); do "$Q" --help | grep -qE "questions\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done )'
@@ -390,6 +426,7 @@ RD=$REPO/README.md
 ok "README lists the three skills and ops-researcher in the overview" 'sed -n "/^ your dev harness/,/^\`\`\`/p" "$RD" | grep -q "/opsx-answer" && sed -n "/^ your dev harness/,/^\`\`\`/p" "$RD" | grep -q "ops-researcher" && grep -q "^| \`ops-researcher\` subagent" "$RD" && grep -q "^| \`/opsx-answer\`, \`/opsx-challenge\`, \`/opsx-settle\`" "$RD"'
 ok "README: Codex and Gemini research sequentially in the parent without the read-only guarantee" 'sed -n "/^### Answering and challenging questions/,/^---\$/p" "$RD" | grep -q "Codex CLI and Gemini CLI.*one at a time, without the read-only guarantee"'
 ok "README: flags match the SKILL.md usage lines" 'for s in answer challenge settle; do u=$(grep -m1 -E "^/opsx-$s \[input\]" "$REPO/skills/opsx-$s/SKILL.md"); grep -qF "$u" "$RD" || { echo "README lacks: $u"; exit 1; }; done'
+ok "README: coverage check, --coverage-rounds default and its cost" 'sed -n "/^### Answering and challenging questions/,/^---\$/p" "$RD" > "$SP/rdq" && grep -q "^\*\*Coverage check\.\*\*" "$SP/rdq" && grep -q -- "--coverage-rounds\` to 3" "$SP/rdq" && grep -q "questions.sh input save" "$SP/rdq" && grep -q "coverage subagents" "$SP/rdq"'
 ok "README questions.sh commands exist in the script usage" '( for c in $(grep -oE "questions\.sh [a-z]+" "$RD" | awk "{print \$2}" | sort -u); do "$Q" --help | grep -qE "questions\.sh $c( |\$)" || { echo "missing: $c"; exit 1; }; done )'
 
 echo "---"
