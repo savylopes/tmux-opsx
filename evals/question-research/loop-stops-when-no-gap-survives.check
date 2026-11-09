@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Loop stops when no gap survives
+# level: L1
+# requirement: Coverage check before confirmation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+ref="$EVAL_ROOT/skills/opsx-questions/reference.md"; [ -f "$ref" ] || fail "reference missing"
+grep -Eiq 'stop[^.]*no surviving gap' "$ref" || fail "no 'stop ... no surviving gap'"
+grep -q -- '--coverage-rounds' "$ref" || fail "no --coverage-rounds"
+grep -Eiq 'fresh[^.]*(never|not|without)[^.]*(see|earlier)|never sees the results of earlier|does not see earlier' "$ref" || fail "fresh subagent / no earlier results not stated"
+grep -qF 'coverage incomplete after' "$ref" || fail "coverage incomplete note missing"
+echo OK

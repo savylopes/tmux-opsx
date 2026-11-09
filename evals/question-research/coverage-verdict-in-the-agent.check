@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: question-research / Coverage verdict in the agent
+# level: L1
+# requirement: Coverage check before confirmation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+for f in "$EVAL_ROOT/agents/opsx-researcher.md" "$EVAL_ROOT/skills/opsx-questions/reference.md"; do
+  [ -f "$f" ] || fail "$f missing"
+  grep -qi 'coverage' "$f" || fail "$f: no coverage stance"
+  grep -Eq 'VERDICT: covered\|gaps|covered.{0,20}gaps' "$f" || fail "$f: covered|gaps verdict missing"
+  grep -qF 'gap:' "$f" || fail "$f: gap: line missing"
+  grep -Eiq 'followed by[^.]*evidence|each followed by' "$f" || fail "$f: gap not followed by evidence item"
+done
+echo OK

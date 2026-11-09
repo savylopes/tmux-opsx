@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: question-research / Coverage documented in every skill
+# level: L1
+# requirement: Coverage check before confirmation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+for s in answer challenge settle; do
+  f="$EVAL_ROOT/skills/opsx-$s/SKILL.md"; [ -f "$f" ] || fail "$f missing"
+  grep -qi 'coverage' "$f" || fail "opsx-$s: no coverage loop"
+  grep -Eq -- '--coverage-rounds[^.]{0,80}(default|defaults)[^.]{0,20}3' "$f" || fail "opsx-$s: --coverage-rounds default 3 not stated"
+  grep -Eq 'cite --' "$f" || fail "opsx-$s: gap evidence must pass 'cite --'"
+  c=$(grep -n '\*\*Coverage check' "$f" | head -1 | cut -d: -f1)
+  k=$(grep -n '\*\*Confirm the list' "$f" | head -1 | cut -d: -f1)
+  [ -n "$c" ] && [ -n "$k" ] && [ "$c" -lt "$k" ] || fail "opsx-$s: coverage (line ${c:-?}) not before confirmation (line ${k:-?})"
+done
+echo OK
