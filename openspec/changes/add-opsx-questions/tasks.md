@@ -73,11 +73,18 @@
 
 ## 6. Coverage check before confirmation
 
-- [x] 6.1 Add `questions.sh input save [--repo <dir>]`: stdin to `.opsx/questions/input-<stamp>/input.md` (control characters stripped except newlines, symlinked `.opsx`/`.opsx/questions` refused as elsewhere), `.gitignore` line once, repo-relative path printed. List `input` in `--help`. Verify the saved-input-is-citable scenario in `tests/test-questions.sh` and keep shellcheck clean.
+- [x] 6.1 Add `questions.sh input save [--repo <dir>]`: stdin to `.opsx/questions/input-<stamp>/input.md` (control characters, C0, DEL and UTF-8 C1, stripped except newlines, over 1 MiB refused, symlinked `.opsx`/`.opsx/questions` refused as elsewhere), `.gitignore` line once, repo-relative path printed. List `input` in `--help`. Verify the saved-input-is-citable scenario in `tests/test-questions.sh` and keep shellcheck clean.
 - [x] 6.2 Add the `coverage` stance to `agents/opsx-researcher.md` (description and body: compare the list with the input, `VERDICT: covered|gaps`, `gap: <kind> "<text>"` lines each followed by one evidence item, no invented gaps without a source line) and to `skills/opsx-questions/reference.md` (coverage brief fields, gap validation with `cite --`, duplicate rule, fresh subagent per round, stop rule, `coverage incomplete` note, `coverage:<round>` source, count in the report). Verify the coverage-verdict and loop-stops scenarios by grep.
 - [x] 6.3 Add the coverage step between extract and confirmation in `skills/opsx-answer/SKILL.md`, `skills/opsx-challenge/SKILL.md` and `skills/opsx-settle/SKILL.md`, with `--coverage-rounds N` (default 3, `0` skips) in usage, and the parent doing the pass itself on Codex and Gemini. Update the confirmation wording and the cost lines. Verify the coverage-documented, defaults and confirmation scenarios.
 - [x] 6.4 Update `README.md` (flow, flags, cost) and design/spec if apply finds a deviation. Verify the README flags match the SKILL.md files, and add tests in `tests/test-questions.sh` for the fabricated-gap citation and the flags.
 - [x] 6.5 Run `bash tests/test-questions.sh`, `bash tests/test-agent-models.sh` and `bash tests/test-task.sh`, and verify that all pass.
+
+## 7. Review round 2
+
+- [x] 7.1 The parent feeds untrusted input to `questions.sh input save` from a file it wrote with its file-write tool (`input save < <file>`), never inside a shell argument or heredoc: reference sections 1 and 3, the three SKILL.md files, README, design D7 and spec. Test that a file with `"; touch …; echo "` and `$(id)` is saved byte for byte and runs nothing.
+- [x] 7.2 One definition of the coverage kinds per mode (reference coverage brief, a table): settle with `--include-requirements` also looks for `req-spec` and `req-client`; the agent file and design D7 point to it.
+- [x] 7.3 Record the coverage check in the run: `run new --coverage-rounds-run/--coverage-subagents/--coverage-dropped/--coverage-incomplete/--input` write `meta`, and `status` ends with a `coverage` line, so "Subagents used" is the sum of every `subagents=`.
+- [x] 7.4 State the `.gitignore` exception in the spec's coverage write rule; strip UTF-8 C1 controls in `input save` and `run new` and cap `input save` at 1 MiB.
 
 ## Workflow follow-up
 

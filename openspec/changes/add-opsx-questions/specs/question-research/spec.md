@@ -76,9 +76,11 @@ Before starting any research subagent, and after the coverage check, the skill S
 ### Requirement: Coverage check before confirmation
 After extraction and before the user confirms the list, the skill SHALL check that the list covers the input. Each coverage round SHALL start a fresh `ops-researcher` with a coverage brief that carries the mode, the current list, the input (a change or file by path; other input saved by the parent with `questions.sh input save`) and the untrusted-input rules, and never the results of earlier coverage rounds. The result SHALL start with `VERDICT: covered` or `VERDICT: gaps`, followed by one `gap: <kind> "<text>"` line per missing question or decision, each followed by one evidence item in the verdict format.
 
-The parent SHALL validate every gap's evidence as in the mechanical citation check, SHALL drop a gap whose evidence fails, and SHALL drop a gap that duplicates a listed item, naming that item. It SHALL add the remaining gaps with the next free ids and the source `coverage:<round>`, then run the next round. The loop SHALL stop when a round leaves no surviving gap, or after `--coverage-rounds` rounds (default 3); at the cap with gaps still arriving, the list SHALL be shown with the note `coverage incomplete after <n> rounds`. `--coverage-rounds 0` SHALL skip the check. Coverage subagents SHALL be counted in the report's subagent total. The coverage check SHALL write nothing outside `.opsx/questions/`.
+The parent SHALL validate every gap's evidence as in the mechanical citation check, SHALL drop a gap whose evidence fails, and SHALL drop a gap that duplicates a listed item, naming that item. It SHALL add the remaining gaps with the next free ids and the source `coverage:<round>`, then run the next round. The loop SHALL stop when a round leaves no surviving gap, or after `--coverage-rounds` rounds (default 3); at the cap with gaps still arriving, the list SHALL be shown with the note `coverage incomplete after <n> rounds`. `--coverage-rounds 0` SHALL skip the check. Coverage subagents SHALL be counted in the report's subagent total. The coverage outcome (rounds run, coverage subagents with retries, gaps dropped, whether the list carried the `coverage incomplete` note, and the saved input path) SHALL be recorded in the run by `questions.sh run new` (`--coverage-rounds-run`, `--coverage-subagents`, `--coverage-dropped`, `--coverage-incomplete`, `--input`), and `questions.sh status` SHALL print it as a last line `coverage rounds=<k> subagents=<n> dropped=<d> incomplete=yes|no input=<path|->`. The coverage check SHALL write nothing outside `.opsx/questions/`, except that `questions.sh input save` adds the line `.opsx/questions/` to the repository `.gitignore` once, when it is missing.
 
-`questions.sh input save [--repo <dir>]` SHALL read text on stdin, turn tabs and carriage returns into spaces and strip every other control character except newlines, refuse a symlinked `.opsx` or `.opsx/questions`, write it to `.opsx/questions/input-<stamp>/input.md`, add `.opsx/questions/` to `.gitignore` once, and print the repo-relative path, so `cite` can check `file:` evidence against it.
+The parent SHALL pass untrusted text (ticket text, free text, conversation turns) to `questions.sh input save` on stdin from a file it wrote with its file-write tool, and SHALL NOT place that text inside a shell argument, an `echo`/`printf` or a heredoc.
+
+`questions.sh input save [--repo <dir>]` SHALL read text on stdin, refuse more than 1 MiB, turn tabs and carriage returns into spaces and strip every other control character (C0, DEL and the UTF-8 C1 range U+0080-U+009F) except newlines, refuse a symlinked `.opsx` or `.opsx/questions`, write it to `.opsx/questions/input-<stamp>/input.md`, add `.opsx/questions/` to `.gitignore` once, and print the repo-relative path, so `cite` can check `file:` evidence against it.
 
 #### Scenario: Coverage documented in every skill
 - **WHEN** the three SKILL.md files are read
@@ -91,6 +93,18 @@ The parent SHALL validate every gap's evidence as in the mechanical citation che
 #### Scenario: Saved input is citable
 - **WHEN** `printf 'line one\nwhere does X write?\n' | questions.sh input save` runs in a scratch repo
 - **THEN** it prints a path under `.opsx/questions/input-`, `questions.sh cite -- <path> 2 "where does X write"` exits 0, and `.gitignore` holds one `.opsx/questions/` line
+
+#### Scenario: Saved input keeps shell metacharacters as text
+- **WHEN** a file holding `"; touch <scratch>/pwned; echo "` and `$(id)` is saved with `questions.sh input save < <file>`
+- **THEN** the saved input holds those bytes unchanged, `<scratch>/pwned` does not exist, and no skill or reference text puts the input text inside a shell argument (`printf '%s\n' "<text>"`)
+
+#### Scenario: C1 control characters stripped
+- **WHEN** `printf 'caf\xc3\xa9 \xc2\x9b31m x\n' | questions.sh input save` runs
+- **THEN** the saved input keeps `café` and holds no `\xc2\x9b`
+
+#### Scenario: Coverage recorded in the run
+- **WHEN** `questions.sh run new answer --questions-file <tsv> --coverage-rounds-run 2 --coverage-subagents 3 --coverage-dropped 1 --input <saved input path>` runs
+- **THEN** `questions.sh status <run>` ends with `coverage rounds=2 subagents=3 dropped=1 incomplete=no input=<saved input path>`, and `--coverage-subagents` above twice the rounds run is refused
 
 #### Scenario: Loop stops when no gap survives
 - **WHEN** `skills/opsx-questions/` reference text is read
@@ -209,9 +223,9 @@ After the citation check, the parent SHALL judge whether the remaining evidence 
 - **THEN** it states both downgrade rules and the concrete-flaw requirement
 
 ### Requirement: Settle state machine
-`questions.sh run new <mode> --questions-file <tsv> [--max N] [--rounds N] [--repo <dir>]` SHALL:
+`questions.sh run new <mode> --questions-file <tsv> [--max N] [--rounds N] [coverage flags] [--repo <dir>]` SHALL:
 
-- create `.opsx/questions/<run-id>/` holding the questions and the settle cap;
+- create `.opsx/questions/<run-id>/` holding the questions, the settle cap and the coverage outcome (Coverage check before confirmation);
 - add `.opsx/questions/` to the repository `.gitignore` once;
 - print the run id.
 
@@ -223,7 +237,7 @@ It SHALL refuse more than `--max` questions (default 6) with a non-zero exit.
 - a round above the cap;
 - an unknown question.
 
-`questions.sh status <run>` SHALL print one line per question: `<qid> <state> round=<k> subagents=<n> history=<stage:verdict,...>`.
+`questions.sh status <run>` SHALL print one line per question: `<qid> <state> round=<k> subagents=<n> history=<stage:verdict,...>`, then the `coverage` line.
 
 In settle mode the state SHALL follow these rules:
 

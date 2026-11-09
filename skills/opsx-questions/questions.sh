@@ -4,7 +4,9 @@
 #   questions.sh extract <change> --mode answer|challenge [--include-requirements] [--repo <dir>]
 #   questions.sh cite [--repo <dir>] [--] <path> <line> <excerpt>
 #   questions.sh url [--] <url>
-#   questions.sh run new <answer|challenge|settle> --questions-file <tsv> [--max N] [--rounds N] [--repo <dir>]
+#   questions.sh run new <answer|challenge|settle> --questions-file <tsv> [--max N] [--rounds N]
+#                [--coverage-rounds-run N] [--coverage-subagents N] [--coverage-dropped N]
+#                [--coverage-incomplete] [--input <saved input path>] [--repo <dir>]
 #   questions.sh record <run> <qid> --round <k> --stage answer|challenge-a|challenge-b --verdict <v> [--sources <n>] [--attempts <n>] [--repo <dir>]
 #   questions.sh status <run> [--repo <dir>]
 #   questions.sh input save [--repo <dir>]
@@ -33,11 +35,17 @@
 #          over 200. webfetch-guard.sh applies the same check to ops-researcher's
 #          WebFetch on Claude Code.
 # run new  creates .opsx/questions/<YYYYmmdd-HHMMSS>-<rand4>/ with questions.tsv,
-#          meta (mode, rounds, max) and an empty verdicts.tsv (control characters
-#          stripped from the source and the text), adds
-#          .opsx/questions/ to .gitignore once, and prints the run id. Refuses
-#          more than --max questions (default 6). --rounds defaults to 3 (settle;
-#          1 for answer and challenge).
+#          meta (mode, rounds, max, coverage) and an empty verdicts.tsv (control
+#          characters, C0, DEL and C1, stripped from the source and the text),
+#          adds .opsx/questions/ to .gitignore once, and prints the run id.
+#          Refuses more than --max questions (default 6). --rounds defaults to 3
+#          (settle; 1 for answer and challenge). The coverage check runs before
+#          the run exists, so its outcome is recorded here: --coverage-rounds-run
+#          (rounds run, 0-20), --coverage-subagents (coverage subagent runs,
+#          retries included: at least one and at most two per round run),
+#          --coverage-dropped (gaps dropped by validation), --coverage-incomplete
+#          (the loop ended with the "coverage incomplete" note) and --input (the
+#          path input save printed). All default to 0, no and none.
 # record   validates and appends one verdict to the run's verdicts.tsv. Rejects
 #          a verdict outside the stage's vocabulary, a round above the cap and an
 #          unknown question. A verdict recorded after its round was decided (the
@@ -55,13 +63,19 @@
 #          decision or requirement starts challenging (the claim is its answer).
 #          answer: the last recorded verdict (pending before). challenge: the
 #          strongest recorded verdict (invalidated > weakened > stands).
+#          A last line records the coverage check from meta:
+#          coverage rounds=<k> subagents=<n> dropped=<d> incomplete=yes|no input=<path|->
+#          so the sum of every subagents= is the report's "Subagents used".
 # input save  reads the input a coverage subagent cannot reach (ticket text, free
 #          text, the user's request) on stdin and writes it to
 #          .opsx/questions/input-<YYYYmmdd-HHMMSS>-<rand4>/input.md: tabs and
 #          carriage returns become spaces and every other control character
-#          except the newline is stripped. Refuses a symlinked .opsx or .opsx/questions, adds
+#          (C0, DEL and UTF-8 C1) except the newline is stripped. Refuses input
+#          over 1 MiB, a symlinked .opsx or .opsx/questions, adds
 #          .opsx/questions/ to .gitignore once, and prints the repo-relative path,
 #          so cite can check file: evidence against it. Exit 2 for empty input.
+#          Feed it from a file (input save < file), never by putting the text
+#          inside a shell argument: the text is untrusted.
 #
 # Nothing is fetched: url: evidence is checked by the parent with its own web tool.
 # Exit status: 0 ok, 1 cite mismatch or url refused, 2 usage or input error,
@@ -81,6 +95,8 @@ QID_RE='^Q[1-9][0-9]*$'
 KINDS="open decision req-spec req-client"
 ANSWER_VERDICTS="answered partial needs-human unanswerable"
 CHALLENGE_VERDICTS="stands weakened invalidated"
+INPUT_RE='^\.opsx/questions/input-[0-9]{8}-[0-9]{6}-[a-z0-9]{4}/input\.md$'
+INPUT_MAX=1048576
 TMPQ=""
 
 repo_root() {
@@ -106,6 +122,15 @@ canon() {
   else
     python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$p"
   fi
+}
+
+# strip_ctrl: stdin to stdout without control characters: C0 and DEL bytes,
+# and C1 (U+0080-U+009F, the UTF-8 pairs \xc2\x80-\xc2\x9f, which include the
+# 8-bit CSI). Newlines are kept; callers turn tabs and CRs into spaces first
+# where they matter. Looped so a pair formed by a removal is removed too.
+strip_ctrl() {
+  LC_ALL=C tr -d '\000-\011\013-\037\177' \
+    | LC_ALL=C sed -e ':a' -e $'s/\xc2[\x80-\x9f]//g' -e 'ta'
 }
 
 under() { [ "$1" = "$2" ] || [[ $1 == "$2"/* ]]; }
@@ -349,10 +374,15 @@ rand4() {
 cmd_run() {
   [ "${1:-}" = new ] || die "usage: questions.sh run new <answer|challenge|settle> --questions-file <tsv> [--max N] [--rounds N]"
   shift
-  local mode="" qf="" max=6 rounds="" repo=""
+  local mode="" qf="" max=6 rounds="" repo="" cov_r=0 cov_s=0 cov_d=0 cov_i=no input=-
   while [ $# -gt 0 ]; do
     case "$1" in
       --questions-file) qf=${2:-}; shift 2 || die "--questions-file needs a file." ;;
+      --coverage-rounds-run) cov_r=${2:-}; shift 2 || die "--coverage-rounds-run needs a number." ;;
+      --coverage-subagents) cov_s=${2:-}; shift 2 || die "--coverage-subagents needs a number." ;;
+      --coverage-dropped) cov_d=${2:-}; shift 2 || die "--coverage-dropped needs a number." ;;
+      --coverage-incomplete) cov_i=yes; shift ;;
+      --input) input=${2:-}; shift 2 || die "--input needs the path input save printed." ;;
       --max) max=${2:-}; shift 2 || die "--max needs a number." ;;
       --rounds) rounds=${2:-}; shift 2 || die "--rounds needs a number." ;;
       --repo) repo=${2:-}; shift 2 || die "--repo needs a directory." ;;
@@ -369,6 +399,12 @@ cmd_run() {
   fi
   is_uint "$rounds" && [ "$rounds" -ge 1 ] && [ "$rounds" -le 20 ] || die "--rounds must be 1-20."
   [ "$mode" = settle ] || [ "$rounds" -eq 1 ] || die "--rounds only applies to settle."
+  is_uint "$cov_r" && [ "$cov_r" -le 20 ] || die "--coverage-rounds-run must be 0-20."
+  is_uint "$cov_s" && [ "$cov_s" -ge "$cov_r" ] && [ "$cov_s" -le $((cov_r * 2)) ] \
+    || die "--coverage-subagents must be between the rounds run and twice that (one retry per round)."
+  is_uint "$cov_d" && [ "$cov_d" -le 10000 ] || die "--coverage-dropped must be a number."
+  [ "$cov_i" = no ] || [ "$cov_r" -ge 1 ] || die "--coverage-incomplete needs --coverage-rounds-run of 1 or more."
+  [ "$input" = - ] || [[ $input =~ $INPUT_RE ]] || die "--input must be the path input save printed (.opsx/questions/input-<stamp>/input.md)."
 
   # Validate the questions before anything is created.
   local n=0 ln=0 id kind src text line seen=" " tmpq
@@ -383,8 +419,8 @@ cmd_run() {
     [[ ${id:-} =~ $QID_RE ]] || die "questions file line $ln: id must be Q1, Q2, ..."
     in_list "${kind:-}" "$KINDS" || die "questions file line $ln: kind must be one of: $KINDS."
     # Control characters (terminal escapes) are stripped from every free-text field.
-    src=$(printf '%s' "${src:-}" | tr -d '\000-\037\177')
-    text=$(printf '%s' "${text:-}" | tr '\t' ' ' | tr -d '\000-\037\177')
+    src=$(printf '%s' "${src:-}" | tr '\n' ' ' | strip_ctrl)
+    text=$(printf '%s' "${text:-}" | tr '\t\n' '  ' | strip_ctrl)
     [ -n "$src" ] && [ -n "$text" ] || die "questions file line $ln: need <id> <kind> <source> <text>."
     case "$seen" in *" $id "*) die "questions file line $ln: duplicate id $id." ;; esac
     seen="$seen$id "
@@ -409,7 +445,13 @@ cmd_run() {
   dir=$base/$id_run
   mkdir "$dir" || die "cannot create $dir"
   cp "$tmpq" "$dir/questions.tsv"
+  if [ "$input" != - ]; then
+    safe_dir "$root/${input%/input.md}"
+    [ -f "$root/$input" ] && [ ! -L "$root/$input" ] || die "--input: no saved input $input."
+  fi
   printf 'mode=%s\nrounds=%s\nmax=%s\ncreated=%s\n' "$mode" "$rounds" "$max" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$dir/meta"
+  printf 'coverage_rounds=%s\ncoverage_subagents=%s\ncoverage_dropped=%s\ncoverage_incomplete=%s\ninput=%s\n' \
+    "$cov_r" "$cov_s" "$cov_d" "$cov_i" "$input" >> "$dir/meta"
   : > "$dir/verdicts.tsv"
   ensure_gitignore "$root"
   printf '%s\n' "$id_run"
@@ -478,6 +520,13 @@ replay() {
       }
     }
   ' "$dir/questions.tsv" "$dir/verdicts.tsv"
+  # The coverage check, recorded by run new (a run made before it has no fields).
+  local cr cs cdr ci inp
+  cr=$(meta_get "$dir" coverage_rounds); cs=$(meta_get "$dir" coverage_subagents)
+  cdr=$(meta_get "$dir" coverage_dropped); ci=$(meta_get "$dir" coverage_incomplete)
+  inp=$(meta_get "$dir" input)
+  printf 'coverage rounds=%d subagents=%d dropped=%d incomplete=%s input=%s\n' \
+    "${cr:-0}" "${cs:-0}" "${cdr:-0}" "${ci:-no}" "${inp:--}"
 }
 
 cmd_record() {
@@ -549,10 +598,12 @@ cmd_input() {
   safe_dir "$root/.opsx"; safe_dir "$root/.opsx/questions"
   tmp=$(mktemp 2>/dev/null || mktemp -t opsxq) || die "could not create a temp file."
   TMPQ=$tmp
-  trap 'rm -f "$TMPQ"' EXIT
+  trap 'rm -f "$TMPQ" "$TMPQ.s"' EXIT
   # Control characters (terminal escapes) are stripped; a tab becomes a space so
   # words stay apart and the text stays citable.
-  tr '\t\r' '  ' | LC_ALL=C tr -d '\000-\011\013-\037\177' > "$tmp"
+  head -c $((INPUT_MAX + 1)) > "$tmp"
+  [ "$(wc -c < "$tmp")" -le "$INPUT_MAX" ] || die "input save: more than $INPUT_MAX bytes on stdin; save the relevant part."
+  tr '\t\r' '  ' < "$tmp" | strip_ctrl > "$tmp.s" && mv "$tmp.s" "$tmp"
   [ -n "$(tr -d ' \n' < "$tmp")" ] || die "input save: no input on stdin."
   base=$root/.opsx/questions
   mkdir -p "$base" || die "cannot create $base"

@@ -336,6 +336,31 @@ R5=$(newrepo r5); mkdir -p "$R5/.opsx" "$SP/elsewhere2"
 ln -s "$SP/elsewhere2" "$R5/.opsx/questions"
 printf 'x\n' | "$Q" input save --repo "$R5" >/dev/null 2>&1; rc=$?
 ok "input save: symlinked .opsx/questions refused, nothing written" '[ $rc -eq 2 ] && [ -z "$(ls -A "$SP/elsewhere2")" ]'
+# Scenario "Saved input keeps shell metacharacters as text" (review F1): the text
+# is fed from a file, so nothing in it reaches a shell.
+printf '%s\n' '"; touch '"$SP"'/pwned; echo "' 'x $(id) `id` $HOME' > "$SP/evil.txt"
+IN5=$("$Q" input save --repo "$R3" < "$SP/evil.txt"); rc=$?
+ok "input save < file: shell metacharacters saved byte for byte, nothing run" '[ $rc -eq 0 ] && cmp -s "$SP/evil.txt" "$R3/$IN5" && [ ! -e "$SP/pwned" ]'
+# Scenario "C1 control characters stripped" (review F5).
+IN6=$(printf 'caf\xc3\xa9 \xc2\x9b31m x \xc2\xa9 \xc2\x85y\n' | "$Q" input save --repo "$R3")
+ok "input save: C1 controls (U+009B CSI, U+0085) stripped, é and © kept" '! LC_ALL=C grep -q $'"'"'\xc2[\x80-\x9f]'"'"' "$R3/$IN6" && [ "$(cat "$R3/$IN6")" = "$(printf "caf\xc3\xa9 31m x \xc2\xa9 y")" ]'
+head -c 1048577 /dev/zero | tr '\0' a | "$Q" input save --repo "$R3" >/dev/null 2>&1; rc=$?
+ok "input save: more than 1 MiB refused (exit 2)" '[ $rc -eq 2 ]'
+head -c 1048575 /dev/zero | tr '\0' a | "$Q" input save --repo "$R3" >/dev/null 2>&1; rc=$?
+ok "input save: just under 1 MiB accepted" '[ $rc -eq 0 ]'
+printf 'Q1\topen\ttext\thello \xc2\x9bworld\n' > "$SP/c1.tsv"
+RC1=$("$Q" run new answer --questions-file "$SP/c1.tsv" --repo "$R3")
+ok "run new: C1 controls stripped from the question text too" '[ "$(cut -f4 "$R3/.opsx/questions/$RC1/questions.tsv")" = "hello world" ]'
+# Scenario "Coverage recorded in the run" (review F3).
+RC2=$("$Q" run new answer --questions-file "$SP/c1.tsv" --repo "$R3" --coverage-rounds-run 2 --coverage-subagents 3 --coverage-dropped 1 --input "$IN1"); rc=$?
+ok "run new: coverage flags recorded in meta" '[ $rc -eq 0 ] && grep -qx "coverage_rounds=2" "$R3/.opsx/questions/$RC2/meta" && grep -qx "coverage_subagents=3" "$R3/.opsx/questions/$RC2/meta" && grep -qx "input=$IN1" "$R3/.opsx/questions/$RC2/meta"'
+ok "status: last line records the coverage check" '[ "$("$Q" status "$RC2" --repo "$R3" | tail -1)" = "coverage rounds=2 subagents=3 dropped=1 incomplete=no input=$IN1" ]'
+ok "status: coverage defaults when no coverage flag is given" '[ "$("$Q" status "$RC1" --repo "$R3" | tail -1)" = "coverage rounds=0 subagents=0 dropped=0 incomplete=no input=-" ]'
+RC3=$("$Q" run new answer --questions-file "$SP/c1.tsv" --repo "$R3" --coverage-rounds-run 3 --coverage-subagents 3 --coverage-incomplete)
+"$Q" record "$RC3" Q1 --round 1 --stage answer --verdict answered --sources 1 --attempts 2 --repo "$R3"
+ok "status: Subagents used is the sum of every subagents= (coverage included)" '[ "$("$Q" status "$RC3" --repo "$R3" | grep -oE "subagents=[0-9]+" | cut -d= -f2 | awk "{n+=\$1} END{print n}")" -eq 5 ] && "$Q" status "$RC3" --repo "$R3" | tail -1 | grep -q " incomplete=yes "'
+bad(){ "$Q" run new answer --questions-file "$SP/c1.tsv" --repo "$R3" "$@" >/dev/null 2>&1; [ $? -eq 2 ]; }
+ok "run new: bad coverage values refused" 'bad --coverage-rounds-run 1 --coverage-subagents 3 && bad --coverage-rounds-run 2 --coverage-subagents 1 && bad --coverage-rounds-run 21 --coverage-subagents 21 && bad --coverage-rounds-run x && bad --coverage-incomplete && bad --input ../../etc/passwd && bad --input .opsx/questions/input-20990101-000000-zzzz/input.md'
 # Scenario "Gap with a fabricated citation is dropped".
 IN4=$(printf 'We cache results.\nThe cache is local.\nNothing else.\nX is kept in memory.\n' | "$Q" input save --repo "$R3")
 "$Q" cite --repo "$R3" -- "$IN4" 4 "X is stored" >/dev/null 2>&1; rc=$?
@@ -364,8 +389,11 @@ ok "reference: both downgrade rules and the concrete-flaw rule" 'grep -q "left w
 ok "reference: malformed retry, report tags, Resolved: bullets, drafts" 'grep -qi "retried once" "$REFMD" && for t in "[open]" "[decision]" "[req spec]" "[req client AC]"; do grep -qF "$t" "$REFMD" || exit 1; done && grep -q "Resolved:" "$REFMD" && grep -qi "never posted" "$REFMD" && grep -qi "product owner" "$REFMD"'
 
 ok "coverage stance in agent and reference: VERDICT: covered|gaps and gap: line with evidence" 'for f in "$AG" "$REFMD"; do grep -qF "VERDICT: covered|gaps" "$f" || exit 1; grep -qxF "gap: <kind> \"<text>\"" "$f" || exit 1; grep -qi "followed by exactly one evidence item" "$f" || exit 1; done && grep -qi "do not invent gaps without a source line" "$AG" && fm "$AG" | grep -q "coverage stance"'
+ok "no skill, reference or README puts the input text inside a shell argument (review F1)" '! grep -rnF "printf '"'"'%s\n'"'"' \"<text>\"" "$REPO/skills" "$REPO/README.md" "$REPO/agents" && grep -q "input save < <file>" "$REFMD" && for s in answer challenge settle; do grep -qF "\"\$QS\" input save < <file>" "$REPO/skills/opsx-$s/SKILL.md" || exit 1; grep -qi "never put the untrusted text inside a shell argument" "$REPO/skills/opsx-$s/SKILL.md" || exit 1; done'
+ok "coverage mode kinds agree: settle with --include-requirements looks for req-spec in reference, settle SKILL, agent and design (review F2)" 'grep -qE "^ *\| settle \| \`open\` \| also \`req-spec\`, \`req-client\` \|" "$REFMD" && grep -q "with requirements (challenge and settle) also \`req-spec\` and \`req-client\`" "$AG" && grep -q "settle: \`open\`; challenge and settle with \`--include-requirements\` also \`req-spec\`" "$REPO/openspec/changes/add-opsx-questions/design.md" && grep -q "mode settle (open questions; with \`--include-requirements\` also \`req-spec\` and \`req-client\`)" "$REPO/skills/opsx-settle/SKILL.md" && ! grep -q "answer and settle mode" "$AG"'
+ok "spec: coverage writes nothing outside .opsx/questions/ except the .gitignore line (review F4)" 'grep -q "SHALL write nothing outside \`.opsx/questions/\`, except that \`questions.sh input save\` adds the line \`.opsx/questions/\` to the repository \`.gitignore\` once" "$REPO/openspec/changes/add-opsx-questions/specs/question-research/spec.md"'
 ok "reference: coverage loop stops on no surviving gap or at --coverage-rounds, fresh subagent, cap note" 'grep -qi "a round leaves no surviving gap" "$REFMD" && grep -q -- "--coverage-rounds\` rounds" "$REFMD" && grep -qi "fresh\*\* \`ops-researcher\` that never sees the results of earlier coverage rounds" "$REFMD" && grep -q "coverage incomplete after <n> rounds" "$REFMD"'
-ok "reference: gap validated with cite --, fabricated dropped and listed, duplicates, coverage:<round>, counted" 'grep -q "only with evidence that passes \`cite --\`" "$REFMD" && grep -qi "fabricated citation exits 1" "$REFMD" && grep -qi "Dropped gaps are shown" "$REFMD" && grep -qi "duplicates an item already in the list" "$REFMD" && grep -q "coverage:<round>" "$REFMD" && grep -qi "plus the coverage subagents" "$REFMD" && grep -q "questions.sh input save" "$REFMD"'
+ok "reference: gap validated with cite --, fabricated dropped and listed, duplicates, coverage:<round>, counted" 'grep -q "only with evidence that passes \`cite --\`" "$REFMD" && grep -qi "fabricated citation exits 1" "$REFMD" && grep -qi "Dropped gaps are shown" "$REFMD" && grep -qi "duplicates an item already in the list" "$REFMD" && grep -q "coverage:<round>" "$REFMD" && grep -qi "holds the coverage subagents recorded by \`run new\`" "$REFMD" && grep -q "questions.sh input save" "$REFMD"'
 
 # ---------------------------------------------------------------- skills (3.x)
 for s in opsx-answer opsx-challenge opsx-settle; do
