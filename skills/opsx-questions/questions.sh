@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # questions.sh — deterministic parts of /opsx-answer, /opsx-challenge and /opsx-settle.
 #
-#   questions.sh extract <change> --mode answer|challenge [--include-requirements] [--repo <dir>]
-#   questions.sh cite [--repo <dir>] [--] <path> <line> <excerpt>
-#   questions.sh url [--] <url>
+#   questions.sh extract '<change>' --mode answer|challenge [--include-requirements] [--repo <dir>]
+#   questions.sh cite [--repo <dir>] [--] '<path>' '<line>' '<excerpt>'
+#   questions.sh url [--] '<url>'
 #   questions.sh run new <answer|challenge|settle> --questions-file <tsv> [--max N] [--rounds N]
 #                [--coverage-rounds-run N] [--coverage-subagents N] [--coverage-dropped N]
 #                [--coverage-incomplete] [--input <saved input path>] [--repo <dir>]
@@ -98,6 +98,7 @@ CHALLENGE_VERDICTS="stands weakened invalidated"
 INPUT_RE='^\.opsx/questions/input-[0-9]{8}-[0-9]{6}-[a-z0-9]{4}/input\.md$'
 INPUT_MAX=1048576
 TMPQ=""
+RUNDIR_NEW=""
 
 repo_root() {
   local d=${1:-} top
@@ -270,7 +271,7 @@ take_args() {
 }
 
 cmd_cite() {
-  take_args 3 "$@" || die "usage: questions.sh cite [--repo <dir>] [--] <path> <line> <excerpt>"
+  take_args 3 "$@" || die "usage: questions.sh cite [--repo <dir>] [--] '<path>' '<line>' '<excerpt>'"
   local args=("${POS[@]}") repo=$OPT_REPO
   local path=${args[0]} line=${args[1]} excerpt=${args[2]} root mem abs
   is_uint "$line" && [ "$line" -ge 1 ] || die "cite: <line> must be a positive number."
@@ -341,7 +342,7 @@ url_ok() {
 }
 
 cmd_url() {
-  take_args 1 "$@" || die "usage: questions.sh url [--] <url>"
+  take_args 1 "$@" || die "usage: questions.sh url [--] '<url>'"
   [ -z "$OPT_REPO" ] || die "url: --repo does not apply."
   url_ok "${POS[0]}" || exit 1
 }
@@ -436,6 +437,11 @@ cmd_run() {
   root=$(repo_root "$repo")
   safe_dir "$root/.opsx"; safe_dir "$root/.opsx/questions"
   base=$root/.opsx/questions
+  # The saved input is checked before anything is created too.
+  if [ "$input" != - ]; then
+    safe_dir "$root/${input%/input.md}"
+    [ -f "$root/$input" ] && [ ! -L "$root/$input" ] || die "--input: no saved input $input."
+  fi
   mkdir -p "$base" || die "cannot create $base"
   while :; do
     id_run=$(date +%Y%m%d-%H%M%S)-$(rand4)
@@ -444,15 +450,17 @@ cmd_run() {
   done
   dir=$base/$id_run
   mkdir "$dir" || die "cannot create $dir"
-  cp "$tmpq" "$dir/questions.tsv"
-  if [ "$input" != - ]; then
-    safe_dir "$root/${input%/input.md}"
-    [ -f "$root/$input" ] && [ ! -L "$root/$input" ] || die "--input: no saved input $input."
-  fi
-  printf 'mode=%s\nrounds=%s\nmax=%s\ncreated=%s\n' "$mode" "$rounds" "$max" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$dir/meta"
+  # A failure from here on removes the half-made run; meta is written last,
+  # so a run without it is never read as a run.
+  trap 'rm -f "$TMPQ"; rm -rf "$RUNDIR_NEW"' EXIT
+  RUNDIR_NEW=$dir
+  cp "$tmpq" "$dir/questions.tsv" || die "cannot write $dir/questions.tsv"
+  : > "$dir/verdicts.tsv" || die "cannot write $dir/verdicts.tsv"
+  { printf 'mode=%s\nrounds=%s\nmax=%s\ncreated=%s\n' "$mode" "$rounds" "$max" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'coverage_rounds=%s\ncoverage_subagents=%s\ncoverage_dropped=%s\ncoverage_incomplete=%s\ninput=%s\n' \
-    "$cov_r" "$cov_s" "$cov_d" "$cov_i" "$input" >> "$dir/meta"
-  : > "$dir/verdicts.tsv"
+    "$cov_r" "$cov_s" "$cov_d" "$cov_i" "$input"; } > "$dir/meta.tmp" && mv "$dir/meta.tmp" "$dir/meta" \
+    || die "cannot write $dir/meta"
+  RUNDIR_NEW=""
   ensure_gitignore "$root"
   printf '%s\n' "$id_run"
 }
@@ -576,7 +584,10 @@ cmd_status() {
     esac
   done
   [ -n "$run" ] || die "usage: questions.sh status <run>"
-  replay "$(run_dir "$run" "$repo")"
+  # run_dir dies in a command substitution, which ends only that subshell: stop here too.
+  local dir
+  dir=$(run_dir "$run" "$repo") || exit 2
+  replay "$dir"
 }
 
 # ---------------------------------------------------------------------------

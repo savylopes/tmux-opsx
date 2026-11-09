@@ -38,7 +38,7 @@ A change name SHALL take precedence over the other forms. Without a tracker MCP,
 - **THEN** the questions come from `questions.sh extract add-opsx-workspace --mode answer`
 
 ### Requirement: Extract questions from a change
-`questions.sh extract <change> --mode answer|challenge [--include-requirements] [--repo <dir>]` SHALL print one tab-separated line per question: `<id> <kind> <path>:<line> <text>`. Ids SHALL be `Q1`, `Q2`, ... in file order.
+`questions.sh extract '<change>' --mode answer|challenge [--include-requirements] [--repo <dir>]` SHALL print one tab-separated line per question: `<id> <kind> <path>:<line> <text>`. Ids SHALL be `Q1`, `Q2`, ... in file order.
 
 - With `--mode answer`, the questions SHALL be the list items under `## Open Questions` in the change's `design.md` and under `## Open Points` in its `proposal.md`, with kind `open`. Items whose text starts with `Resolved:` SHALL be skipped.
 - With `--mode challenge`, the questions SHALL be the decisions under `## Decisions` in `design.md`, with kind `decision`. Each `###` heading in that section is one decision. When the section has no `###` headings, each top-level list item is one.
@@ -48,11 +48,11 @@ A change that does not exist SHALL exit 2 with a message. A change that has the 
 
 #### Scenario: Open questions extracted
 - **WHEN** a scratch change's `design.md` has `## Open Questions` with the items `- Where does X write?` and `- Resolved: Y uses Z.`
-- **THEN** `questions.sh extract <change> --mode answer` prints exactly one line, `Q1	open	openspec/changes/<change>/design.md:<n>	Where does X write?`
+- **THEN** `questions.sh extract '<change>' --mode answer` prints exactly one line, `Q1	open	openspec/changes/<change>/design.md:<n>	Where does X write?`
 
 #### Scenario: Decisions extracted
 - **WHEN** a scratch change's `design.md` has `## Decisions` with `### Use SQLite` and `### One window per change`
-- **THEN** `questions.sh extract <change> --mode challenge` prints two lines of kind `decision`, `Q1` then `Q2`
+- **THEN** `questions.sh extract '<change>' --mode challenge` prints two lines of kind `decision`, `Q1` then `Q2`
 
 #### Scenario: Requirements only on request
 - **WHEN** the same change has a `specs/foo/spec.md` with one `### Requirement: Bar`
@@ -78,7 +78,7 @@ After extraction and before the user confirms the list, the skill SHALL check th
 
 The parent SHALL validate every gap's evidence as in the mechanical citation check, SHALL drop a gap whose evidence fails, and SHALL drop a gap that duplicates a listed item, naming that item. It SHALL add the remaining gaps with the next free ids and the source `coverage:<round>`, then run the next round. The loop SHALL stop when a round leaves no surviving gap, or after `--coverage-rounds` rounds (default 3); at the cap with gaps still arriving, the list SHALL be shown with the note `coverage incomplete after <n> rounds`. `--coverage-rounds 0` SHALL skip the check. Coverage subagents SHALL be counted in the report's subagent total. The coverage outcome (rounds run, coverage subagents with retries, gaps dropped, whether the list carried the `coverage incomplete` note, and the saved input path) SHALL be recorded in the run by `questions.sh run new` (`--coverage-rounds-run`, `--coverage-subagents`, `--coverage-dropped`, `--coverage-incomplete`, `--input`), and `questions.sh status` SHALL print it as a last line `coverage rounds=<k> subagents=<n> dropped=<d> incomplete=yes|no input=<path|->`. The coverage check SHALL write nothing outside `.opsx/questions/`, except that `questions.sh input save` adds the line `.opsx/questions/` to the repository `.gitignore` once, when it is missing.
 
-The parent SHALL pass untrusted text (ticket text, free text, conversation turns) to `questions.sh input save` on stdin from a file it wrote with its file-write tool, and SHALL NOT place that text inside a shell argument, an `echo`/`printf` or a heredoc.
+The parent SHALL pass untrusted text (ticket text, free text, conversation turns) to `questions.sh input save` on stdin from a file it wrote with its file-write tool, and SHALL NOT place that text inside a shell argument, an `echo`/`printf` or a heredoc. Every subagent- or user-supplied value the parent passes as an argument to `questions.sh cite`, `questions.sh url`, `questions.sh extract` or `opsx-task.sh key` SHALL be one single-quoted shell word with each `'` written as `'\''`, and every command template in the skills, the reference, the README and this change SHALL show those values single-quoted, never in double quotes or as a bare word.
 
 `questions.sh input save [--repo <dir>]` SHALL read text on stdin, refuse more than 1 MiB, turn tabs and carriage returns into spaces and strip every other control character (C0, DEL and the UTF-8 C1 range U+0080-U+009F) except newlines, refuse a symlinked `.opsx` or `.opsx/questions`, write it to `.opsx/questions/input-<stamp>/input.md`, add `.opsx/questions/` to `.gitignore` once, and print the repo-relative path, so `cite` can check `file:` evidence against it.
 
@@ -88,11 +88,11 @@ The parent SHALL pass untrusted text (ticket text, free text, conversation turns
 
 #### Scenario: Gap with a fabricated citation is dropped
 - **WHEN** a coverage result returns `gap: open "Where is X stored?"` with `file:<input>:4 "X is stored"` and line 4 of the saved input does not say that
-- **THEN** `questions.sh cite -- <input> 4 "X is stored"` exits 1, and the reference text says such a gap is dropped and listed as dropped
+- **THEN** `questions.sh cite -- '<input>' 4 "X is stored"` exits 1, and the reference text says such a gap is dropped and listed as dropped
 
 #### Scenario: Saved input is citable
 - **WHEN** `printf 'line one\nwhere does X write?\n' | questions.sh input save` runs in a scratch repo
-- **THEN** it prints a path under `.opsx/questions/input-`, `questions.sh cite -- <path> 2 "where does X write"` exits 0, and `.gitignore` holds one `.opsx/questions/` line
+- **THEN** it prints a path under `.opsx/questions/input-`, `questions.sh cite -- '<path>' 2 "where does X write"` exits 0, and `.gitignore` holds one `.opsx/questions/` line
 
 #### Scenario: Saved input keeps shell metacharacters as text
 - **WHEN** a file holding `"; touch <scratch>/pwned; echo "` and `$(id)` is saved with `questions.sh input save < <file>`
@@ -180,7 +180,7 @@ It SHALL then give a short reasoning. A result with no evidence item SHALL count
 - **THEN** both give the same `VERDICT:` line and the four evidence forms
 
 ### Requirement: Mechanical citation check
-`questions.sh cite [--repo <dir>] [--] <path> <line> <excerpt>` SHALL exit:
+`questions.sh cite [--repo <dir>] [--] '<path>' '<line>' '<excerpt>'` SHALL exit:
 
 - 0 when the excerpt, with runs of whitespace collapsed, occurs within lines `line-2` to `line+2` of the file;
 - 1 when it does not;
@@ -189,7 +189,7 @@ It SHALL then give a short reasoning. A result with no evidence item SHALL count
 
 Its three values are untrusted subagent output: `-h` or `--help` SHALL be a help request only as the sole argument, and SHALL otherwise be a value. The parent SHALL run it, with `--`, for every `file:` evidence item.
 
-`questions.sh url [--] <url>` SHALL exit 0 and print the URL to fetch (fragment dropped) only for an `https://` URL with a domain-name host and no query string, userinfo, port, IP or local host, no path segment over 64 characters and no more than 200 characters; otherwise it SHALL exit 1. The parent SHALL drop a `url:` item that fails it without fetching it, and SHALL check every other `url:` item by fetching the page itself and every `ticket:` and `req:` item against the source it read. Any item that fails SHALL be dropped before the verdict is judged.
+`questions.sh url [--] '<url>'` SHALL exit 0 and print the URL to fetch (fragment dropped) only for an `https://` URL with a domain-name host and no query string, userinfo, port, IP or local host, no path segment over 64 characters and no more than 200 characters; otherwise it SHALL exit 1. The parent SHALL drop a `url:` item that fails it without fetching it, and SHALL check every other `url:` item by fetching the page itself and every `ticket:` and `req:` item against the source it read. Any item that fails SHALL be dropped before the verdict is judged.
 
 #### Scenario: Citation matches nearby
 - **WHEN** line 10 of `a.md` in a scratch repo is `the   quick brown fox`

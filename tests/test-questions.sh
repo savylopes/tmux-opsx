@@ -368,6 +368,18 @@ ok "coverage: a gap with a fabricated citation fails cite -- (exit 1)" '[ $rc -e
 "$Q" cite --repo "$R3" -- "$IN4" 4 "X is kept in memory" >/dev/null 2>&1; rc=$?
 ok "coverage: a gap with a real citation passes cite -- (exit 0)" '[ $rc -eq 0 ]'
 
+# Review round 3 F2: a refused --input leaves no half-made run (checked before mkdir).
+R6=$(newrepo r6)
+"$Q" run new answer --questions-file "$SP/c1.tsv" --repo "$R6" --input .opsx/questions/input-20260101-000000-abcd/input.md >/dev/null 2>&1; rc=$?
+ok "run new: missing --input exits 2 and creates no run directory and no .gitignore (review F2)" '[ $rc -eq 2 ] && [ -z "$(ls -A "$R6/.opsx/questions" 2>/dev/null)" ] && [ ! -e "$R6/.gitignore" ]'
+n3=$(find "$R3/.opsx/questions" -mindepth 1 -maxdepth 1 | wc -l)
+bad --input .opsx/questions/input-20990101-000000-zzzz/input.md
+ok "run new: a refused --input adds nothing under .opsx/questions/ of a used repo (review F2)" '[ "$(find "$R3/.opsx/questions" -mindepth 1 -maxdepth 1 | wc -l)" -eq "$n3" ]'
+# Review round 3 F3: status on a directory without meta prints one clean error.
+mkdir -p "$R6/.opsx/questions/20260101-000000-abcd"; printf 'Q1\topen\ttext\tq\n' > "$R6/.opsx/questions/20260101-000000-abcd/questions.tsv"
+err=$("$Q" status 20260101-000000-abcd --repo "$R6" 2>&1 >/dev/null); rc=$?
+ok "status: a run without meta exits 2 with one 'no run' line and no awk error (review F3)" '[ $rc -eq 2 ] && [ "$(printf "%s\n" "$err" | wc -l)" -eq 1 ] && printf "%s" "$err" | grep -q "no run" && ! printf "%s" "$err" | grep -qi "awk"'
+
 # ---------------------------------------------------------------- shellcheck (1.6)
 if command -v shellcheck >/dev/null 2>&1; then
   ok "shellcheck questions.sh, webfetch-guard.sh and this test" 'shellcheck "$Q" "$REPO/skills/opsx-questions/webfetch-guard.sh" "$REPO/tests/test-questions.sh"'
@@ -394,6 +406,38 @@ ok "coverage mode kinds agree: settle with --include-requirements looks for req-
 ok "spec: coverage writes nothing outside .opsx/questions/ except the .gitignore line (review F4)" 'grep -q "SHALL write nothing outside \`.opsx/questions/\`, except that \`questions.sh input save\` adds the line \`.opsx/questions/\` to the repository \`.gitignore\` once" "$REPO/openspec/changes/add-opsx-questions/specs/question-research/spec.md"'
 ok "reference: coverage loop stops on no surviving gap or at --coverage-rounds, fresh subagent, cap note" 'grep -qi "a round leaves no surviving gap" "$REFMD" && grep -q -- "--coverage-rounds\` rounds" "$REFMD" && grep -qi "fresh\*\* \`ops-researcher\` that never sees the results of earlier coverage rounds" "$REFMD" && grep -q "coverage incomplete after <n> rounds" "$REFMD"'
 ok "reference: gap validated with cite --, fabricated dropped and listed, duplicates, coverage:<round>, counted" 'grep -q "only with evidence that passes \`cite --\`" "$REFMD" && grep -qi "fabricated citation exits 1" "$REFMD" && grep -qi "Dropped gaps are shown" "$REFMD" && grep -qi "duplicates an item already in the list" "$REFMD" && grep -q "coverage:<round>" "$REFMD" && grep -qi "holds the coverage subagents recorded by \`run new\`" "$REFMD" && grep -q "questions.sh input save" "$REFMD"'
+
+# Review round 3 F1: every command template that takes a subagent- or user-supplied
+# value (path, line, excerpt, URL, ticket input, change name) shows it as one
+# single-quoted word, never in double quotes or as a bare word, where a $(...)
+# in the value would run in the parent shell. Checks inline code spans and
+# fenced lines that run questions.sh, "$QS", "$TK" or opsx-task.sh.
+cat > "$SP/tmpl.awk" <<'AWK'
+function check(span,   s, i, n, p) {
+  if (span !~ /(questions\.sh|"\$QS"|"\$TK"|opsx-task\.sh)( |$)/) return
+  if (span ~ /"</) { print FILENAME ":" FNR ": " span; return }
+  n = split("path line excerpt url input change name text", p, " ")
+  s = span
+  for (i = 1; i <= n; i++) {
+    gsub("'<" p[i] ">'", "", s)
+    if (index(s, "<" p[i] ">")) { print FILENAME ":" FNR ": " span; return }
+  }
+}
+FNR == 1 { fence = 0 }
+/^ *```/ { fence = !fence; next }
+fence { check($0); next }
+{ n = split($0, seg, "`"); for (j = 2; j <= n; j += 2) check(seg[j]) }
+AWK
+sed -n "/^### Answering and challenging questions/,/^---\$/p" "$REPO/README.md" > "$SP/README-questions.md"
+CH=$REPO/openspec/changes/add-opsx-questions
+tmpl_bad=$(awk -f "$SP/tmpl.awk" "$REPO"/skills/opsx-answer/SKILL.md "$REPO"/skills/opsx-challenge/SKILL.md "$REPO"/skills/opsx-settle/SKILL.md "$REFMD" "$AG" "$SP/README-questions.md" "$CH"/design.md "$CH"/proposal.md "$CH"/tasks.md "$CH"/specs/question-research/spec.md)
+[ -z "$tmpl_bad" ] || printf '%s\n' "$tmpl_bad"
+ok "no command template puts a subagent or user value in double quotes or a bare word (review round 3 F1)" '[ -z "$tmpl_bad" ] && [ -s "$SP/README-questions.md" ]'
+printf '%s\n' '`"$QS" cite -- <path> <line> "<excerpt>"`' '`questions.sh url -- <url>`' '`"$TK" key "<input>"`' '`questions.sh cite -- '"'<path>' '<line>' '<excerpt>'"'`' > "$SP/tmpl-probe.md"
+ok "template check catches double quotes and bare words, passes single quotes" '[ "$(awk -f "$SP/tmpl.awk" "$SP/tmpl-probe.md" | wc -l)" -eq 3 ]'
+ok "cite and url templates single-quoted in the three skills, reference and README (review round 3 F1)" '( for f in "$REPO"/skills/opsx-answer/SKILL.md "$REPO"/skills/opsx-challenge/SKILL.md "$REPO"/skills/opsx-settle/SKILL.md "$REFMD" "$SP/README-questions.md"; do grep -qF "cite -- '"'<path>' '<line>' '<excerpt>'"'" "$f" || { echo "no single-quoted cite in $f"; exit 1; }; done && for f in "$REPO"/skills/opsx-answer/SKILL.md "$REPO"/skills/opsx-challenge/SKILL.md "$REFMD" "$SP/README-questions.md"; do grep -qF "url -- '"'<url>'"'" "$f" || { echo "no single-quoted url in $f"; exit 1; }; done )'
+# Review round 3 F4: settle maps a ticket's acceptance criteria to req-client in step 1.
+ok "opsx-settle step 1: ticket acceptance criteria become req-client with the flag (review round 3 F4)" 'grep -E "^1\. \*\*Resolve the input\*\*" "$REPO/skills/opsx-settle/SKILL.md" | grep -q "with the flag its acceptance criteria are \`req-client\`"'
 
 # ---------------------------------------------------------------- skills (3.x)
 for s in opsx-answer opsx-challenge opsx-settle; do
