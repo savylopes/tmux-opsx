@@ -90,6 +90,16 @@ A malformed result (no `VERDICT:` line or an unknown verdict) is retried once wi
 ### D6. Conversation input
 With no argument, the parent itself lists the open questions (answer, settle) or the decisions taken (challenge) from the conversation, writes the TSV with kind `open` or `decision` and source `conversation`, and continues as for any input. Subagents never see the conversation, only the briefs.
 
+### D7. Coverage check before confirmation
+Extraction (by `questions.sh extract` or by the parent) can miss questions: a decision written as prose, an open point in a ticket comment, an intention the user stated in the conversation but no artifact records. So between extract and the user's confirmation, the parent runs a coverage loop:
+
+1. Save the input the subagent cannot read (ticket text, free text, the user's request and the relevant conversation turns) with `questions.sh input save` to `.opsx/questions/input-<stamp>/input.md`, numbered by line. A change or file input is cited where it lives.
+2. Start a fresh `ops-researcher` with a coverage brief: the stance `coverage`, the mode (answer: open questions; challenge: decisions, plus requirements with `--include-requirements`; settle: open questions), the current list, the input path (or excerpts), and the untrusted-input rules. It returns `VERDICT: covered` or `VERDICT: gaps`, then one `gap: <kind> "<text>"` line per missing item, each followed by one evidence item (`file:` for a change, file or saved input; `ticket:` or `req:` as usual).
+3. Validate each gap like any evidence (`cite --` for `file:`), drop a gap whose citation fails, and drop one that duplicates an item already in the list (same source line, or the parent judges it the same question, naming the item it duplicates). Add the rest with the next free ids and source `coverage:<round>`.
+4. Repeat with a new subagent on the grown list until a round leaves no surviving gap, or until `--coverage-rounds` (default 3). At the cap with gaps still arriving, the list is shown with the note `coverage incomplete after N rounds`.
+
+The checker is reused `ops-researcher`, not a new agent: a new agent would need read-only wiring and tests on five CLIs for the same tool set. A fresh subagent per round, which never sees earlier coverage results, keeps each round independent of the last. Every gap is untrusted subagent output that can steer the whole run, so a gap without a surviving citation never enters the list. The coverage pass writes nothing outside `.opsx/questions/`. `--max` still applies at confirmation: if gaps push the list over it, the existing ordering rule proposes the first `--max` and names the rest. On Codex and Gemini the parent does the coverage pass itself, which is weaker (it checks its own extraction); the read-only notice already covers this.
+
 ## Risks / Trade-offs
 
 - [Prompt injection exfiltrates repository data through a URL] → Claude Code: the researcher's WebFetch hook and the parent's `questions.sh url` check refuse query strings, userinfo, ports, IP and local hosts and long opaque path segments. Accepted residual: data split into short (also percent-encoded) path segments of an attacker-owned domain, and WebSearch queries (they reach the search provider, not an attacker host), are not blocked mechanically; the researcher's rules forbid putting file contents into a URL or query, and the parent shows every fetched URL in the report. Cursor, OpenCode and Gemini have no equivalent hook here (their read-only modes still allow web fetches); Codex researches in the parent.
@@ -97,10 +107,12 @@ With no argument, the parent itself lists the open questions (answer, settle) or
 
 - [The challenger always finds something] → Verdicts need surviving citations, the downgrade rules apply, and the parent can reject an attack only by naming a concrete flaw. The report shows what was dropped, so the user sees the filtering.
 - [The parent defends its own decisions when validating a conversation challenge] → The concrete-flaw rule, and the report shows rejected attacks with the stated flaw, so the user can overrule.
-- [Cost: up to 54 subagents with the defaults] → `--max 6` and the list confirmation step. Questions that are already final do not run again. The report prints the count.
+- [Cost: up to 54 subagents with the defaults, plus up to 3 coverage subagents] → `--max 6`, `--coverage-rounds` and the list confirmation step. Questions that are already final do not run again. The report prints the count.
 - [Read-only is lost on Codex and Gemini, where the parent researches] → Said at the start of the run and in the README. The parent is still bound by the write-only-on-command rule.
 - [CLI frontmatter keys for read-only (Cursor `readonly`, Codex `sandbox_mode`, Gemini tool names) may differ from the docs] → Verified against docs during apply, and recorded in the README if a CLI cannot express it.
 - [Prompt injection from web pages or tickets] → No write or shell tools in the researcher, untrusted-input rules in every brief, and the parent never runs a command or opens a URL just because a result suggests it. URL evidence is fetched only to check the excerpt.
+
+- [The coverage checker keeps inventing loosely related gaps] → each gap needs a surviving citation in the input, duplicates are dropped, the loop is capped, and the user still confirms or removes items.
 
 ## Migration Plan
 

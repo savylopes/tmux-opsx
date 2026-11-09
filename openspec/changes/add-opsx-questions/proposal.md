@@ -9,6 +9,7 @@ Open questions pile up in design.md files, tickets, briefs and conversations. An
 - New `/opsx-answer <input>`: the parent agent extracts the open questions from the input. The user confirms or edits the list. Then one read-only subagent per question searches for an answer and returns a verdict (`answered`, `partial`, `needs-human`, `unanswerable`) with cited evidence.
 - New `/opsx-challenge <input>`: the same flow, but the subagents try to invalidate closed decisions and return `stands`, `weakened` or `invalidated` with cited evidence. By default only decisions are challenged. `--include-requirements` also challenges spec requirements (MUST/SHALL) and ticket acceptance criteria. A client requirement that falls yields a draft question to the product owner, never an edit.
 - New `/opsx-settle <input> [--rounds N]` (default 3): per question, it alternates answer and challenge rounds. Each round runs an answer, then two independent challengers in parallel: A internal (code, specs, tickets, memory, git history) and B external (internet, upstream docs). A question is settled only when both challengers return a validated `stands`. A `stands` with no relevant source counts as untested. A successful attack goes into the next round's answer brief. After the cap, the question is `contested` (both sides shown) or `needs-human`.
+- Coverage check at the start, for all three: after the questions are extracted and before the user confirms the list, a fresh read-only `ops-researcher` compares the list against the input (the change, ticket, file, text, or the user's request in the conversation) and returns the questions or decisions it misses, each with a cited source line. The parent keeps only gaps whose citation passes the mechanical check and that are not duplicates, adds them, and runs a new coverage subagent on the grown list. It stops when a round leaves no surviving gap, or after `--coverage-rounds` (default 3; `0` turns the check off). The user then confirms the list as before.
 - Input for all three: an OpenSpec change name, a ticket key or tracker URL (resolved like `/opsx-task`), a file, free text, or nothing, which means the open questions or decisions in the current conversation. At most `--max 6` questions per run.
 - New read-only subagent `ops-researcher`. It has named read tools only: no write, edit, shell, subagent or wildcard MCP tools. It returns only a verdict plus cited evidence. The parent runs any source scripts (`req.sh`, `graphify query`) itself and puts the excerpts in the brief.
 - The parent validates every verdict before showing it:
@@ -25,6 +26,7 @@ Open questions pile up in design.md files, tickets, briefs and conversations. An
 ### New Capabilities
 - `question-research`: answering open questions and challenging closed decisions with read-only subagents. Covers:
   - input resolution and question extraction;
+  - the coverage check of the extracted list;
   - user confirmation of the list;
   - the `ops-researcher` agent and its read-only tool set per CLI;
   - verdict vocabularies;
@@ -47,4 +49,4 @@ Open questions pile up in design.md files, tickets, briefs and conversations. An
 - `README.md`: component overview, table and a section.
 - Repositories using it gain git-ignored per-run state under `.opsx/questions/`.
 - Dependencies: none new. Ticket inputs need an issue-tracker MCP. Web research needs the CLI's web tools.
-- Cost: settle can use up to `questions × rounds × 3` subagents (54 with the defaults). The report prints the number used.
+- Cost: settle can use up to `questions × rounds × 3` subagents (54 with the defaults), plus up to `--coverage-rounds` coverage subagents (3 with the defaults) in every mode. The report prints the number used.
