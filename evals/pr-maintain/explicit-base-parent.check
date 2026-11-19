@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Explicit base parent
+# level: L2
+# requirement: Resolve the PR's stack
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_env   # PR 43 targets feat-a, the head branch of open PR 42
+out=$(start_stack 43 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "start exit $rc"
+grep -qx "stack_parent=42" "$(state_file 43)" || fail "state lacks stack_parent=42"
+echo OK

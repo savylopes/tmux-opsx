@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / No stack
+# level: L2
+# requirement: Resolve the PR's stack
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_stack_env
+setpr 41 '.state="MERGED"'
+out=$(start_stack 42 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "start exit $rc"
+echo "$out" | grep -qx "stack parent=- children=-" || fail "no 'stack parent=- children=-' line"
+echo OK

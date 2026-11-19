@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Addressed entry wakes
+# level: L1
+# requirement: Peer event from the ledger
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41; seed 42
+tell_ok 42 pr-41 join; pr ledger 41 --unread --mark >/dev/null     # 42 becomes a recorded child
+pr stack 41 | grep -qx "children=42" || fail "precondition: 42 is not a child"
+tell_ok 42 pr-41 request --ref check:ci
+out=$(pr wait 41 --slice 4 --poll 1 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "expected exit 0, got $rc"
+echo "$out" | grep -qx "event=peer" || fail "no event=peer"
+echo OK

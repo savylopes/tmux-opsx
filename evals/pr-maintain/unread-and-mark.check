@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Unread and mark
+# level: L1
+# requirement: Read and mark ledger entries
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41; seed 42 41
+tell_ok 41 pr-42 ack; tell_ok 41 pr-42 release
+out=$(pr ledger 42 --unread --mark); echo "$out"
+[ "$(echo "$out" | grep -c '^== ')" = 2 ] || fail "expected two entries printed"
+out=$(pr wait 42 --slice 2 --poll 1 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 3 ] || fail "expected exit 3, got $rc"
+echo OK

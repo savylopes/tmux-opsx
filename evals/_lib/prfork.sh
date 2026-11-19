@@ -72,4 +72,4 @@ EOT
   cd "$F"
 }
 fstate() { printf '%s/tmux-opsx/pr/acme-app-%s/state' "$XDG_STATE_HOME" "$1"; }
-fstart() { "$PRSH" start "$1" --repo "$F" --agent-cli "$SP/fakebin/agent"; }
+fstart() { need_tmux; "$PRSH" start "$1" --repo "$F" --agent-cli "$SP/fakebin/agent"; }

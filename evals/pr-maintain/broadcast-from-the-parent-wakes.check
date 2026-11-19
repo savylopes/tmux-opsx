@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Broadcast from the parent wakes
+# level: L1
+# requirement: Peer event from the ledger
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41; seed 42 41
+tell_ok 41 all moved --sha "$SHA_B" --old "$SHA_A"
+out=$(pr wait 42 --slice 4 --poll 1 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+echo "$out" | grep -qx "event=peer" || fail "no event=peer"
+echo OK

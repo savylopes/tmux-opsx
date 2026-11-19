@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Diverged child refused
+# level: L1
+# requirement: Push keeps the stack in one version
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_moved_env
+pr worktree 42 >/dev/null 2>&1; WT=$SP/work/wt-pr-42; echo "worktree: $WT"
+[ -d "$WT" ] || fail "no worktree"
+# rebase 42 on main itself: C', D' without B'
+$G -C "$WT" rebase -q --onto main "$SHA_A" 2>&1 | tail -3
+$G -C "$WT" merge-base --is-ancestor "$PAR_NEW" HEAD && fail "fixture: head contains B'"
+remote_before=$($G -C "$R" ls-remote origin refs/heads/feat-b | cut -f1)
+out=$(pr push 42 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 9 ] || fail "expected exit 9, got $rc"
+echo "$out" | grep -q "41" || fail "does not name PR 41"
+echo "$out" | grep -q "$PAR_NEW" || fail "does not name $PAR_NEW"
+[ "$($G -C "$R" ls-remote origin refs/heads/feat-b | cut -f1)" = "$remote_before" ] || fail "remote branch changed"
+echo OK

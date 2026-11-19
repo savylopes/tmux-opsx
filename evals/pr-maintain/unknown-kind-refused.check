@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Unknown kind refused
+# level: L1
+# requirement: Ledger entries
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 41
+pr tell 41 all reboot; rc=$?; echo "exit $rc"
+[ $rc -eq 2 ] || fail "expected exit 2, got $rc"
+[ "$(n_entries)" = 0 ] || fail "a file was written"
+echo OK

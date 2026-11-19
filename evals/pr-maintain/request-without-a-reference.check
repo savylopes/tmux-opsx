@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Request without a reference
+# level: L1
+# requirement: Request carries a reference
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_stack_env; seed 42 41
+pr tell 42 pr-41 request; rc=$?; echo "exit $rc"
+[ $rc -eq 2 ] || fail "expected exit 2, got $rc"
+[ "$(n_entries)" = 0 ] || fail "a file was written"
+echo OK

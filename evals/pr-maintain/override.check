@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Override
+# level: L2
+# requirement: Declare the stack by hand
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+need_tmux; mk_stack_env   # ancestry would infer parent 41
+# an unrelated open PR 40
+$G -C "$R" branch x40 main; $G -C "$R" push -q origin x40
+{ jq -c '.[]' "$GHD/prs.json"; pr_obj 40 x40 "$($G -C "$R" rev-parse main)" main OPEN; } | jq -s . > "$GHD/prs.tmp" && mv "$GHD/prs.tmp" "$GHD/prs.json"
+out=$(start_stack 42 --stacked-on 40 2>&1); rc=$?; echo "$out"; echo "exit $rc"
+[ $rc -eq 0 ] || fail "start exit $rc"
+grep -qx "stack_parent=40" "$(state_file 42)" || fail "state lacks stack_parent=40"
+echo OK

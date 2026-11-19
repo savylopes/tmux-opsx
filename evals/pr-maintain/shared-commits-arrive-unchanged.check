@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# scenario: pr-maintain / Shared commits arrive unchanged
+# level: L1
+# requirement: Restack onto a moved parent
+set -u
+. "$EVAL_ROOT/evals/_lib/pr.sh"
+mk_moved_env
+pr restack 42 --parent-moved; rc=$?; echo "exit $rc"
+[ $rc -eq 0 ] || fail "restack exit $rc"
+H=$($G -C "$R" rev-parse feat-b); echo "feat-b: $H"
+$G -C "$R" log --format='%h %s' -6 feat-b
+[ "$($G -C "$R" rev-parse feat-b~2)" = "$PAR_NEW" ] || fail "feat-b~2 is not PR 41's new head $PAR_NEW"
+[ "$($G -C "$R" rev-parse feat-b~3)" = "$($G -C "$R" rev-parse "$PAR_NEW~1")" ] || fail "A' not shared"
+[ "$($G -C "$R" log --format=%s -2 feat-b | paste -sd,)" = "D,C" ] || fail "C', D' not on top"
+grep -qx "stack_parent_tip=$PAR_NEW" "$(state_file 42)" || fail "stack_parent_tip is not $PAR_NEW"
+echo OK
