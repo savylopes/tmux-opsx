@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: question-research / Install and verify
+# level: L2
+# requirement: Installation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+out=$(run_install 2>&1); rc=$?; echo "$out" | tail -15; [ $rc -eq 0 ] || fail "install exit $rc"
+[ -x "$HOME/.claude/skills/opsx-questions/questions.sh" ] || fail "questions.sh not executable"
+for base in .claude .agents .gemini; do for s in opsx-questions opsx-answer opsx-challenge opsx-settle; do
+  [ -d "$HOME/$base/skills/$s" ] || fail "$base/skills/$s missing"; done; done
+v=$(run_install 2>&1); echo "$v" | grep -i 'question\|answer\|challenge\|settle\|researcher'
+echo "$v" | grep -i 'question\|answer\|challenge\|settle\|researcher' | grep -Eiq 'fail|✗|missing|not found' && fail "verify reports a failure"
+echo "$v" | grep -q 'questions.sh parses' || fail "verify does not report 'questions.sh parses'"
+echo OK

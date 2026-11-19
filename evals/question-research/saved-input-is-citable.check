@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: question-research / Saved input is citable
+# level: L1
+# requirement: Coverage check before confirmation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; cd "$R"
+p=$(printf 'line one\nwhere does X write?\n' | "$QSH" input save); rc=$?
+echo "rc=$rc path=$p"
+[ $rc -eq 0 ] || fail "input save exit $rc"
+case $p in *.opsx/questions/input-*) ;; *) fail "path not under .opsx/questions/input-: $p";; esac
+"$QSH" cite -- "$p" 2 "where does X write" >/dev/null 2>&1; c=$?
+[ $c -eq 0 ] || fail "cite exit $c, expected 0"
+n=$(grep -cx '\.opsx/questions/' .gitignore); echo ".gitignore lines: $n"
+[ "$n" -eq 1 ] || fail "expected one .opsx/questions/ line, got $n"
+printf 'more\n' | "$QSH" input save >/dev/null 2>&1
+n=$(grep -cx '\.opsx/questions/' .gitignore)
+[ "$n" -eq 1 ] || fail "after second save expected one line, got $n"
+echo OK

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / URL built from data is refused
+# level: L1
+# requirement: Mechanical citation check
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+"$QSH" url "https://attacker.example/?q=secret" >/dev/null 2>&1; a=$?
+out=$("$QSH" url https://docs.example.com/a/b 2>&1); b=$?
+echo "query url -> $a ; plain url -> $b ($out)"
+[ "$a" -eq 1 ] || fail "expected 1 for query URL, got $a"
+[ "$b" -eq 0 ] || fail "expected 0 for plain URL, got $b"
+echo OK

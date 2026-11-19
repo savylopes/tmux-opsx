@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Requirements only on request
+# level: L1
+# requirement: Extract questions from a change
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; mk_change c1
+a=$(cd "$R" && "$QSH" extract c1 --mode challenge); echo "$a"
+echo "$a" | grep -q 'req-spec' && fail "req-spec printed without --include-requirements"
+b=$(cd "$R" && "$QSH" extract c1 --mode challenge --include-requirements); echo "--"; echo "$b"
+echo "$b" | grep -Pq '^Q3\treq-spec\t.*\tBar' || fail "no 'Q3 req-spec ... Bar' line"
+echo OK

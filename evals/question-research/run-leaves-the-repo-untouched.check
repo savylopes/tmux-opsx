@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: question-research / Run leaves the repo untouched
+# level: L1
+# requirement: Report and write only on command
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; new_run answer 2
+rec Q1 --round 1 --stage answer --verdict answered --sources 1 || fail rec
+st >/dev/null || fail status
+p=$(git -C "$R" status --porcelain); echo "$p"
+echo "$p" | grep -v '^ \?M \.gitignore$\|^?? \.gitignore$' | grep -q . && fail "files other than .gitignore changed"
+echo "$p" | grep -q '\.gitignore' || fail ".gitignore not changed"
+grep -qx '.opsx/questions/' "$R/.gitignore" || fail ".gitignore lacks .opsx/questions/"
+echo OK

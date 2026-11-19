@@ -13,7 +13,7 @@
 #                                   -> marked block in ~/.gemini/GEMINI.md
 #                                   -> BeforeTool hook in ~/.gemini/settings.json
 #                                   -> ~/.config/opencode/plugins/graphify.js (auto-loaded)
-#   4. ops-applier + ops-qa + ops-reviewer + ops-security + ops-eval
+#   4. ops-applier + ops-qa + ops-reviewer + ops-security + ops-eval (+ ops-researcher, see 8f)
 #                                   -> ~/.claude/agents/opsx-{applier,qa,reviewer,security,eval}.md
 #                                   -> ~/.cursor/agents/opsx-{applier,qa,reviewer,security,eval}.md
 #                                   -> ~/.codex/agents/ops-{applier,qa,reviewer,security,eval}.toml
@@ -67,6 +67,21 @@
 #      the /opsx-task skill        -> ~/.claude/skills/opsx-task/  (and the other five
 #                                      skill dirs, like /fork; opsx-task.sh; briefs live
 #                                      in each repo's git-ignored .opsx/tasks/, never touched here)
+#   8f. /opsx-answer, /opsx-challenge, /opsx-settle unless --skip-questions:
+#                                   -> ~/.claude/skills/opsx-{questions,answer,challenge,settle}/
+#                                      (and the other five skill dirs, like /fork;
+#                                      opsx-questions holds questions.sh + reference.md;
+#                                      runs live in each repo's git-ignored .opsx/questions/)
+#      + ops-researcher, read-only on every CLI (model: inherit, not in models.conf)
+#                                   -> ~/.claude/agents/opsx-researcher.md (Read, Glob, Grep,
+#                                      WebSearch, WebFetch only; a PreToolUse hook runs
+#                                      opsx-questions/webfetch-guard.sh on every WebFetch)
+#                                   -> ~/.cursor/agents/opsx-researcher.md (readonly: true)
+#                                   -> ~/.codex/agents/ops-researcher.toml (shell, apps,
+#                                      plugins, memories off; Codex cannot make an agent file read-only)
+#                                   -> ~/.config/opencode/agents/ops-researcher.md (edit, bash,
+#                                      task, todowrite: deny)
+#                                   -> ~/.gemini/agents/opsx-researcher.md (read and web tools only)
 #   9. the /expose skill + proxy   ONLY with --expose-domain <domain>:
 #                                   -> ~/.claude/skills/expose/  (and the other five
 #                                      skill dirs, like /fork; expose.sh)
@@ -136,6 +151,7 @@
 #   --skip-review      Don't install the /opsx-review skill
 #   --skip-pr          Don't install the /opsx-pr skill
 #   --skip-task        Don't install the /opsx-task skill
+#   --skip-questions   Don't install /opsx-answer, /opsx-challenge, /opsx-settle or ops-researcher
 #   --skip-init        Don't install the opsx command or the /opsx-init skill
 #   --skip-restore     Don't install the session restore hook or the ~/.tmux.conf block
 #   --restore-at-boot  Also start tmux (and the restore) at system start through
@@ -170,6 +186,7 @@ SKIP_EXPLAIN=0
 SKIP_REVIEW=0
 SKIP_PR=0
 SKIP_TASK=0
+SKIP_QUESTIONS=0
 SKIP_INIT=0
 SKIP_RESTORE=0
 RESTORE_AT_BOOT=0
@@ -208,6 +225,7 @@ while [ $# -gt 0 ]; do
     --skip-review)   SKIP_REVIEW=1; shift ;;
     --skip-pr)       SKIP_PR=1; shift ;;
     --skip-task)     SKIP_TASK=1; shift ;;
+    --skip-questions) SKIP_QUESTIONS=1; shift ;;
     --skip-init)     SKIP_INIT=1; shift ;;
     --skip-restore)  SKIP_RESTORE=1; shift ;;
     --restore-at-boot) RESTORE_AT_BOOT=1; shift ;;
@@ -655,6 +673,8 @@ CODEX_INIT_SKILLS_DIR=$CODEX_HOME_DIR/skills/opsx-init
 AGENTS_INIT_SKILLS_DIR=$HOME/.agents/skills/opsx-init
 OPENCODE_INIT_SKILLS_DIR=$OPENCODE_CONFIG_DIR/skills/opsx-init
 GEMINI_INIT_SKILLS_DIR=$GEMINI_HOME_DIR/skills/opsx-init
+# /opsx-answer, /opsx-challenge, /opsx-settle and their shared opsx-questions folder.
+QUESTIONS_SKILLS="opsx-questions opsx-answer opsx-challenge opsx-settle"
 # The launcher marks itself with this line; uninstall removes only marked files.
 OPSX_LAUNCHER_MARK='# tmux-opsx launcher'
 CODEX_AGENTS_MD=$CODEX_HOME_DIR/AGENTS.md
@@ -846,6 +866,29 @@ install_task_skill() {
   install_file "$SRC/skills/opsx-task/opsx-task.sh" "$dest/opsx-task.sh"
   chmod +x "$dest/opsx-task.sh" || die "cannot chmod +x $dest/opsx-task.sh"
   ok "/opsx-task -> $dest ($label)"
+}
+
+# The six skill roots the question skills go into, one per line ($CODEX_HOME/skills
+# only when it differs from ~/.agents/skills). Call after PREFIX is set.
+questions_skill_roots() {
+  printf '%s\n' "$PREFIX/skills" "$HOME/.cursor/skills" "$AGENTS_OPENSPEC_SKILLS_DIR"
+  [ "$CODEX_OPENSPEC_SKILLS_DIR" = "$AGENTS_OPENSPEC_SKILLS_DIR" ] || printf '%s\n' "$CODEX_OPENSPEC_SKILLS_DIR"
+  printf '%s\n' "$OPENCODE_OPENSPEC_SKILLS_DIR" "$GEMINI_OPENSPEC_SKILLS_DIR"
+}
+
+# Install opsx-questions (SKILL-less: questions.sh + reference.md) and the three
+# SKILL.md folders opsx-answer, opsx-challenge, opsx-settle under one skill root.
+install_questions_skills() {
+  local root=$1 label=$2 sk
+  install_file "$SRC/skills/opsx-questions/questions.sh" "$root/opsx-questions/questions.sh"
+  install_file "$SRC/skills/opsx-questions/reference.md" "$root/opsx-questions/reference.md"
+  install_file "$SRC/skills/opsx-questions/webfetch-guard.sh" "$root/opsx-questions/webfetch-guard.sh"
+  chmod +x "$root/opsx-questions/questions.sh" "$root/opsx-questions/webfetch-guard.sh" \
+    || die "cannot chmod +x $root/opsx-questions/questions.sh"
+  for sk in opsx-answer opsx-challenge opsx-settle; do
+    install_file "$SRC/skills/$sk/SKILL.md" "$root/$sk/SKILL.md"
+  done
+  ok "/opsx-answer, /opsx-challenge, /opsx-settle -> $root/opsx-{questions,answer,challenge,settle} ($label)"
 }
 
 # Install the /opsx-init skill (SKILL.md + opsx-init.sh) into one dest dir.
@@ -2282,9 +2325,10 @@ agent_model_for() {
 }
 
 # Claude Code agent: the source file with its frontmatter `model:` set to $3.
-# $4 (optional): absolute path of monitor-guard.sh, written into the
-# frontmatter hook `command:` that names monitor-guard.sh (shell-quoted, inside
-# a YAML single-quoted string).
+# $4 (optional): absolute path of the agent's guard hook (monitor-guard.sh for
+# ops-pr-monitor, webfetch-guard.sh for ops-researcher), written into the
+# frontmatter hook `command:` that names a guard (shell-quoted, inside a YAML
+# single-quoted string).
 install_claude_agent() {
   local src=$1 dest=$2 model=${3:-inherit} guard=${4:-} gq="" tmp
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
@@ -2300,7 +2344,7 @@ install_claude_agent() {
               if (n == 2 && !done) { print "model: " m; done=1 }
               print; next }
     n == 1 && /^model:/ { if (!done) { print "model: " m; done=1 }; next }
-    n == 1 && g != "" && /^ *command: .*monitor-guard\.sh.?$/ {
+    n == 1 && g != "" && /^ *command: .*(monitor|webfetch)-guard\.sh.?$/ {
       match($0, /^ *command: /); print substr($0, 1, RLENGTH) g; next }
     { print }
   ' "$src" > "$tmp"
@@ -2308,8 +2352,11 @@ install_claude_agent() {
   rm -f "$tmp"
 }
 
+# $4 (optional): readonly, for ops-researcher. Cursor subagent frontmatter
+# `readonly: true` restricts the subagent to read-only tools (checked against
+# https://cursor.com/docs/context/subagents, 2026-11: "readonly boolean").
 install_cursor_agent() {
-  local src=$1 dest=$2 model=${3:-inherit} tmp desc name
+  local src=$1 dest=$2 model=${3:-inherit} ro=${4:-} tmp desc name
   name=$(agent_frontmatter_name "$src")
   [ -n "$name" ] || name=$(basename "$dest" .md)
   desc=$(agent_frontmatter_desc "$src")
@@ -2320,6 +2367,7 @@ install_cursor_agent() {
     printf 'name: %s\n' "$name"
     printf 'description: %s\n' "$desc"
     printf 'model: %s\n' "$model"
+    [ "$ro" != readonly ] || printf 'readonly: true\n'
     printf '%s\n' '---'
     awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
   } > "$tmp"
@@ -2337,8 +2385,15 @@ toml_basic_string() {
 
 # Codex custom agents are TOML under ~/.codex/agents/. Convert the markdown
 # body of opsx-applier.md into developer_instructions.
+# $3 (optional): readonly, for ops-researcher. Checked against
+# https://developers.openai.com/codex/subagents (2026-11): `sandbox_mode` in a
+# custom agent file does NOT override the parent session, so it is not written;
+# the documented way to reduce an agent is `features.<key> = false`. That turns
+# off the shell, apps (connectors), plugins and memories, but Codex has no key
+# that removes file edits from an agent, so it cannot be made fully read-only.
+# The skills research in the parent on Codex anyway (README: the Codex/Gemini gap).
 install_codex_agent() {
-  local src=$1 dest=$2 tmp desc name
+  local src=$1 dest=$2 ro=${3:-} tmp desc name
   name=$(agent_frontmatter_name "$src")
   [ -n "$name" ] || name=$(basename "$dest" .toml)
   desc=$(agent_frontmatter_desc "$src")
@@ -2350,14 +2405,24 @@ install_codex_agent() {
     printf 'developer_instructions = """\n'
     awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
     printf '"""\n'
+    if [ "$ro" = readonly ]; then
+      printf '\n[features]\n'
+      printf 'shell_tool = false\n'
+      printf 'apps = false\n'
+      printf 'plugins = false\n'
+      printf 'memories = false\n'
+    fi
   } > "$tmp"
   install_file "$tmp" "$dest"
   rm -f "$tmp"
 }
 
 # OpenCode agents are markdown under ~/.config/opencode/agents/ (filename = name).
+# $4 (optional): readonly, for ops-researcher: edit, bash, task, todowrite, skill,
+# lsp and external_directory denied; read, glob, grep, list, webfetch, websearch
+# allowed (permission keys checked against https://opencode.ai/docs/agents/, 2026-11).
 install_opencode_agent() {
-  local src=$1 dest=$2 model=${3:-inherit} tmp desc
+  local src=$1 dest=$2 model=${3:-inherit} ro=${4:-} tmp desc
   desc=$(agent_frontmatter_desc "$src")
   [ -n "$desc" ] || desc="OpenSpec subagent"
   tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
@@ -2368,22 +2433,64 @@ install_opencode_agent() {
     # inherit = no model key, so OpenCode uses the window's model.
     [ "$model" = inherit ] || printf 'model: %s\n' "$model"
     printf 'permission:\n'
-    printf '  edit: allow\n'
-    printf '  bash: allow\n'
-    printf '  read: allow\n'
-    printf '  glob: allow\n'
-    printf '  grep: allow\n'
-    printf '  list: allow\n'
-    printf '  task: allow\n'
-    printf '  skill: allow\n'
-    printf '  webfetch: allow\n'
-    printf '  websearch: allow\n'
-    printf '  todowrite: allow\n'
-    printf '  lsp: allow\n'
-    printf '  external_directory: allow\n'
+    if [ "$ro" = readonly ]; then
+      printf '  edit: deny\n'
+      printf '  bash: deny\n'
+      printf '  task: deny\n'
+      printf '  todowrite: deny\n'
+      printf '  skill: deny\n'
+      printf '  lsp: deny\n'
+      printf '  external_directory: deny\n'
+      printf '  read: allow\n'
+      printf '  glob: allow\n'
+      printf '  grep: allow\n'
+      printf '  list: allow\n'
+      printf '  webfetch: allow\n'
+      printf '  websearch: allow\n'
+    else
+      printf '  edit: allow\n'
+      printf '  bash: allow\n'
+      printf '  read: allow\n'
+      printf '  glob: allow\n'
+      printf '  grep: allow\n'
+      printf '  list: allow\n'
+      printf '  task: allow\n'
+      printf '  skill: allow\n'
+      printf '  webfetch: allow\n'
+      printf '  websearch: allow\n'
+      printf '  todowrite: allow\n'
+      printf '  lsp: allow\n'
+      printf '  external_directory: allow\n'
+    fi
     printf '%s\n' '---'
     awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$src"
   } > "$tmp"
+  install_file "$tmp" "$dest"
+  rm -f "$tmp"
+}
+
+# Gemini CLI agent for ops-researcher: the source file with its frontmatter
+# `tools:` rewritten to Gemini's read and web tool names. Names checked against
+# github.com/google-gemini/gemini-cli docs/reference/tools.md (2026-11):
+# grep_search is the current name (search_file_content is its legacy alias).
+# The other agents are still copied as they are.
+GEMINI_READONLY_TOOLS="read_file read_many_files glob grep_search list_directory google_web_search web_fetch"
+install_gemini_readonly_agent() {
+  local src=$1 dest=$2 tmp
+  tmp=$(mktemp 2>/dev/null || mktemp -t tmuxopsx) || die "could not create a temp file"
+  OPSX_GEMINI_TOOLS="$GEMINI_READONLY_TOOLS" awk '
+    BEGIN { nt = split(ENVIRON["OPSX_GEMINI_TOOLS"], t, " ") }
+    /^---$/ { n++; skip = 0; hk = 0; print; next }
+    n == 1 && /^tools:/ {
+      print "tools:"; for (i = 1; i <= nt; i++) print "  - " t[i]
+      skip = 1; next
+    }
+    n == 1 && skip && /^[ \t]*-/ { next }
+    # The Claude Code hooks: block (webfetch-guard.sh) is not Gemini syntax.
+    n == 1 && /^hooks:/ { hk = 1; next }
+    n == 1 && hk && /^[ \t]/ { next }
+    { skip = 0; hk = 0; print }
+  ' "$src" > "$tmp"
   install_file "$tmp" "$dest"
   rm -f "$tmp"
 }
@@ -2640,6 +2747,16 @@ if [ "$UNINSTALL" -eq 1 ]; then
   rm -rf "$CODEX_TASK_SKILLS_DIR" && ok "removed $CODEX_TASK_SKILLS_DIR (Codex)"
   rm -rf "$OPENCODE_TASK_SKILLS_DIR" && ok "removed ~/.config/opencode/skills/opsx-task (OpenCode)"
   rm -rf "$GEMINI_TASK_SKILLS_DIR" && ok "removed ~/.gemini/skills/opsx-task (Gemini CLI)"
+  while IFS= read -r qroot; do
+    for qs in $QUESTIONS_SKILLS; do
+      if [ -e "$qroot/$qs" ]; then rm -rf "${qroot:?}/$qs" && ok "removed $(tilde "$qroot/$qs")"; fi
+    done
+  done < <(questions_skill_roots)
+  for f in "$PREFIX/agents/opsx-researcher.md" "$CURSOR_AGENTS_DIR/opsx-researcher.md" \
+           "$CODEX_AGENTS_DIR/ops-researcher.toml" "$OPENCODE_AGENTS_DIR/ops-researcher.md" \
+           "$GEMINI_AGENTS_DIR/opsx-researcher.md"; do
+    if [ -e "$f" ]; then rm -f "$f" && ok "removed $(tilde "$f") (ops-researcher)"; fi
+  done
   rm -rf "$PREFIX/skills/opsx-init" && ok "removed skills/opsx-init (Claude Code)"
   rm -rf "$CURSOR_INIT_SKILLS_DIR" && ok "removed ~/.cursor/skills/opsx-init (Cursor CLI)"
   rm -rf "$AGENTS_INIT_SKILLS_DIR" && ok "removed ~/.agents/skills/opsx-init (Agent Skills)"
@@ -2920,6 +3037,22 @@ if [ "$SKIP_PR" -eq 0 ]; then
     "$PREFIX/skills/opsx-pr/monitor-guard.sh"
   ok "ops-pr-monitor -> $PREFIX/agents/opsx-pr-monitor.md (Claude Code, model: $m, guard: monitor-guard.sh)"
 fi
+# ops-researcher (/opsx-answer, /opsx-challenge, /opsx-settle): read-only on
+# every CLI, always model: inherit (it is not in models.conf).
+if [ "$SKIP_QUESTIONS" -eq 0 ]; then
+  [ -f "$SRC/agents/opsx-researcher.md" ] || die "missing $SRC/agents/opsx-researcher.md — run this script from the repo checkout"
+  install_claude_agent "$SRC/agents/opsx-researcher.md" "$PREFIX/agents/opsx-researcher.md" inherit \
+    "$PREFIX/skills/opsx-questions/webfetch-guard.sh"
+  ok "ops-researcher -> $PREFIX/agents/opsx-researcher.md (Claude Code, read-only tools, guard: webfetch-guard.sh)"
+  install_cursor_agent "$SRC/agents/opsx-researcher.md" "$CURSOR_AGENTS_DIR/opsx-researcher.md" inherit readonly
+  ok "ops-researcher -> $CURSOR_AGENTS_DIR/opsx-researcher.md (Cursor CLI, readonly: true)"
+  install_codex_agent "$SRC/agents/opsx-researcher.md" "$CODEX_AGENTS_DIR/ops-researcher.toml" readonly
+  ok "ops-researcher -> $CODEX_AGENTS_DIR/ops-researcher.toml (Codex CLI, shell off; edits not blockable)"
+  install_opencode_agent "$SRC/agents/opsx-researcher.md" "$OPENCODE_AGENTS_DIR/ops-researcher.md" inherit readonly
+  ok "ops-researcher -> $OPENCODE_AGENTS_DIR/ops-researcher.md (OpenCode, edit/bash/task denied)"
+  install_gemini_readonly_agent "$SRC/agents/opsx-researcher.md" "$GEMINI_AGENTS_DIR/opsx-researcher.md"
+  ok "ops-researcher -> $GEMINI_AGENTS_DIR/opsx-researcher.md (Gemini CLI, read and web tools)"
+fi
 note "agent models: agents/models.conf, overridden by ${XDG_CONFIG_HOME:-~/.config}/tmux-opsx/models.conf (re-run install after editing)"
 note "applier implements in opsx/<change>; eval/reviewer/security/qa verify after apply (eval owns evals/)"
 info ""
@@ -3116,6 +3249,22 @@ else
   install_task_skill "$OPENCODE_TASK_SKILLS_DIR" "OpenCode (~/.config/opencode/skills)"
   install_task_skill "$GEMINI_TASK_SKILLS_DIR" "Gemini CLI (~/.gemini/skills)"
   note "/opsx-task sessions run the agent CLI with normal approvals; briefs go to <repo>/.opsx/tasks/ (git-ignored)"
+fi
+info ""
+
+# ---------- 8f. /opsx-answer, /opsx-challenge, /opsx-settle skills ----------
+if [ "$SKIP_QUESTIONS" -eq 1 ]; then
+  step "Skipping /opsx-answer, /opsx-challenge, /opsx-settle and ops-researcher (--skip-questions)"
+else
+  step "Installing the /opsx-answer, /opsx-challenge and /opsx-settle skills"
+  for f in opsx-questions/questions.sh opsx-questions/reference.md opsx-questions/webfetch-guard.sh opsx-answer/SKILL.md \
+           opsx-challenge/SKILL.md opsx-settle/SKILL.md; do
+    [ -f "$SRC/skills/$f" ] || die "missing $SRC/skills/$f — run this script from the repo checkout"
+  done
+  while IFS= read -r qroot; do
+    install_questions_skills "$qroot" "$(tilde "$qroot")"
+  done < <(questions_skill_roots)
+  note "research runs through the read-only ops-researcher (Codex/Gemini: in the parent); runs go to <repo>/.opsx/questions/ (git-ignored); nothing else is written until you say so"
 fi
 info ""
 
@@ -3462,6 +3611,26 @@ if [ "$SKIP_TASK" -eq 0 ]; then
   else
     warn "opsx-task.sh failed to parse"; FAIL=1
   fi
+fi
+if [ "$SKIP_QUESTIONS" -eq 0 ]; then
+  while IFS= read -r qroot; do
+    for f in opsx-questions/questions.sh opsx-questions/reference.md opsx-questions/webfetch-guard.sh opsx-answer/SKILL.md \
+             opsx-challenge/SKILL.md opsx-settle/SKILL.md; do
+      if [ -f "$qroot/$f" ]; then ok "$(tilde "$qroot/$f")"; else warn "missing: $qroot/$f"; FAIL=1; fi
+    done
+    [ -x "$qroot/opsx-questions/questions.sh" ] || { warn "not executable: $qroot/opsx-questions/questions.sh"; FAIL=1; }
+    [ -x "$qroot/opsx-questions/webfetch-guard.sh" ] || { warn "not executable: $qroot/opsx-questions/webfetch-guard.sh"; FAIL=1; }
+  done < <(questions_skill_roots)
+  if bash -n "$PREFIX/skills/opsx-questions/questions.sh" 2>/dev/null; then
+    ok "questions.sh parses"
+  else
+    warn "questions.sh failed to parse"; FAIL=1
+  fi
+  for f in "$PREFIX/agents/opsx-researcher.md" "$CURSOR_AGENTS_DIR/opsx-researcher.md" \
+           "$CODEX_AGENTS_DIR/ops-researcher.toml" "$OPENCODE_AGENTS_DIR/ops-researcher.md" \
+           "$GEMINI_AGENTS_DIR/opsx-researcher.md"; do
+    if [ -f "$f" ]; then ok "$(tilde "$f")"; else warn "missing: $f"; FAIL=1; fi
+  done
 fi
 if [ "$SKIP_INIT" -eq 0 ]; then
   for d in "$PREFIX/skills/opsx-init" "$CURSOR_INIT_SKILLS_DIR" "$AGENTS_INIT_SKILLS_DIR" \

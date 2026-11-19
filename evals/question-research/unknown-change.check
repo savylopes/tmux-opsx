@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Unknown change
+# level: L1
+# requirement: Extract questions from a change
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; mk_change c1
+out=$(cd "$R" && "$QSH" extract no-such-change --mode answer 2>/dev/null); rc=$?
+echo "stdout: [$out] exit $rc"
+[ $rc -eq 2 ] || fail "expected exit 2"
+[ -z "$out" ] || fail "question line printed"
+echo OK

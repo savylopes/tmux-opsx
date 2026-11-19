@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# scenario: question-research / Saved input keeps shell metacharacters as text
+# level: L1
+# requirement: Coverage check before confirmation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; cd "$R"
+f="$EVAL_TMP/in.txt"
+printf '"; touch %s/pwned; echo "\n' "$EVAL_TMP" > "$f"
+printf '%s\n' '$(id)' >> "$f"
+p=$("$QSH" input save < "$f"); rc=$?
+echo "rc=$rc path=$p"
+[ $rc -eq 0 ] || fail "input save exit $rc"
+[ ! -e "$EVAL_TMP/pwned" ] || fail "pwned exists: input was executed"
+s="$R/$p"; [ -f "$s" ] || s="$p"
+[ -f "$s" ] || fail "saved file not found"
+grep -qF "\"; touch $EVAL_TMP/pwned; echo \"" "$s" || fail "first line not preserved"
+grep -qxF '$(id)' "$s" || fail '$(id) not preserved'
+# no skill or reference text puts input inside a shell argument
+bad=$(grep -rnE "(printf '%s\\\\n'|echo|printf) +\"<[a-z -]*(text|input)[a-z -]*>\"" "$EVAL_ROOT/skills" 2>/dev/null | grep -i 'questions\|opsx-' | head)
+[ -z "$bad" ] || fail "input text inside a shell argument: $bad"
+echo OK

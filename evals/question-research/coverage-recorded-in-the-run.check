@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# scenario: question-research / Coverage recorded in the run
+# level: L1
+# requirement: Coverage check before confirmation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; cd "$R"
+p=$(printf 'line one\nwhere does X write?\n' | "$QSH" input save) || fail "input save"
+mk_questions 2
+RUN=$("$QSH" run new answer --questions-file "$EVAL_TMP/q.tsv" --coverage-rounds-run 2 --coverage-subagents 3 --coverage-dropped 1 --input "$p" --repo "$R") || fail "run new failed: $RUN"
+RUN=$(printf '%s' "$RUN" | tail -1)
+last=$("$QSH" status "$RUN" --repo "$R" | tail -1)
+echo "last: $last"
+exp="coverage rounds=2 subagents=3 dropped=1 incomplete=no input=$p"
+[ "$last" = "$exp" ] || fail "expected '$exp'"
+out=$("$QSH" run new answer --questions-file "$EVAL_TMP/q.tsv" --coverage-rounds-run 2 --coverage-subagents 5 --repo "$R" 2>&1); rc=$?
+echo "subagents=5 rounds=2: rc=$rc $out"
+[ $rc -ne 0 ] || fail "subagents above twice the rounds accepted"
+echo OK

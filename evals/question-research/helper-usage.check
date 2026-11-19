@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: question-research / Helper usage
+# level: L1
+# requirement: Three entry points over one engine
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+out=$("$QSH" --help 2>&1); rc=$?; echo "$out" | head -20; echo "exit $rc"
+[ $rc -eq 0 ] || fail "exit $rc"
+for c in extract cite run record status; do echo "$out" | grep -q "questions.sh $c\|^$c " || fail "subcommand $c not listed"; done
+echo OK

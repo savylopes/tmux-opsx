@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# scenario: question-research / Change input is extracted by the helper
+# level: L1
+# requirement: Input resolution
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+f="$EVAL_ROOT/skills/opsx-answer/SKILL.md"
+grep -q 'extract' "$f" && grep -Eq 'extract[^`]*--mode answer' "$f" || fail "opsx-answer SKILL.md does not use 'questions.sh extract <change> --mode answer'"
+mk_repo; mk_change add-opsx-workspace
+out=$(cd "$R" && "$QSH" extract add-opsx-workspace --mode answer); echo "$out"
+[ -n "$out" ] || fail "extract printed nothing for a change input"
+echo OK

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: question-research / Help flag in a citation is a value
+# level: L1
+# requirement: Mechanical citation check
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; printf 'some text\n' > "$R/README.md"
+cd "$R"
+"$QSH" cite -h 1 x >/dev/null 2>&1; a=$?
+"$QSH" cite README.md 1 -h >/dev/null 2>&1; b=$?
+echo "cite -h 1 x -> $a ; cite README.md 1 -h -> $b"
+[ "$a" -eq 2 ] || fail "expected 2 for missing file '-h', got $a"
+[ "$b" -eq 1 ] || fail "expected 1 for excerpt '-h' not present, got $b"
+echo OK

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: question-research / Citation matches nearby
+# level: L1
+# requirement: Mechanical citation check
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; for i in 1 2 3 4 5 6 7 8 9; do echo "line $i"; done > "$R/a.md"; echo "the   quick brown fox" >> "$R/a.md"
+(cd "$R" && "$QSH" cite a.md 9 "quick brown"); rc=$?; echo "exit $rc"
+[ $rc -eq 0 ] || fail "expected 0"
+echo OK

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# scenario: question-research / Gap with a fabricated citation is dropped
+# level: L1
+# requirement: Coverage check before confirmation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo; cd "$R"
+printf 'a\nb\nc\nnothing relevant\nd\ne\nf\n' > in.md
+"$QSH" cite -- in.md 4 "X is stored" >/dev/null 2>&1; rc=$?
+echo "cite exit $rc"
+[ $rc -eq 1 ] || fail "expected 1, got $rc"
+ref="$EVAL_ROOT/skills/opsx-questions/reference.md"
+grep -Eiq 'drop[^.]*gap|gap[^.]*drop' "$ref" || fail "reference does not say a failing gap is dropped"
+grep -Eiq 'dropped[^.]*(shown|list)|(shown|list)[^.]*dropped|listed as dropped' "$ref" || fail "reference does not say dropped gaps are listed"
+echo OK

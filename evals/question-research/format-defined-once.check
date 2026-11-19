@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: question-research / Format defined once
+# level: L1
+# requirement: Verdict format
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+for f in "$EVAL_ROOT/skills/opsx-questions/reference.md" "$EVAL_ROOT/agents/opsx-researcher.md"; do
+  [ -f "$f" ] || fail "$f missing"
+  grep -q 'VERDICT:' "$f" || fail "$f: no VERDICT: line"
+  for e in 'file:<path>:<line>' 'url:<url>' 'ticket:<key>:<field>' 'req:<id>'; do
+    grep -qF "$e" "$f" || fail "$f: evidence form $e missing"
+  done
+done
+echo OK

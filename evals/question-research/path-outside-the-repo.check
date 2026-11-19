@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# scenario: question-research / Path outside the repo
+# level: L1
+# requirement: Mechanical citation check
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+mk_repo
+(cd "$R" && "$QSH" cite /etc/hostname 1 x); rc=$?; echo "exit $rc"
+[ $rc -eq 3 ] || fail "expected 3"
+echo OK

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# scenario: question-research / Defaults documented
+# level: L1
+# requirement: Three entry points over one engine
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+S="$EVAL_ROOT/skills"
+for s in answer challenge settle; do
+  f="$S/opsx-$s/SKILL.md"; [ -f "$f" ] || fail "$f missing"
+  grep -q 'questions\.sh' "$f" || fail "opsx-$s does not name questions.sh"
+  grep -Eq -- '--max.{0,80}(default|defaults).{0,20}6|(default|defaults).{0,40}6.{0,80}--max|--max N.{0,40}\b6\b' "$f" || fail "opsx-$s: --max default 6 not stated"
+done
+grep -Eq -- '--rounds.{0,80}3|3.{0,60}--rounds' "$S/opsx-settle/SKILL.md" || fail "opsx-settle: --rounds default 3 not stated"
+echo OK

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# scenario: question-research / Gap documented
+# level: L1
+# requirement: CLIs without reliable subagents
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+sec=$(awk '/^### .*\/opsx-answer/{p=1;next} p&&/^### /{exit} p' "$EVAL_ROOT/README.md"); [ -n "$sec" ] || fail "no /opsx-answer section"
+echo "$sec" | grep -Eq 'Codex' && echo "$sec" | grep -Eq 'Gemini' || fail "Codex/Gemini not named"
+echo "$sec" | grep -Eiq 'sequential|one at a time' || fail "sequential research not stated"
+echo "$sec" | grep -Eiq 'without the read-only guarantee|read-only guarantee' || fail "read-only gap not stated"
+echo OK

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# scenario: question-research / Uninstall
+# level: L2
+# requirement: Installation
+set -u
+. "$EVAL_ROOT/evals/_lib/questions.sh"
+. "$EVAL_ROOT/evals/_lib/install.sh"
+run_install >/dev/null 2>&1 || fail "install failed"
+find "$HOME" -name 'opsx-questions' | grep -q . || fail "nothing installed to uninstall"
+out=$(run_install --uninstall 2>&1); echo "$out" | tail -5
+f=$(find "$HOME" \( -name 'opsx-questions' -o -name 'opsx-answer' -o -name 'opsx-challenge' -o -name 'opsx-settle' -o -name 'opsx-researcher.*' -o -name 'ops-researcher.*' \) 2>/dev/null)
+echo "left: [$f]"; [ -z "$f" ] || fail "files remain after uninstall"
+echo OK
